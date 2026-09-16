@@ -1,0 +1,9 @@
+services:
+  conductor:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - "${BACKBONE_REPO:?Set BACKBONE_REPO to an initialized Git repository}:/workspace"
+    init: true
+    restart: unless-stopped

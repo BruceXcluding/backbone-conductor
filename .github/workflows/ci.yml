@@ -1,0 +1,25 @@
+name: CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.1'
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked --group dev
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync ruff format --check .
+      - run: uv run --no-sync pytest --cov=backbone_conductor --cov-fail-under=85 --cov-report=term-missing
+      - run: uv run --no-sync python scripts/evaluate.py
+      - run: uv run --no-sync python examples/demo.py
+      - run: uv build
