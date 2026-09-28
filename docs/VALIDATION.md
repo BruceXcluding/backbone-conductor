@@ -62,3 +62,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## v0.6 增量
 
 日期：2026-09-28。新仓库可显式创建只含 `.backbone/` 的 orphan `backbone` 分支及隐藏 linked worktree；第二个克隆可从远端附加。Conductor 在独立模式中分别使用元数据 worktree 和源代码工作树，确保任务 base_ref/SHA、产物 diff 与实际合并仍指向代码分支。集成测试覆盖创建后源码分支不变、完整意图→任务→代码提交→制品检查→合并、双克隆元数据同步、CLI/HTTP 入口、凭据不得位于源码仓库，以及拒绝静默迁移既有内联快照。完整基础套件 **257 passed，1 skipped，覆盖率 90.99%**；Ruff 检查与格式检查、`uv lock --check --offline`、合成评测 24/24、Git 示例、0.6.0 wheel/source distribution 构建通过。既有内联快照迁移、独立模式容器路径、真实远程多人演练仍未验证。
+
+## v0.7 增量
+
+日期：2026-09-28。新增 `ledger migrate`，要求无活跃任务且代码工作树与索引干净。迁移创建以原代码 HEAD 为父提交、当前树只含 `.backbone/` 的元数据分支，并在代码分支提交删除旧快照；新状态的 `parent_version` 指向迁移前审计提交。真实 Git 集成测试验证 CLI 入口、旧审计链可达、迁移后新写入不改变代码 HEAD，以及活跃任务或脏工作树拒绝迁移。完整基础套件 **259 passed，1 skipped，覆盖率 90.45%**；Ruff 检查与格式检查、`uv lock --check --offline`、合成评测 24/24、Git 示例、0.7.0 wheel/source distribution 构建通过。独立模式容器路径、真实远程多人演练仍未验证。

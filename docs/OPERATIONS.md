@@ -36,7 +36,9 @@ docker compose up -d
 
 新仓库至少要有一个代码提交，且不能已经有内联 `.backbone/state.json`。执行 `backbone --repo /repo ledger create` 后，元数据保存在 Git 管理目录的隐藏 `backbone-ledger` worktree 中，当前代码工作树不切分支。所有协调命令都要显式使用 `--ledger-branch backbone`；例如 `backbone --repo /repo --ledger-branch backbone sync` 只推送元数据分支。其他克隆在已有远端 `backbone` 分支时运行 `backbone --repo /clone ledger attach`。成员提交的代码分支必须可被协调端的代码工作树解析；代码推送仍走 Git 常规流程。
 
-隐藏 worktree 的 `.git` 指针与本机绝对路径绑定。当前 Compose 把宿主仓库挂载到不同容器路径，**不能直接复用宿主创建的隐藏 worktree**；Compose 默认继续采用内联模式。若要在容器部署独立模式，需在容器内使用固定持久路径创建或附加 worktree，并单独验证，不要仅加 `--ledger-branch` 标志。现有内联审计历史也不会被 `ledger create` 自动迁移。
+现有内联仓库可在协作者暂停写入时运行 `backbone --repo /repo ledger migrate`。迁移要求当前代码分支有提交、工作树和索引干净、所有任务已完成或取消，且不存在本地或远端跟踪的 `backbone` 分支。它创建以旧代码 HEAD 为父提交的元数据专用分支，再在代码分支提交删除旧 `.backbone/`；旧审计提交仍在新分支祖先中。迁移成功后使用 `--ledger-branch backbone`，分别推送代码分支及元数据分支，再让其他克隆拉取代码并 `ledger attach`。若提交已经完成但 worktree 附加失败，运行 `ledger attach` 修复；不要重新迁移或强推历史。迁移不会自动推送。
+
+隐藏 worktree 的 `.git` 指针与本机绝对路径绑定。当前 Compose 把宿主仓库挂载到不同容器路径，**不能直接复用宿主创建的隐藏 worktree**；Compose 默认继续采用内联模式。若要在容器部署独立模式，需在容器内使用固定持久路径创建或附加 worktree，并单独验证，不要仅加 `--ledger-branch` 标志。`ledger create` 不会自动迁移现有内联审计历史。
 
 ## 审计与恢复
 

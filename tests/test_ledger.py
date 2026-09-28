@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from backbone_conductor.api import create_app
 from backbone_conductor.cli import main
-from backbone_conductor.ledger import attach_ledger, create_ledger, ledger_path
+from backbone_conductor.ledger import attach_ledger, create_ledger, ledger_path, migrate_ledger
 from backbone_conductor.service import Conductor
 from backbone_conductor.storage import GitStore, StorageError
 
@@ -156,4 +156,57 @@ def test_create_requires_explicit_migration_of_inline_state(source_repo: Path):
     Conductor(source_repo).initialize()
     with pytest.raises(StorageError, match="explicit migration"):
         create_ledger(source_repo)
+    assert git(source_repo, "branch", "--list", "backbone") == ""
+
+
+def test_migrate_inline_ledger_preserves_audit_ancestry(source_repo: Path, capsys):
+    inline = Conductor(source_repo)
+    inline.initialize()
+    inline.create_intent(
+        {"id": "intent-before", "author": "owner", "problem": "Before", "proposed_outcome": "Keep"}
+    )
+    old_version = inline.state()["version"]
+    old_head = git(source_repo, "rev-parse", "HEAD")
+    old_audit = git(source_repo, "log", "--format=%H", "--", ".backbone").splitlines()
+    assert main(["--repo", str(source_repo), "ledger", "migrate"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["previous_version"] == old_version
+    assert result["source_before"] == old_head
+    assert result["source_after"] == git(source_repo, "rev-parse", "main")
+    assert not (source_repo / ".backbone").exists()
+    ledger = GitStore(result["worktree"])
+    assert git(ledger.root, "show", "-s", "--format=%P", "HEAD") == old_head
+    assert set(git(ledger.root, "ls-tree", "-r", "--name-only", "HEAD").splitlines()) == {
+        ".backbone/BACKBONE.md",
+        ".backbone/intents/intent-before.md",
+        ".backbone/state.json",
+    }
+    assert ledger.read().version == result["version"]
+    assert ledger.read().parent_version == old_version
+    assert git(ledger.root, "log", "--format=%H", "--", ".backbone").splitlines()[1:] == old_audit
+    assert git(source_repo, "status", "--porcelain") == ""
+    separate = Conductor(source_repo, ledger_branch="backbone")
+    assert "intent-before" in separate.state()["intents"]
+    code_head = git(source_repo, "rev-parse", "HEAD")
+    separate.create_intent(
+        {"id": "intent-after", "author": "owner", "problem": "After", "proposed_outcome": "Keep"}
+    )
+    assert git(source_repo, "rev-parse", "HEAD") == code_head
+    assert set(separate.state()["intents"]) == {"intent-before", "intent-after"}
+
+
+def test_migrate_rejects_active_task_and_dirty_source(source_repo: Path):
+    inline = Conductor(source_repo)
+    inline.initialize()
+    intent = inline.create_intent(
+        {"id": "intent-work", "author": "owner", "problem": "Work", "proposed_outcome": "Done"}
+    )
+    inline.transition_intent(intent["id"], "accepted")
+    task = inline.dispatch_task(intent["id"], "alice")
+    with pytest.raises(StorageError, match="Finish or cancel active tasks"):
+        migrate_ledger(source_repo)
+    inline.cancel_task(task["id"], "owner", "migrate")
+    (source_repo / "untracked.txt").write_text("local work")
+    with pytest.raises(StorageError, match="clean source worktree"):
+        migrate_ledger(source_repo)
     assert git(source_repo, "branch", "--list", "backbone") == ""

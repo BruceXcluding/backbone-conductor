@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
     ledger = commands.add_parser("ledger", help="Manage a separate metadata branch")
     ledger_actions = ledger.add_subparsers(dest="action", required=True)
     ledger_actions.add_parser("create", help="Create a metadata-only backbone branch")
+    ledger_actions.add_parser("migrate", help="Move a quiescent inline ledger with Git history")
     attach = ledger_actions.add_parser("attach", help="Attach a fetched backbone branch")
     attach.add_argument("--remote", default="origin")
     commands.add_parser("init", help="Initialize the Backbone ledger in an existing Git repository")
@@ -140,15 +141,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _run(args: argparse.Namespace) -> Any:
     if args.command == "ledger":
-        from .ledger import attach_ledger, create_ledger
+        from .ledger import attach_ledger, create_ledger, migrate_ledger
 
         if args.ledger_branch is not None:
             raise ValueError("Ledger setup uses --repo only; omit --ledger-branch")
-        return (
-            create_ledger(args.repo)
-            if args.action == "create"
-            else attach_ledger(args.repo, args.remote)
-        )
+        if args.action == "create":
+            return create_ledger(args.repo)
+        if args.action == "migrate":
+            return migrate_ledger(args.repo)
+        return attach_ledger(args.repo, args.remote)
     if args.command == "schema":
         from .models import BackboneState
 
