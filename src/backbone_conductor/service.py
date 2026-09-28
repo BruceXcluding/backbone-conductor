@@ -50,8 +50,14 @@ def _overlap(path: str, scope: str) -> bool:
 
 
 class Conductor:
-    def __init__(self, repo: str | Path):
-        self.store = GitStore(repo)
+    def __init__(self, repo: str | Path, *, ledger_branch: str | None = None):
+        self.code_store = GitStore(repo)
+        if ledger_branch is None:
+            self.store = self.code_store
+        else:
+            from .ledger import open_ledger
+
+            self.store = open_ledger(self.code_store, ledger_branch)
 
     def initialize(self) -> dict:
         return _dump(self.store.init())
@@ -382,7 +388,7 @@ class Conductor:
         return self.store.mutate(change, f"backbone: task {task_id} context rebased by {member_id}")
 
     def _git(self, *args: str) -> subprocess.CompletedProcess:
-        return self.store._git(*args, check=False)
+        return self.code_store._git(*args, check=False)
 
     def _commit(self, ref: str) -> str:
         if not ref or ref.startswith("-") or any(ord(c) < 32 for c in ref):
@@ -423,7 +429,7 @@ class Conductor:
                 raise ValueError("Artifact must name a feature branch separate from its base")
             item.commit_sha = self._commit(item.branch)
             item.base_sha = self._commit(item.base_ref)
-            diff = self.store.check_diff(item.base_sha, item.commit_sha)
+            diff = self.code_store.check_diff(item.base_sha, item.commit_sha)
             paths = diff.get("changed_paths", [])
             metadata_changes = [p for p in paths if _overlap(p, ".backbone")]
             # Metadata updates never count as implementation work.

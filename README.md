@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.5 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用令牌认证；多个克隆可显式获取远端、安全快进，并对经复核的独立元数据变更进行结构化合并。多人共享部署仍需独立验证。
+这是独立个人兴趣项目。v0.6 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用令牌认证；多个克隆可显式获取远端、安全快进，并对经复核的独立元数据变更进行结构化合并。新仓库还可选择独立的 `backbone` 元数据分支。多人共享部署仍需独立验证。
 
 ## 快速开始
 
@@ -91,6 +91,20 @@ backbone --repo /path/to/project sync
 ```
 
 `reconcile` 会重新获取远端，任何一侧 SHA 变化即拒绝；工作树必须干净。它生成保留两个 Git 父提交的合并提交并重算冲突，**不执行代码合并或语义审批**。若代码路径有变化或同一对象两侧均被不同方式修改，返回 `requires_review`，不改变仓库。新阻塞冲突需按正常流程人工裁决。
+
+## 独立 Backbone 分支（新仓库）
+
+已提交首个代码提交、尚未执行内联 `backbone init` 的仓库可以选择独立元数据分支：
+
+```sh
+backbone --repo /path/to/project ledger create
+backbone --repo /path/to/project --ledger-branch backbone status
+backbone --repo /path/to/project --ledger-branch backbone intent create \
+  --file examples/intent.json
+backbone --repo /path/to/project --ledger-branch backbone sync
+```
+
+`ledger create` 在 Git 管理目录中建立隐藏 worktree，创建只含 `.backbone/` 的 orphan `backbone` 分支，不移动代码工作树。使用独立模式时，每次 CLI 命令都需在子命令前传入 `--ledger-branch backbone`；HTTP `serve` 和 MCP `mcp` 同理。任务的代码分支、制品 diff 与实际 Git 合并仍在 `--repo` 指向的代码工作树执行；`sync` 只推送 `backbone` 分支，代码分支需要另行使用 Git 推送。其他克隆可在拉取代码后执行 `backbone --repo /path/to/clone ledger attach`，再用相同标志访问元数据。已有内联 `.backbone` 快照的仓库需先设计保留审计历史的迁移，命令不会静默复制或丢弃它。详细限制见 [部署与恢复](docs/OPERATIONS.md)。
 若分派后有新的已接受决策或旧决策撤回，提交检查会要求先执行 `task rebase`，再重新提交产物。若决策是在提交通过之后才改变，而且代码已经合入目标分支，管理员需在 `task merge` 上提供 `--rationale`，说明如何审查了变更的决策。
 
 需求变化时，可在分派前修订意图。先从 `backbone status` 读取 `version`，再提交 JSON 字段补丁；已接受的意图会回到 draft，须重新接受：

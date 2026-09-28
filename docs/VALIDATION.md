@@ -58,3 +58,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## v0.5 增量
 
 日期：2026-09-28。新增显式 `reconcile`，要求管理员提供审查过的本地/远端 HEAD 和理由。它只自动合并两侧独立的 `.backbone/` 对象变更，用双父 Git 提交保留审计历史并重算确定性冲突；代码路径变化、同一对象竞争、双活任务、跨分支父意图循环及过期 SHA 均拒绝或返回 `requires_review`。真实双克隆测试覆盖合并后推送与另一克隆快进、生成视图和冲突、代码重命名边界、历史不改写。完整基础套件 **252 passed，1 skipped，覆盖率 91.28%**；Ruff 检查与格式检查、`uv lock --check --offline`、合成评测 24/24、Git 示例、0.5.0 wheel/source distribution 构建通过。代码合并、竞争对象人工裁决和真实多人服务器演练仍未验证。
+
+## v0.6 增量
+
+日期：2026-09-28。新仓库可显式创建只含 `.backbone/` 的 orphan `backbone` 分支及隐藏 linked worktree；第二个克隆可从远端附加。Conductor 在独立模式中分别使用元数据 worktree 和源代码工作树，确保任务 base_ref/SHA、产物 diff 与实际合并仍指向代码分支。集成测试覆盖创建后源码分支不变、完整意图→任务→代码提交→制品检查→合并、双克隆元数据同步、CLI/HTTP 入口、凭据不得位于源码仓库，以及拒绝静默迁移既有内联快照。完整基础套件 **257 passed，1 skipped，覆盖率 90.99%**；Ruff 检查与格式检查、`uv lock --check --offline`、合成评测 24/24、Git 示例、0.6.0 wheel/source distribution 构建通过。既有内联快照迁移、独立模式容器路径、真实远程多人演练仍未验证。

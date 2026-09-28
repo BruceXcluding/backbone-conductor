@@ -1,0 +1,159 @@
+"""Separate Backbone branch exercises source-code and metadata Git boundaries."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from backbone_conductor.api import create_app
+from backbone_conductor.cli import main
+from backbone_conductor.ledger import attach_ledger, create_ledger, ledger_path
+from backbone_conductor.service import Conductor
+from backbone_conductor.storage import GitStore, StorageError
+
+
+def git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+@pytest.fixture
+def source_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "source"
+    repo.mkdir()
+    git(repo, "init", "-b", "main")
+    git(repo, "config", "user.name", "Ledger Tests")
+    git(repo, "config", "user.email", "ledger@example.invalid")
+    (repo / "README.md").write_text("Source project\n")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "source baseline")
+    return repo
+
+
+def test_create_orphan_ledger_keeps_source_clean_and_uses_own_branch(source_repo: Path):
+    source_head = git(source_repo, "rev-parse", "HEAD")
+    result = create_ledger(source_repo)
+    ledger = GitStore(result["worktree"])
+    assert result["branch"] == "backbone"
+    assert result["version"] == ledger.read().version
+    assert git(source_repo, "rev-parse", "HEAD") == source_head
+    assert git(source_repo, "status", "--porcelain") == ""
+    assert not (source_repo / ".backbone").exists()
+    assert git(ledger.root, "branch", "--show-current") == "backbone"
+    assert git(ledger.root, "ls-tree", "-r", "--name-only", "HEAD").splitlines() == [
+        ".backbone/BACKBONE.md",
+        ".backbone/state.json",
+    ]
+    assert git(ledger.root, "rev-list", "--parents", "-n", "1", "HEAD").split() == [
+        ledger.read().version
+    ]
+    with pytest.raises(StorageError, match="already exists"):
+        create_ledger(source_repo)
+    with pytest.raises(StorageError, match="Only"):
+        Conductor(source_repo, ledger_branch="other")
+
+
+def test_separate_ledger_uses_source_branch_for_artifacts_and_merge(source_repo: Path):
+    create_ledger(source_repo)
+    conductor = Conductor(source_repo, ledger_branch="backbone")
+    source_head = git(source_repo, "rev-parse", "HEAD")
+    intent = conductor.create_intent(
+        {
+            "id": "intent-export",
+            "author": "owner",
+            "problem": "Need export",
+            "proposed_outcome": "Export records",
+            "affected_paths": ["export.py"],
+        }
+    )
+    conductor.transition_intent(intent["id"], "accepted")
+    task = conductor.dispatch_task(intent["id"], "alice")
+    assert task["base_ref"] == "main"
+    assert task["base_sha"] == source_head
+    assert git(source_repo, "rev-parse", "HEAD") == source_head
+    conductor.start_task(task["id"], "alice")
+    git(source_repo, "switch", "-c", "feature/export")
+    (source_repo / "export.py").write_text("def export():\n    return []\n")
+    git(source_repo, "add", "export.py")
+    git(source_repo, "commit", "-m", "add export")
+    git(source_repo, "switch", "main")
+    submitted = conductor.submit_artifact(
+        "alice",
+        {
+            "intent_id": intent["id"],
+            "branch": "feature/export",
+            "base_ref": "main",
+            "summary": "Add export",
+        },
+    )
+    assert submitted["accepted"] is True
+    assert submitted["checks"]["code"]["status"] == "passed"
+    git(source_repo, "merge", "--no-edit", "feature/export")
+    merged = conductor.merge_task(task["id"], "owner")
+    assert merged["task"]["status"] == "merged"
+    assert conductor.state()["intents"][intent["id"]]["status"] == "completed"
+    assert not (source_repo / ".backbone").exists()
+    assert git(source_repo, "status", "--porcelain") == ""
+
+
+def test_attach_remote_ledger_and_sync_across_clones(source_repo: Path, tmp_path: Path):
+    create_ledger(source_repo)
+    first = Conductor(source_repo, ledger_branch="backbone")
+    first.create_intent(
+        {"id": "intent-first", "author": "owner", "problem": "First", "proposed_outcome": "Work"}
+    )
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    git(remote, "init", "--bare")
+    git(source_repo, "remote", "add", "origin", str(remote))
+    git(source_repo, "push", "origin", "main")
+    first.sync()
+    second_repo = tmp_path / "second"
+    subprocess.run(
+        ["git", "clone", "--branch", "main", str(remote), str(second_repo)],
+        capture_output=True,
+        check=True,
+    )
+    git(second_repo, "config", "user.name", "Second Ledger")
+    git(second_repo, "config", "user.email", "second@example.invalid")
+    with pytest.raises(StorageError, match="use ledger attach"):
+        create_ledger(second_repo)
+    attached = attach_ledger(second_repo)
+    assert Path(attached["worktree"]) == ledger_path(GitStore(second_repo))
+    second = Conductor(second_repo, ledger_branch="backbone")
+    assert "intent-first" in second.state()["intents"]
+    second.create_intent(
+        {"id": "intent-second", "author": "bob", "problem": "Second", "proposed_outcome": "Work"}
+    )
+    second.sync()
+    assert first.refresh()["status"] == "fast_forwarded"
+    assert set(first.state()["intents"]) == {"intent-first", "intent-second"}
+    assert git(source_repo, "rev-parse", "main") == git(second_repo, "rev-parse", "main")
+    assert not (second_repo / ".backbone").exists()
+
+
+def test_cli_and_http_accept_separate_ledger(source_repo: Path, capsys):
+    assert main(["--repo", str(source_repo), "ledger", "create"]) == 0
+    created = json.loads(capsys.readouterr().out)
+    assert created["branch"] == "backbone"
+    assert main(["--repo", str(source_repo), "--ledger-branch", "backbone", "status"]) == 0
+    assert json.loads(capsys.readouterr().out)["version"] == created["version"]
+    with TestClient(create_app(source_repo, ledger_branch="backbone")) as client:
+        assert client.get("/state").json()["version"] == created["version"]
+    inside = source_repo / "credentials.json"
+    inside.write_text("{}")
+    inside.chmod(0o600)
+    with pytest.raises(ValueError, match="outside the repository"):
+        create_app(source_repo, ledger_branch="backbone", auth_file=inside)
+
+
+def test_create_requires_explicit_migration_of_inline_state(source_repo: Path):
+    Conductor(source_repo).initialize()
+    with pytest.raises(StorageError, match="explicit migration"):
+        create_ledger(source_repo)
+    assert git(source_repo, "branch", "--list", "backbone") == ""

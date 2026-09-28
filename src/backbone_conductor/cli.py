@@ -26,7 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--repo", default=".", help="Git repository path (default: current directory)"
     )
+    parser.add_argument(
+        "--ledger-branch", help="Use the separate backbone metadata branch worktree"
+    )
     commands = parser.add_subparsers(dest="command", required=True)
+    ledger = commands.add_parser("ledger", help="Manage a separate metadata branch")
+    ledger_actions = ledger.add_subparsers(dest="action", required=True)
+    ledger_actions.add_parser("create", help="Create a metadata-only backbone branch")
+    attach = ledger_actions.add_parser("attach", help="Attach a fetched backbone branch")
+    attach.add_argument("--remote", default="origin")
     commands.add_parser("init", help="Initialize the Backbone ledger in an existing Git repository")
     commands.add_parser("status", help="Print the complete ledger state")
     for kind in ("intent", "decision"):
@@ -131,6 +139,16 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run(args: argparse.Namespace) -> Any:
+    if args.command == "ledger":
+        from .ledger import attach_ledger, create_ledger
+
+        if args.ledger_branch is not None:
+            raise ValueError("Ledger setup uses --repo only; omit --ledger-branch")
+        return (
+            create_ledger(args.repo)
+            if args.action == "create"
+            else attach_ledger(args.repo, args.remote)
+        )
     if args.command == "schema":
         from .models import BackboneState
 
@@ -142,26 +160,32 @@ def _run(args: argparse.Namespace) -> Any:
 
         if args.host not in {"127.0.0.1", "::1", "localhost"} and not args.auth_file:
             raise ValueError("Non-loopback HTTP binding requires --auth-file")
-        uvicorn.run(create_app(args.repo, auth_file=args.auth_file), host=args.host, port=args.port)
+        uvicorn.run(
+            create_app(args.repo, auth_file=args.auth_file, ledger_branch=args.ledger_branch),
+            host=args.host,
+            port=args.port,
+        )
         return None
     if args.command == "auth":
         from .auth import create_token_file
 
-        conductor = Conductor(args.repo)
+        conductor = Conductor(args.repo, ledger_branch=args.ledger_branch)
         return {
             "file": args.file,
             "credentials": create_token_file(
-                args.file, conductor.store.root, args.admin, args.member
+                args.file, conductor.code_store.root, args.admin, args.member
             ),
             "detail": "Save these plaintext tokens now; only SHA-256 digests are stored in the file.",
         }
     if args.command == "mcp":
         from .mcp_server import create_server
 
-        create_server(args.repo, member_id=args.member).run(transport="stdio")
+        create_server(args.repo, member_id=args.member, ledger_branch=args.ledger_branch).run(
+            transport="stdio"
+        )
         return None
 
-    conductor = Conductor(args.repo)
+    conductor = Conductor(args.repo, ledger_branch=args.ledger_branch)
     if args.command == "init":
         return conductor.initialize()
     if args.command == "status":

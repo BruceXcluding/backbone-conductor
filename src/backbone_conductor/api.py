@@ -89,13 +89,18 @@ class Reconciliation(Sync):
     rationale: str = Field(min_length=1)
 
 
-def create_app(repo: str | Path, *, auth_file: str | Path | None = None) -> FastAPI:
+def create_app(
+    repo: str | Path,
+    *,
+    auth_file: str | Path | None = None,
+    ledger_branch: str | None = None,
+) -> FastAPI:
     """Create a local admin API or an authenticated admin/member API."""
-    conductor = Conductor(repo)
-    auth = TokenAuth(auth_file, conductor.store.root) if auth_file is not None else None
+    conductor = Conductor(repo, ledger_branch=ledger_branch)
+    auth = TokenAuth(auth_file, conductor.code_store.root) if auth_file is not None else None
     app = FastAPI(
         title="Backbone Conductor",
-        version="0.5.0",
+        version="0.6.0",
         description=(
             "Without --auth-file, bind to loopback for trusted local administrators. "
             "With --auth-file, bearer tokens authorize admin and bound member operations. "

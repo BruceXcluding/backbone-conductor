@@ -10,12 +10,14 @@ from mcp.server.fastmcp import FastMCP
 from .service import Conductor
 
 
-def create_server(repo: str | Path, member_id: str | None = None) -> FastMCP:
+def create_server(
+    repo: str | Path, member_id: str | None = None, *, ledger_branch: str | None = None
+) -> FastMCP:
     """Create the MCP server; member binding is a local guard, not remote authentication."""
     if member_id is not None and not member_id.strip():
         raise ValueError("member_id must not be blank")
     bound_member = member_id
-    conductor = Conductor(repo)
+    conductor = Conductor(repo, ledger_branch=ledger_branch)
     server = FastMCP(
         "Backbone Conductor",
         instructions=(
