@@ -18,6 +18,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from backbone_conductor.auth import create_token_file
+from backbone_conductor.cli import main
 from backbone_conductor.service import Conductor
 
 
@@ -98,7 +99,7 @@ def _member_worker(
         results.put({"name": name, "error": f"{type(exc).__name__}: {exc}"})
 
 
-def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_path: Path):
+def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_path: Path, capsys):
     origin = tmp_path / "origin.git"
     subprocess.run(
         ["git", "init", "--bare", "-b", "main", str(origin)], check=True, capture_output=True
@@ -117,6 +118,12 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
     credentials = tmp_path / "credentials.json"
     issued = create_token_file(credentials, coordinator, "owner", ["alice", "bob"], ["carol"])
     tokens = {entry["name"]: entry["token"] for entry in issued}
+    reviewer_token = tmp_path / "carol.token"
+    reviewer_token.write_text(tokens["carol"] + "\n", encoding="ascii")
+    reviewer_token.chmod(0o600)
+    member_token = tmp_path / "alice.token"
+    member_token.write_text(tokens["alice"] + "\n", encoding="ascii")
+    member_token.chmod(0o600)
     with socket.socket() as listener:
         try:
             listener.bind(("127.0.0.1", 0))
@@ -126,6 +133,23 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
             pytest.skip("This sandbox does not permit loopback listening sockets")
         port = listener.getsockname()[1]
     url = f"http://127.0.0.1:{port}"
+
+    def reviewer_command(*arguments: str) -> dict | list:
+        assert (
+            main(
+                [
+                    "reviewer",
+                    "--url",
+                    url,
+                    "--token-file",
+                    str(reviewer_token),
+                    *arguments,
+                ]
+            )
+            == 0
+        )
+        return json.loads(capsys.readouterr().out)
+
     server = subprocess.Popen(
         [
             sys.executable,
@@ -165,7 +189,46 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
         task_ids = {}
         with httpx.Client(base_url=url, trust_env=False, timeout=20) as client:
             owner = {"Authorization": f"Bearer {tokens['owner']}"}
-            reviewer = {"Authorization": f"Bearer {tokens['carol']}"}
+            assert reviewer_command("whoami") == {"name": "carol", "role": "reviewer"}
+            reviewer_workspace = tmp_path / "reviewer-workspace"
+            reviewer_workspace.mkdir()
+            remote_reviewer = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "backbone_conductor",
+                    "reviewer",
+                    "--url",
+                    url,
+                    "--token-file",
+                    str(reviewer_token),
+                    "whoami",
+                ],
+                cwd=reviewer_workspace,
+                env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=15,
+            )
+            assert json.loads(remote_reviewer.stdout) == {"name": "carol", "role": "reviewer"}
+            assert not (reviewer_workspace / ".git").exists()
+            assert (
+                main(
+                    [
+                        "reviewer",
+                        "--url",
+                        url,
+                        "--token-file",
+                        str(member_token),
+                        "state",
+                    ]
+                )
+                == 1
+            )
+            denied = capsys.readouterr()
+            assert "reviewer role" in denied.err
+            assert tokens["alice"] not in denied.err
             for name in names:
                 created = client.post(
                     "/intents",
@@ -178,18 +241,18 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
                     },
                 )
                 assert created.status_code == 201, created.text
-                version = client.get("/state", headers=owner).json()["version"]
-                reviewed = client.post(
-                    f"/intents/intent-{name}/review",
-                    headers=reviewer,
-                    json={
-                        "outcome": "accepted",
-                        "author": "carol",
-                        "rationale": "The scoped change is ready",
-                        "expected_version": version,
-                    },
+                version = reviewer_command("state")["version"]
+                reviewed = reviewer_command(
+                    "review-intent",
+                    f"intent-{name}",
+                    "--outcome",
+                    "accepted",
+                    "--rationale",
+                    "The scoped change is ready",
+                    "--version",
+                    version,
                 )
-                assert reviewed.status_code == 200, reviewed.text
+                assert reviewed["status"] == "accepted"
                 dispatched = client.post(
                     "/tasks",
                     headers=owner,
@@ -246,22 +309,37 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
                 assert (
                     git(coordinator, "rev-parse", f"origin/feature/{name}") == report["commit_sha"]
                 )
-                inspection = client.get(f"/tasks/{task_ids[name]}/inspection", headers=reviewer)
-                assert inspection.status_code == 200, inspection.text
-                assert f"+def {name}():" in inspection.json()["diff"]["patch"]
-                assert inspection.json()["git"]["integrated_into_target"] is False
+                inspection = reviewer_command("inspect", task_ids[name])
+                assert f"+def {name}():" in inspection["diff"]["patch"]
+                assert inspection["git"]["integrated_into_target"] is False
+
+            assert (
+                main(
+                    [
+                        "reviewer",
+                        "--url",
+                        url,
+                        "--token-file",
+                        str(reviewer_token),
+                        "approve",
+                        task_ids["alice"],
+                        "--rationale",
+                        "Reviewed before Git integration",
+                    ]
+                )
+                == 1
+            )
+            assert "Merge the reviewed artifact" in capsys.readouterr().err
 
             for name in names:
                 git(coordinator, "merge", "--no-ff", "--no-edit", f"origin/feature/{name}")
-                approved = client.post(
-                    f"/tasks/{task_ids[name]}/merge",
-                    headers=reviewer,
-                    json={
-                        "author": "carol",
-                        "rationale": f"Reviewed {name}'s final code and current decisions",
-                    },
+                approved = reviewer_command(
+                    "approve",
+                    task_ids[name],
+                    "--rationale",
+                    f"Reviewed {name}'s final code and current decisions",
                 )
-                assert approved.status_code == 200, approved.text
+                assert approved["task"]["status"] == "merged"
             state = client.get("/state", headers=owner).json()
             assert {state["tasks"][task_ids[name]]["status"] for name in names} == {"merged"}
             assert {state["intents"][f"intent-{name}"]["status"] for name in names} == {"completed"}

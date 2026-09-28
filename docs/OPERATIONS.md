@@ -114,6 +114,30 @@ git -C /coordinator fetch origin \
 
 本流程已用两个独立 Git 克隆、一个裸远端、真实本机 MCP/HTTP 服务和审查者凭据完成端到端验证；客户端由测试进程模拟，尚不等于不同自然人的远程部署。
 
+### 无协调仓库的远程审查 CLI
+
+审查者可在自己的机器上安装 Backbone Conductor，只保存自己的 bearer 令牌，不需要协调端 Git checkout。把一次性收到的令牌单独存成**仅包含令牌的一行**、由当前用户持有的 0600 普通文件；不要将文件放进 Git 仓库或共享目录。`--url` 指向服务根地址，不含 `/mcp`；非回环 HTTP 会被拒绝。自有 CA 证书可用 `--ca-file` 指定，默认使用系统信任库。
+
+```sh
+backbone reviewer --url https://coordinator.example.org:8443 \
+  --token-file /private/path/carol.token whoami
+backbone reviewer --url https://coordinator.example.org:8443 \
+  --token-file /private/path/carol.token state
+backbone reviewer --url https://coordinator.example.org:8443 \
+  --token-file /private/path/carol.token intents
+backbone reviewer --url https://coordinator.example.org:8443 \
+  --token-file /private/path/carol.token review-intent INTENT_ID \
+  --outcome accepted --rationale '目标与范围已核对' --version OBSERVED_VERSION
+backbone reviewer --url https://coordinator.example.org:8443 \
+  --token-file /private/path/carol.token inspect TASK_ID
+# 管理员在协调代码仓库中审阅并真正执行 Git 合并后：
+backbone reviewer --url https://coordinator.example.org:8443 \
+  --token-file /private/path/carol.token approve TASK_ID \
+  --rationale '已核对最终代码与当前决策'
+```
+
+`state` 返回用于意图审查的当前 `version`；若期间有人写入，旧版本会被拒绝，应重新读取后审查。`inspect` 返回固定提交的差异、完整补丁哈希及 `truncated` 标志。审查者须核对完整代码与最终目标树，不能仅凭截断预览审批；`approve` 只记录审阅结论，不执行 Git 合并。命令先向 `/whoami` 核对令牌确属审查者，写入请求的 author 自动使用服务端返回的 principal。真实不同自然人的远程使用仍待验收。
+
 ## 独立元数据分支
 
 新仓库至少要有一个代码提交，且不能已经有内联 `.backbone/state.json`。执行 `backbone --repo /repo ledger create` 后，元数据保存在 Git 管理目录的隐藏 `backbone-ledger` worktree 中，当前代码工作树不切分支。所有协调命令都要显式使用 `--ledger-branch backbone`；例如 `backbone --repo /repo --ledger-branch backbone sync` 只推送元数据分支。其他克隆在已有远端 `backbone` 分支时运行 `backbone --repo /clone ledger attach`。成员提交的代码分支必须可被协调端的代码工作树解析；代码推送仍走 Git 常规流程。

@@ -203,6 +203,28 @@ def build_parser() -> argparse.ArgumentParser:
     dsh_prompt.add_argument("--prompt")
     dsh_prompt.add_argument("--prompt-file", help="UTF-8 prompt file")
 
+    reviewer = commands.add_parser(
+        "reviewer", help="Review through an authenticated HTTP server without a local Git clone"
+    )
+    reviewer.add_argument("--url", required=True, help="Coordinator HTTP(S) server origin")
+    reviewer.add_argument("--token-file", required=True, help="Private reviewer bearer-token file")
+    reviewer.add_argument("--ca-file", help="CA certificate for a trusted HTTPS server")
+    reviewer_actions = reviewer.add_subparsers(dest="action", required=True)
+    for action in ("whoami", "state", "intents", "tasks"):
+        reviewer_actions.add_parser(action)
+    reviewer_inspect = reviewer_actions.add_parser("inspect", help="Read a submitted task packet")
+    reviewer_inspect.add_argument("task_id")
+    reviewer_intent = reviewer_actions.add_parser("review-intent", help="Accept or reject a draft")
+    reviewer_intent.add_argument("intent_id")
+    reviewer_intent.add_argument("--outcome", required=True, choices=["accepted", "rejected"])
+    reviewer_intent.add_argument("--rationale", required=True)
+    reviewer_intent.add_argument("--version", required=True, help="Version observed in state")
+    reviewer_approve = reviewer_actions.add_parser(
+        "approve", help="Record approval after the code has been merged with Git"
+    )
+    reviewer_approve.add_argument("task_id")
+    reviewer_approve.add_argument("--rationale", required=True)
+
     serve = commands.add_parser("serve", help="Run the HTTP API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
@@ -356,6 +378,12 @@ def _run(args: argparse.Namespace) -> Any:
             args.provider,
             ledger_branch=args.ledger_branch,
         ).run(prompt, session_id=args.session_id)
+    if args.command == "reviewer":
+        from .reviewer_client import run_reviewer_command
+
+        if args.ledger_branch:
+            raise ValueError("Remote reviewer does not use --ledger-branch")
+        return run_reviewer_command(args)
 
     conductor = Conductor(args.repo, ledger_branch=args.ledger_branch)
     if args.command == "init":

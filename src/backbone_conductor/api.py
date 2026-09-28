@@ -21,6 +21,7 @@ from .service import Conductor
 def _member_route(method: str, path: str) -> bool:
     if (method, path) in {
         ("GET", "/schema"),
+        ("GET", "/whoami"),
         ("GET", "/tasks"),
         ("GET", "/sync"),
         ("POST", "/intents"),
@@ -40,6 +41,7 @@ def _reviewer_route(method: str, path: str) -> bool:
         if path in {
             "/state",
             "/schema",
+            "/whoami",
             "/intents",
             "/decisions",
             "/tasks",
@@ -286,6 +288,11 @@ def create_app(
     @app.get("/state")
     def state() -> dict:
         return conductor.state()
+
+    @app.get("/whoami")
+    def whoami(request: Request) -> dict[str, str]:
+        principal = request.state.principal
+        return {"name": principal.name, "role": principal.role}
 
     @app.get("/schema")
     def schema() -> dict:

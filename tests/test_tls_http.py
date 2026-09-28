@@ -18,6 +18,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from backbone_conductor.auth import create_token_file
+from backbone_conductor.cli import main
 from backbone_conductor.dsh_agent import DSHRemoteMemberRunner
 from backbone_conductor.service import Conductor
 
@@ -32,7 +33,7 @@ def git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def test_direct_https_requires_trusted_certificate_and_bearer_token(tmp_path: Path) -> None:
+def test_direct_https_requires_trusted_certificate_and_bearer_token(tmp_path: Path, capsys) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-b", "main")
@@ -40,9 +41,13 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(tmp_path: Pa
     git(repo, "config", "user.email", "tls@example.invalid")
     Conductor(repo).initialize()
     credentials = tmp_path / "credentials.json"
-    issued = create_token_file(credentials, repo, "owner", ["alice"])
+    issued = create_token_file(credentials, repo, "owner", ["alice"], ["carol"])
     token = next(item["token"] for item in issued if item["name"] == "owner")
     member_token = next(item["token"] for item in issued if item["name"] == "alice")
+    reviewer_token = next(item["token"] for item in issued if item["name"] == "carol")
+    reviewer_file = tmp_path / "carol.token"
+    reviewer_file.write_text(reviewer_token + "\n", encoding="ascii")
+    reviewer_file.chmod(0o600)
     certificate = tmp_path / "server.crt"
     key = tmp_path / "server.key"
     subprocess.run(
@@ -118,6 +123,22 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(tmp_path: Pa
                 raise AssertionError("TLS server did not become healthy")
 
             assert client.get(f"{url}/state").status_code == 401
+            assert (
+                main(
+                    [
+                        "reviewer",
+                        "--url",
+                        url,
+                        "--token-file",
+                        str(reviewer_file),
+                        "--ca-file",
+                        str(certificate),
+                        "whoami",
+                    ]
+                )
+                == 0
+            )
+            assert json.loads(capsys.readouterr().out) == {"name": "carol", "role": "reviewer"}
             headers = {"Authorization": f"Bearer {token}"}
             assert client.get(f"{url}/state", headers=headers).status_code == 200
             response = client.post(

@@ -112,6 +112,19 @@ def test_http_authenticates_and_limits_member_to_own_tasks(auth_repo: tuple[Path
         assert missing.headers["WWW-Authenticate"] == "Bearer"
         assert client.get("/state", headers=auth_header("x" * 40)).status_code == 401
         assert client.get("/state", headers=auth_header(ADMIN_TOKEN)).status_code == 200
+        assert client.get("/whoami").status_code == 401
+        assert client.get("/whoami", headers=auth_header(ADMIN_TOKEN)).json() == {
+            "name": "owner",
+            "role": "admin",
+        }
+        assert client.get("/whoami", headers=auth_header(ALICE_TOKEN)).json() == {
+            "name": "alice",
+            "role": "member",
+        }
+        assert client.get("/whoami", headers=auth_header(CAROL_TOKEN)).json() == {
+            "name": "carol",
+            "role": "reviewer",
+        }
         assert client.get("/state", headers=auth_header(ALICE_TOKEN)).status_code == 403
         assert client.post("/refresh", headers=auth_header(ALICE_TOKEN), json={}).status_code == 403
         assert (
