@@ -10,6 +10,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from . import __version__
 from .auth import Principal, TokenAuth
 from .service import Conductor
 
@@ -87,6 +88,7 @@ class Reconciliation(Sync):
     remote_head: str = Field(min_length=1)
     author: str = Field(min_length=1)
     rationale: str = Field(min_length=1)
+    resolutions: dict[str, dict[str, dict[str, Any]]] | None = None
 
 
 def create_app(
@@ -100,7 +102,7 @@ def create_app(
     auth = TokenAuth(auth_file, conductor.code_store.root) if auth_file is not None else None
     app = FastAPI(
         title="Backbone Conductor",
-        version="0.6.0",
+        version=__version__,
         description=(
             "Without --auth-file, bind to loopback for trusted local administrators. "
             "With --auth-file, bearer tokens authorize admin and bound member operations. "
@@ -317,6 +319,7 @@ def create_app(
             data.rationale,
             data.remote,
             data.branch,
+            data.resolutions,
         )
 
     @app.get("/timeline")

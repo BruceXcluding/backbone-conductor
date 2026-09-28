@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.7 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用令牌认证；多个克隆可显式获取远端、安全快进，并对经复核的独立元数据变更进行结构化合并。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史。多人共享部署仍需独立验证。
+这是独立个人兴趣项目。v0.8 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用令牌认证；多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史。多人共享部署仍需独立验证。
 
 ## 快速开始
 
@@ -90,7 +90,7 @@ backbone --repo /path/to/project reconcile \
 backbone --repo /path/to/project sync
 ```
 
-`reconcile` 会重新获取远端，任何一侧 SHA 变化即拒绝；工作树必须干净。它生成保留两个 Git 父提交的合并提交并重算冲突，**不执行代码合并或语义审批**。若代码路径有变化或同一对象两侧均被不同方式修改，返回 `requires_review`，不改变仓库。新阻塞冲突需按正常流程人工裁决。
+`reconcile` 会重新获取远端，任何一侧 SHA 变化即拒绝；工作树必须干净。它生成保留两个 Git 父提交的合并提交并重算冲突，**不执行代码合并或语义审批**。若代码路径有变化，返回 `requires_review`，不改变仓库。同一对象两侧均被修改时也先返回 `requires_review` 和对象 ID；管理员审查两侧值后，可以用 `--resolutions-file /path/to/resolutions.json` 再次运行。JSON 必须恰好覆盖每个竞争对象，例如 `{"intents":{"intent-shared":{"source":"remote"}}}` 选择远端整对象，`source` 也可为 `local`；要合并双方字段则提供 `{"value":{...完整对象...}}`。代码会验证对象和跨对象生命周期，审查理由及所选来源写入 Git 合并提交。新阻塞冲突仍需按正常流程人工裁决。
 
 ## 独立 Backbone 分支
 

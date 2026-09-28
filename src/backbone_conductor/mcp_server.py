@@ -144,8 +144,11 @@ def create_server(
             rationale: str,
             remote: str = "origin",
             branch: str | None = None,
+            resolutions: dict[str, dict[str, dict[str, Any]]] | None = None,
         ) -> dict:
-            """Administrator: merge reviewed disjoint metadata histories with two Git parents."""
-            return conductor.reconcile(local_head, remote_head, author, rationale, remote, branch)
+            """Administrator: merge reviewed metadata histories with two Git parents."""
+            return conductor.reconcile(
+                local_head, remote_head, author, rationale, remote, branch, resolutions
+            )
 
     return server

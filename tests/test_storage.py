@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from backbone_conductor.cli import main
 from backbone_conductor.models import Decision, Intent, Task
 from backbone_conductor.service import Conductor
 from backbone_conductor.storage import GitStore, StorageError
@@ -505,6 +506,93 @@ def test_reconcile_same_object_changes_require_review(repo: Path, tmp_path: Path
     assert result["reason"] == "object_conflicts"
     assert result["objects"]["intents"] == [intent["id"]]
     assert git(second.root, "rev-parse", "HEAD") == inspection["local_head"]
+    resolved = second.reconcile(
+        "origin",
+        None,
+        inspection["local_head"],
+        inspection["remote_head"],
+        "owner",
+        "Reviewed both revisions and selected the remote wording",
+        {"intents": {intent["id"]: {"source": "remote"}}},
+    )
+    assert resolved["status"] == "reconciled"
+    assert second.read().intents[intent["id"]].problem == "First edit"
+    assert resolved["parents"] == [inspection["local_head"], inspection["remote_head"]]
+    assert '"intents/intent-shared": "remote"' in git(second.root, "show", "-s", "--format=%B")
+
+
+def test_reconcile_reviewed_object_value_merges_both_edits_via_cli(
+    repo: Path, tmp_path: Path, capsys
+):
+    first, second, _ = clone_pair(repo, tmp_path)
+    intent = Conductor(first.root).create_intent(
+        {"id": "intent-shared", "author": "owner", "problem": "Initial", "proposed_outcome": "Work"}
+    )
+    first.sync()
+    second.refresh()
+    Conductor(first.root).revise_intent(
+        intent["id"], {"problem": "Remote problem"}, "alice", first.read().version
+    )
+    Conductor(second.root).revise_intent(
+        intent["id"], {"proposed_outcome": "Local outcome"}, "bob", second.read().version
+    )
+    first.sync()
+    inspection = second.refresh()
+    resolved_value = second.read().intents[intent["id"]].model_dump(mode="json")
+    resolved_value["problem"] = "Remote problem"
+    bad_value = {**resolved_value, "id": "other-intent"}
+    with pytest.raises(ValueError, match="must match object id"):
+        second.reconcile(
+            "origin",
+            None,
+            inspection["local_head"],
+            inspection["remote_head"],
+            "owner",
+            "Reviewed",
+            {"intents": {intent["id"]: {"value": bad_value}}},
+        )
+    with pytest.raises(StorageError, match="must match competing objects"):
+        second.reconcile(
+            "origin",
+            None,
+            inspection["local_head"],
+            inspection["remote_head"],
+            "owner",
+            "Reviewed",
+            {"intents": {"wrong-id": {"source": "local"}}},
+        )
+    assert git(second.root, "rev-parse", "HEAD") == inspection["local_head"]
+    resolution_file = tmp_path / "resolutions.json"
+    resolution_file.write_text(
+        json.dumps({"intents": {intent["id"]: {"value": resolved_value}}}), encoding="utf-8"
+    )
+    assert (
+        main(
+            [
+                "--repo",
+                str(second.root),
+                "reconcile",
+                "--local-head",
+                inspection["local_head"],
+                "--remote-head",
+                inspection["remote_head"],
+                "--author",
+                "owner",
+                "--rationale",
+                "Reviewed both fields",
+                "--resolutions-file",
+                str(resolution_file),
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "reconciled"
+    merged = second.read().intents[intent["id"]]
+    assert merged.problem == "Remote problem"
+    assert merged.proposed_outcome == "Local outcome"
+    assert result["parents"] == [inspection["local_head"], inspection["remote_head"]]
+    assert git(second.root, "status", "--porcelain") == ""
 
 
 def test_reconcile_rejects_code_changes_and_stale_heads(repo: Path, tmp_path: Path):

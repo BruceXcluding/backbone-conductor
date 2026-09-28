@@ -105,13 +105,16 @@ def build_parser() -> argparse.ArgumentParser:
     refresh = commands.add_parser("refresh", help="Fetch and fast-forward from the Git remote")
     refresh.add_argument("--remote", default="origin")
     refresh.add_argument("--branch")
-    reconcile = commands.add_parser("reconcile", help="Merge reviewed, disjoint Backbone metadata")
+    reconcile = commands.add_parser("reconcile", help="Merge reviewed Backbone metadata")
     reconcile.add_argument("--remote", default="origin")
     reconcile.add_argument("--branch")
     reconcile.add_argument("--local-head", required=True)
     reconcile.add_argument("--remote-head", required=True)
     reconcile.add_argument("--author", required=True)
     reconcile.add_argument("--rationale", required=True)
+    reconcile.add_argument(
+        "--resolutions-file", help="JSON decisions for every competing metadata object"
+    )
     updates = commands.add_parser("updates", help="Check ledger changes affecting a member")
     updates.add_argument("--member")
     updates.add_argument("--since-version")
@@ -242,6 +245,7 @@ def _run(args: argparse.Namespace) -> Any:
             args.rationale,
             args.remote,
             args.branch,
+            _json_file(args.resolutions_file) if args.resolutions_file else None,
         )
     if args.command == "updates":
         return conductor.check_backbone_sync(args.member, args.since_version)

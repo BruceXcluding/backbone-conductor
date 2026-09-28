@@ -397,9 +397,12 @@ class GitStore:
 
     @staticmethod
     def _merge_objects(
-        base: BackboneState, local: BackboneState, remote: BackboneState
+        base: BackboneState,
+        local: BackboneState,
+        remote: BackboneState,
+        resolutions: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> tuple[BackboneState | None, dict[str, list[str]]]:
-        """Three-way merge of whole domain objects; never choose competing edits."""
+        """Three-way merge; competing edits need an explicit reviewed resolution."""
         missing = object()
         combined = local.model_dump(mode="json")
         collisions: dict[str, list[str]] = {}
@@ -428,8 +431,41 @@ class GitStore:
                     )
             combined[collection] = merged
             collisions[collection] = conflicts
-        if any(collisions.values()):
+        expected = {(kind, key) for kind, keys in collisions.items() for key in keys}
+        if resolutions is not None and not isinstance(resolutions, dict):
+            raise StorageError("Reconciliation resolutions must be a JSON object")
+        if expected and not resolutions:
             return None, collisions
+        provided: dict[tuple[str, str], dict[str, Any]] = {}
+        for kind, entries in (resolutions or {}).items():
+            if kind not in collisions or not isinstance(entries, dict):
+                raise StorageError(f"Invalid reconciliation resolution collection: {kind!r}")
+            for key, specification in entries.items():
+                provided[(kind, key)] = specification
+        if set(provided) != expected:
+            missing_keys = sorted(expected - set(provided))
+            extra_keys = sorted(set(provided) - expected)
+            raise StorageError(
+                f"Resolutions must match competing objects exactly; "
+                f"missing={missing_keys}, unexpected={extra_keys}"
+            )
+        for (kind, key), specification in provided.items():
+            if not isinstance(specification, dict):
+                raise StorageError(f"Invalid resolution for {kind}/{key}")
+            if set(specification) == {"source"} and specification["source"] in {
+                "local",
+                "remote",
+            }:
+                side = local if specification["source"] == "local" else remote
+                chosen = getattr(side, kind).get(key, missing)
+                if chosen is not missing:
+                    combined[kind][key] = (
+                        chosen.model_dump(mode="json") if hasattr(chosen, "model_dump") else chosen
+                    )
+            elif set(specification) == {"value"} and isinstance(specification["value"], dict):
+                combined[kind][key] = specification["value"]
+            else:
+                raise StorageError(f"Use local, remote, or a complete value for {kind}/{key}")
         combined["version"] = None
         combined["parent_version"] = local.version
         combined["merged_parent_version"] = remote.version
@@ -479,8 +515,9 @@ class GitStore:
         expected_remote_head: str,
         author: str,
         rationale: str,
+        resolutions: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
-        """Merge disjoint metadata-only histories with an audited two-parent commit."""
+        """Merge reviewed metadata-only histories with an audited two-parent commit."""
         if not author.strip() or any(ord(char) < 32 for char in author):
             raise StorageError("A valid reconciliation author is required")
         if not rationale.strip() or "\x00" in rationale:
@@ -535,7 +572,9 @@ class GitStore:
                     ).stdout.strip()
                     or None
                 )
-                merged, collisions = self._merge_objects(base_state, local_state, remote_state)
+                merged, collisions = self._merge_objects(
+                    base_state, local_state, remote_state, resolutions
+                )
                 if merged is None:
                     return {
                         "status": "requires_review",
@@ -570,6 +609,13 @@ class GitStore:
                 message = (
                     f"backbone: reconcile {branch} by {author.strip()}\n\n{rationale.strip()}\n"
                 )
+                if resolutions:
+                    choices = {
+                        f"{kind}/{key}": spec.get("source", "merged")
+                        for kind, entries in resolutions.items()
+                        for key, spec in entries.items()
+                    }
+                    message += "\nResolutions: " + json.dumps(choices, sort_keys=True) + "\n"
                 commit = self._git(
                     "commit-tree", tree, "-p", local_head, "-p", remote_head, input=message
                 ).stdout.strip()

@@ -699,7 +699,14 @@ class Conductor:
         rationale: str,
         remote: str = "origin",
         branch: str | None = None,
+        resolutions: dict[str, dict[str, dict[str, Any]]] | None = None,
     ) -> dict:
         return self.store.reconcile(
-            remote, branch, expected_local_head, expected_remote_head, author, rationale
+            remote,
+            branch,
+            expected_local_head,
+            expected_remote_head,
+            author,
+            rationale,
+            resolutions,
         )

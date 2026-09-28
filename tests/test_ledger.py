@@ -137,6 +137,48 @@ def test_attach_remote_ledger_and_sync_across_clones(source_repo: Path, tmp_path
     assert not (second_repo / ".backbone").exists()
 
 
+def test_reviewed_collision_reconciles_separate_ledgers(source_repo: Path, tmp_path: Path):
+    create_ledger(source_repo)
+    first = Conductor(source_repo, ledger_branch="backbone")
+    intent = first.create_intent(
+        {"id": "intent-shared", "author": "owner", "problem": "Initial", "proposed_outcome": "Work"}
+    )
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    git(remote, "init", "--bare")
+    git(source_repo, "remote", "add", "origin", str(remote))
+    git(source_repo, "push", "origin", "main")
+    first.sync()
+    second_repo = tmp_path / "second"
+    subprocess.run(
+        ["git", "clone", "--branch", "main", str(remote), str(second_repo)],
+        capture_output=True,
+        check=True,
+    )
+    git(second_repo, "config", "user.name", "Second Ledger")
+    git(second_repo, "config", "user.email", "second@example.invalid")
+    attach_ledger(second_repo)
+    second = Conductor(second_repo, ledger_branch="backbone")
+    first.revise_intent(intent["id"], {"problem": "Remote"}, "alice", first.state()["version"])
+    second.revise_intent(intent["id"], {"problem": "Local"}, "bob", second.state()["version"])
+    first.sync()
+    inspection = second.refresh()
+    assert inspection["status"] == "diverged"
+    result = second.reconcile(
+        inspection["local_head"],
+        inspection["remote_head"],
+        "owner",
+        "Reviewed both edits and chose remote wording",
+        resolutions={"intents": {intent["id"]: {"source": "remote"}}},
+    )
+    assert result["status"] == "reconciled"
+    assert second.state()["intents"][intent["id"]]["problem"] == "Remote"
+    assert git(second_repo, "status", "--porcelain") == ""
+    second.sync()
+    assert first.refresh()["status"] == "fast_forwarded"
+    assert first.state()["intents"][intent["id"]]["problem"] == "Remote"
+
+
 def test_cli_and_http_accept_separate_ledger(source_repo: Path, capsys):
     assert main(["--repo", str(source_repo), "ledger", "create"]) == 0
     created = json.loads(capsys.readouterr().out)

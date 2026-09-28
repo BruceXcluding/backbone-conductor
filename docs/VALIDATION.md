@@ -66,3 +66,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## v0.7 增量
 
 日期：2026-09-28。新增 `ledger migrate`，要求无活跃任务且代码工作树与索引干净。迁移创建以原代码 HEAD 为父提交、当前树只含 `.backbone/` 的元数据分支，并在代码分支提交删除旧快照；新状态的 `parent_version` 指向迁移前审计提交。真实 Git 集成测试验证 CLI 入口、旧审计链可达、迁移后新写入不改变代码 HEAD，以及活跃任务或脏工作树拒绝迁移。完整基础套件 **259 passed，1 skipped，覆盖率 90.45%**；Ruff 检查与格式检查、`uv lock --check --offline`、合成评测 24/24、Git 示例、0.7.0 wheel/source distribution 构建通过。独立模式容器路径、真实远程多人演练仍未验证。
+
+## v0.8 增量
+
+日期：2026-09-28。`reconcile` 新增可选逐对象 `resolutions`，管理员可对每个竞争对象选择本地、远端或提供完整合并值；遗漏、多余或无效决议拒绝提交。审查理由和选择摘要写入双父 Git 提交，合并后仍验证对象关系和任务生命周期并重算确定性冲突。CLI `--resolutions-file`、HTTP 和 MCP 已接入。真实 Git 测试覆盖无决议时保持 `requires_review`、选择远端、完整字段合并、错误 ID/额外决议不改变 HEAD，以及独立元数据分支双克隆合并与快进。完整基础套件 **261 passed，1 skipped，覆盖率 90.45%**；Ruff 检查与格式检查、`uv lock --check --offline`、合成评测 24/24、Git 示例、0.8.0 wheel/source distribution 构建通过。未进行真实多人服务器部署或人类语义审查。
