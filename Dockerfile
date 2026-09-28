@@ -11,4 +11,4 @@ RUN pip install --no-cache-dir . \
     && git config --system safe.directory /workspace
 WORKDIR /workspace
 ENTRYPOINT ["backbone"]
-CMD ["--repo", "/workspace", "serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["--repo", "/workspace", "serve", "--host", "0.0.0.0", "--port", "8000", "--auth-file", "/run/secrets/backbone-http-tokens.json"]

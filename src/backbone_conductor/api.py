@@ -1,7 +1,8 @@
-"""HTTP API for a trusted local administrator; this is not an authentication boundary."""
+"""HTTP API with optional bearer authentication and member authorization."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,25 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from .auth import Principal, TokenAuth
 from .service import Conductor
+
+
+def _member_route(method: str, path: str) -> bool:
+    if (method, path) in {
+        ("GET", "/schema"),
+        ("GET", "/tasks"),
+        ("GET", "/sync"),
+        ("POST", "/intents"),
+        ("POST", "/decisions"),
+        ("POST", "/artifacts"),
+    }:
+        return True
+    if method == "GET":
+        return re.fullmatch(r"/tasks/[^/]+", path) is not None
+    if method == "POST":
+        return re.fullmatch(r"/tasks/[^/]+/(start|rebase|submit)", path) is not None
+    return False
 
 
 class Action(BaseModel):
@@ -63,18 +82,68 @@ class Sync(Action):
     branch: str | None = None
 
 
-def create_app(repo: str | Path) -> FastAPI:
-    """Create a local API. Callers providing remote access must supply authentication."""
+def create_app(repo: str | Path, *, auth_file: str | Path | None = None) -> FastAPI:
+    """Create a local admin API or an authenticated admin/member API."""
     conductor = Conductor(repo)
+    auth = TokenAuth(auth_file, conductor.store.root) if auth_file is not None else None
     app = FastAPI(
         title="Backbone Conductor",
-        version="0.2.0",
+        version="0.3.0",
         description=(
-            "Trusted local administrator API. No built-in authentication; bind to loopback. "
+            "Without --auth-file, bind to loopback for trusted local administrators. "
+            "With --auth-file, bearer tokens authorize admin and bound member operations. "
+            "Use TLS at a trusted reverse proxy for remote access. "
             "Merge approval records require an actual Git merge and human semantic review."
         ),
     )
     app.state.conductor = conductor
+
+    @app.middleware("http")
+    async def authenticate(request: Request, call_next):
+        if auth is None:
+            request.state.principal = Principal("local", "admin")
+        elif request.url.path == "/health":
+            request.state.principal = None
+        else:
+            principal = auth.authenticate(request.headers.get("authorization"))
+            if principal is None:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Valid bearer token required"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            request.state.principal = principal
+            if principal.role == "member" and not _member_route(request.method, request.url.path):
+                return JSONResponse(status_code=403, content={"detail": "Admin role required"})
+        return await call_next(request)
+
+    def bind_member(request: Request, member_id: str | None) -> str | None:
+        principal = request.state.principal
+        if principal.role == "member":
+            if member_id is not None and member_id != principal.name:
+                raise PermissionError("Member identity is bound to the bearer token")
+            return principal.name
+        return member_id
+
+    def bind_author(request: Request, data: dict[str, Any], required_status: str) -> dict:
+        principal = request.state.principal
+        if auth is None:
+            return data
+        if data.get("author", principal.name) != principal.name:
+            raise PermissionError("Author identity is bound to the bearer token")
+        if principal.role == "member" and data.get("status", required_status) != required_status:
+            raise PermissionError(f"Members may create {required_status} records only")
+        return {**data, "author": principal.name}
+
+    def actor(request: Request, claimed: str) -> str:
+        if auth is not None and claimed != request.state.principal.name:
+            raise PermissionError("Author identity is bound to the bearer token")
+        return claimed
+
+    def visible_task(request: Request, task_id: str) -> dict:
+        result = conductor.state()["tasks"][task_id]
+        bind_member(request, result["member_id"])
+        return result
 
     async def domain_error(_request: Request, exc: Exception) -> JSONResponse:
         if isinstance(exc, PermissionError):
@@ -114,8 +183,8 @@ def create_app(repo: str | Path) -> FastAPI:
         return list(conductor.state()["intents"].values())
 
     @app.post("/intents", status_code=201)
-    def create_intent(data: dict[str, Any]) -> dict:
-        return conductor.create_intent(data)
+    def create_intent(data: dict[str, Any], request: Request) -> dict:
+        return conductor.create_intent(bind_author(request, data, "draft"))
 
     @app.get("/intents/{intent_id}")
     def intent(intent_id: str) -> dict:
@@ -126,16 +195,18 @@ def create_app(repo: str | Path) -> FastAPI:
         return conductor.transition_intent(intent_id, data.status)
 
     @app.post("/intents/{intent_id}/revise")
-    def revise_intent(intent_id: str, data: IntentRevision) -> dict:
-        return conductor.revise_intent(intent_id, data.patch, data.author, data.expected_version)
+    def revise_intent(intent_id: str, data: IntentRevision, request: Request) -> dict:
+        return conductor.revise_intent(
+            intent_id, data.patch, actor(request, data.author), data.expected_version
+        )
 
     @app.get("/decisions")
     def decisions() -> list[dict]:
         return list(conductor.state()["decisions"].values())
 
     @app.post("/decisions", status_code=201)
-    def create_decision(data: dict[str, Any]) -> dict:
-        return conductor.log_decision(data)
+    def create_decision(data: dict[str, Any], request: Request) -> dict:
+        return conductor.log_decision(bind_author(request, data, "proposed"))
 
     @app.get("/decisions/{decision_id}")
     def decision(decision_id: str) -> dict:
@@ -146,7 +217,8 @@ def create_app(repo: str | Path) -> FastAPI:
         return conductor.transition_decision(decision_id, data.status)
 
     @app.get("/tasks")
-    def tasks(member_id: str | None = None) -> dict:
+    def tasks(request: Request, member_id: str | None = None) -> dict:
+        member_id = bind_member(request, member_id)
         if member_id is not None:
             return conductor.get_my_task(member_id)
         return {"tasks": list(conductor.state()["tasks"].values())}
@@ -158,28 +230,31 @@ def create_app(repo: str | Path) -> FastAPI:
         )
 
     @app.get("/tasks/{task_id}")
-    def task(task_id: str) -> dict:
-        return conductor.state()["tasks"][task_id]
+    def task(task_id: str, request: Request) -> dict:
+        return visible_task(request, task_id)
 
     @app.post("/tasks/{task_id}/start")
-    def start_task(task_id: str, data: Member) -> dict:
-        return conductor.start_task(task_id, data.member_id)
+    def start_task(task_id: str, data: Member, request: Request) -> dict:
+        return conductor.start_task(task_id, bind_member(request, data.member_id))
 
     @app.post("/tasks/{task_id}/rebase")
-    def rebase_task(task_id: str, data: TaskRebase) -> dict:
-        return conductor.rebase_task(task_id, data.member_id, data.expected_version)
+    def rebase_task(task_id: str, data: TaskRebase, request: Request) -> dict:
+        return conductor.rebase_task(
+            task_id, bind_member(request, data.member_id), data.expected_version
+        )
 
     @app.post("/tasks/{task_id}/cancel")
-    def cancel_task(task_id: str, data: Cancellation) -> dict:
-        return conductor.cancel_task(task_id, data.author, data.reason)
+    def cancel_task(task_id: str, data: Cancellation, request: Request) -> dict:
+        return conductor.cancel_task(task_id, actor(request, data.author), data.reason)
 
     @app.post("/artifacts", status_code=201)
-    def submit_artifact(data: Submission) -> dict:
-        return conductor.submit_artifact(data.member_id, data.artifact)
+    def submit_artifact(data: Submission, request: Request) -> dict:
+        return conductor.submit_artifact(bind_member(request, data.member_id), data.artifact)
 
     @app.post("/tasks/{task_id}/submit")
-    def submit_task(task_id: str, data: Submission) -> dict:
-        assigned = conductor.state()["tasks"][task_id]
+    def submit_task(task_id: str, data: Submission, request: Request) -> dict:
+        assigned = visible_task(request, task_id)
+        bind_member(request, data.member_id)
         if assigned["member_id"] != data.member_id:
             raise PermissionError("Task belongs to another member")
         artifact = dict(data.artifact)
@@ -189,9 +264,9 @@ def create_app(repo: str | Path) -> FastAPI:
         return conductor.submit_artifact(data.member_id, artifact)
 
     @app.post("/tasks/{task_id}/merge")
-    def merge_task(task_id: str, data: Approval) -> dict:
+    def merge_task(task_id: str, data: Approval, request: Request) -> dict:
         """Record human approval after performing the actual Git merge externally."""
-        return conductor.merge_task(task_id, data.author, data.rationale)
+        return conductor.merge_task(task_id, actor(request, data.author), data.rationale)
 
     @app.get("/conflicts")
     def conflicts() -> list[dict]:
@@ -202,12 +277,16 @@ def create_app(repo: str | Path) -> FastAPI:
         return conductor.detect_conflicts()
 
     @app.post("/conflicts/{conflict_id}/resolve")
-    def resolve_conflict(conflict_id: str, data: Resolution) -> dict:
-        return conductor.resolve_conflict(conflict_id, data.author, data.action, data.rationale)
+    def resolve_conflict(conflict_id: str, data: Resolution, request: Request) -> dict:
+        return conductor.resolve_conflict(
+            conflict_id, actor(request, data.author), data.action, data.rationale
+        )
 
     @app.get("/sync")
-    def check_sync(member_id: str | None = None, since_version: str | None = None) -> dict:
-        return conductor.check_backbone_sync(member_id, since_version)
+    def check_sync(
+        request: Request, member_id: str | None = None, since_version: str | None = None
+    ) -> dict:
+        return conductor.check_backbone_sync(bind_member(request, member_id), since_version)
 
     @app.post("/sync")
     def sync(data: Sync) -> dict:

@@ -5,5 +5,6 @@ services:
       - "127.0.0.1:8000:8000"
     volumes:
       - "${BACKBONE_REPO:?Set BACKBONE_REPO to an initialized Git repository}:/workspace"
+      - "${BACKBONE_AUTH_FILE:?Set BACKBONE_AUTH_FILE to a private token-digest file}:/run/secrets/backbone-http-tokens.json:ro"
     init: true
     restart: unless-stopped

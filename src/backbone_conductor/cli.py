@@ -105,9 +105,16 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--model", required=True)
     review.add_argument("--provider", default="deepseek-official")
 
-    serve = commands.add_parser("serve", help="Run the trusted local administrator HTTP API")
+    serve = commands.add_parser("serve", help="Run the HTTP API")
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--auth-file", help="Private JSON file of bearer-token digests")
+    auth = commands.add_parser("auth", help="Create a private HTTP token-digest file")
+    auth_commands = auth.add_subparsers(dest="action", required=True)
+    create_auth = auth_commands.add_parser("create")
+    create_auth.add_argument("--file", required=True, help="New file outside the Git repository")
+    create_auth.add_argument("--admin", required=True, help="Administrator principal name")
+    create_auth.add_argument("--member", action="append", default=[], help="Member principal name")
     mcp = commands.add_parser("mcp", help="Run the MCP server over stdio")
     mcp.add_argument("--member", help="Bind member operations and omit administrator tools")
     return parser
@@ -123,8 +130,21 @@ def _run(args: argparse.Namespace) -> Any:
 
         from .api import create_app
 
-        uvicorn.run(create_app(args.repo), host=args.host, port=args.port)
+        if args.host not in {"127.0.0.1", "::1", "localhost"} and not args.auth_file:
+            raise ValueError("Non-loopback HTTP binding requires --auth-file")
+        uvicorn.run(create_app(args.repo, auth_file=args.auth_file), host=args.host, port=args.port)
         return None
+    if args.command == "auth":
+        from .auth import create_token_file
+
+        conductor = Conductor(args.repo)
+        return {
+            "file": args.file,
+            "credentials": create_token_file(
+                args.file, conductor.store.root, args.admin, args.member
+            ),
+            "detail": "Save these plaintext tokens now; only SHA-256 digests are stored in the file.",
+        }
     if args.command == "mcp":
         from .mcp_server import create_server
 

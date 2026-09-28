@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.2 提供本地协调内核：CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。
+这是独立个人兴趣项目。v0.3 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用令牌认证；多人共享 Git 仓库仍需独立部署和验证。
 
 ## 快速开始
 
@@ -25,6 +25,18 @@ uv run backbone --repo /absolute/path/to/your-repo serve
 ```
 
 打开 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) 使用交互式 API。服务默认监听本机，供可信本地管理员使用。
+
+要给 HTTP API 增加管理员和成员令牌，先在仓库外创建私有凭据文件。下面的命令仅在创建时输出一次明文令牌，文件仅保存哈希；请把输出保存在合适的密钥管理位置，不要提交到 Git：
+
+```sh
+backbone --repo /path/to/project auth create \
+  --file /private/path/backbone-http-tokens.json --admin owner \
+  --member alice --member bob
+backbone --repo /path/to/project serve \
+  --auth-file /private/path/backbone-http-tokens.json
+```
+
+请求使用 `Authorization: Bearer TOKEN`。管理员可执行全部 HTTP 操作；成员令牌绑定自己的 author 和 member_id，仅能创建草稿意图与提议决策、查看和提交自己的任务，以及检查自己的更新。远程访问须在可信反向代理处终止 TLS；没有 `--auth-file` 时命令拒绝绑定非本机地址。更换令牌需重建凭据文件并重启服务。详见 [部署与恢复](docs/OPERATIONS.md)。
 
 ## 完整工作流
 
