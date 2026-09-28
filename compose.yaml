@@ -1,6 +1,7 @@
 services:
   conductor:
     build: .
+    user: "${BACKBONE_UID:-0}:${BACKBONE_GID:-0}"
     ports:
       - "127.0.0.1:${BACKBONE_PORT:-8000}:8000"
     volumes:

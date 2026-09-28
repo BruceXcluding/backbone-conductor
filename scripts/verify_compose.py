@@ -11,7 +11,7 @@ import tempfile
 import time
 from http.client import HTTPException
 from pathlib import Path
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from backbone_conductor.auth import create_token_file, rotate_token_file
@@ -78,7 +78,7 @@ def wait_healthy(port: int) -> None:
         try:
             if request(port, "/health")[0] == 200:
                 return
-        except (URLError, TimeoutError, HTTPException):
+        except (OSError, HTTPException):
             pass
         time.sleep(0.2)
     raise AssertionError(f"Compose service on port {port} did not become healthy")
@@ -96,6 +96,8 @@ def setup_repo(repo: Path) -> None:
 def verify_inline(project: str, repo: Path, auth_dir: Path, old_token: str, port: int) -> str:
     env = {**os.environ, "BACKBONE_REPO": str(repo), "BACKBONE_AUTH_DIR": str(auth_dir)}
     env["BACKBONE_PORT"] = str(port)
+    env["BACKBONE_UID"] = str(os.getuid())
+    env["BACKBONE_GID"] = str(os.getgid())
     compose(project, env, "build")
     try:
         compose(project, env, "run", "--rm", "conductor", "--repo", "/workspace", "init")
@@ -125,6 +127,8 @@ def verify_inline(project: str, repo: Path, auth_dir: Path, old_token: str, port
 def verify_separate(project: str, repo: Path, auth_dir: Path, token: str, port: int) -> None:
     env = {**os.environ, "BACKBONE_REPO": str(repo), "BACKBONE_AUTH_DIR": str(auth_dir)}
     env["BACKBONE_PORT"] = str(port)
+    env["BACKBONE_UID"] = str(os.getuid())
+    env["BACKBONE_GID"] = str(os.getgid())
     initial_head = git(repo, "rev-parse", "HEAD")
     try:
         compose(

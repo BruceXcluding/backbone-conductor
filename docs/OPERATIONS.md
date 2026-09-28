@@ -30,12 +30,14 @@ export BACKBONE_AUTH_DIR=/private/path/backbone-auth
 mkdir -m 700 "$BACKBONE_AUTH_DIR"
 backbone --repo "$BACKBONE_REPO" auth create \
   --file "$BACKBONE_AUTH_DIR/backbone-http-tokens.json" --admin owner
+export BACKBONE_UID="$(id -u)"
+export BACKBONE_GID="$(id -g)"
 docker compose build
 docker compose run --rm conductor --repo /workspace init
 docker compose up -d
 ```
 
-目录须预先创建并仅允许受信任用户访问；`auth create` 只输出一次明文令牌。已有凭据文件无需再运行 `auth create`。默认端口为宿主 `127.0.0.1:8000`，可用 `BACKBONE_PORT` 改变宿主端口；容器内强制令牌认证。容器会写入挂载仓库，适合专用协调 checkout；仓库本地 Git identity 优先于镜像默认值。按宿主权限配置非 root UID 后用于长期运行，需确保该 UID 能读取私有令牌文件。容器不自动配置 Git 远端凭据。
+目录须预先创建并仅允许受信任用户访问；`auth create` 只输出一次明文令牌。已有凭据文件无需再运行 `auth create`。默认端口为宿主 `127.0.0.1:8000`，可用 `BACKBONE_PORT` 改变宿主端口；容器内强制令牌认证。容器会写入挂载仓库，适合专用协调 checkout；仓库本地 Git identity 优先于镜像默认值。上例让容器进程使用当前宿主用户的 UID/GID；须确保该用户可写仓库、遍历凭据目录并读取私有令牌文件。未设置这两个变量时容器仍以 root 运行。容器不自动配置 Git 远端凭据。
 
 独立元数据分支须在**固定的容器路径 `/workspace`** 内创建或附加，再用 override 启动；不要直接复用宿主创建的隐藏 worktree：
 
