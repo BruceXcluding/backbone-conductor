@@ -1,4 +1,4 @@
-# v0.26 实现说明
+# v0.27 实现说明
 
 | 范围 | 已实现行为 |
 | --- | --- |
@@ -68,6 +68,7 @@ Git 是唯一权威存储；进程重启直接恢复快照，当前不需要 SQL
 - [x] `serve --mcp-http` 可用同一私有令牌文件提供成员专用的无状态 Streamable HTTP MCP；本机真实客户端在 HTTP/可信 HTTPS 下验证握手、工具范围、身份绑定、Git 归属、轮换及 Host 拒绝。真实公网与不同自然人部署仍待验证。
 - [x] Compose 的内联/独立元数据分支均可叠加直接 HTTPS，Linux CI 实际运行并验证。
 - [x] 单个可选 Compose MCP override 适用于 HTTP/HTTPS 与内联/独立分支四种组合；真实成员 MCP 客户端验证令牌角色、轮换、持久化和 Git 审计。
+- [x] HTTPS 成员 MCP 在内联和独立元数据分支模式下，由无仓库及服务端凭据挂载的独立 Docker 客户端经 Compose 网络访问；验证证书主机名、允许的 Host、成员工具、写入和重启恢复。公网部署和不同自然人仍待验证。
 - [ ] 真实多人并发演练。
 - [x] DSH `sdk-minimal` 使用正式 MCP 客户端插件连接成员绑定的 Backbone stdio 服务；运行前真实握手检查工具范围与成员身份，独立工作区使用 `workspace-write` 策略；无模型 SDK 启动在 CI 验证。
 - [x] DSH 语义审查通过随请求提供 JSON 输入摆脱 shell 读取文件的需求；运行补丁禁用默认 bash/PowerShell 工具并设置只读文件策略，正式 SDK 的有效配置与无模型启动由 CI 检查。

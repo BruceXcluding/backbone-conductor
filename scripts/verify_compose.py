@@ -329,10 +329,50 @@ def create_test_certificate(directory: Path) -> Path:
         "-subj",
         "/CN=localhost",
         "-addext",
-        "subjectAltName=DNS:localhost,IP:127.0.0.1",
+        "subjectAltName=DNS:localhost,DNS:conductor,IP:127.0.0.1",
     )
     key.chmod(0o600)
     return certificate
+
+
+def verify_network_member(
+    project: str,
+    env: dict[str, str],
+    tls_dir: Path,
+    member_token: str,
+    intent_id: str,
+    *,
+    separate: bool,
+) -> None:
+    image = compose(
+        project, env, "images", "-q", "conductor", separate=separate, tls=True, mcp=True
+    )
+    assert image, "Compose service image is missing"
+    client_env = {
+        **os.environ,
+        "BACKBONE_TEST_TOKEN": member_token,
+        "BACKBONE_TEST_INTENT_ID": intent_id,
+    }
+    command(
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        f"{project}_default",
+        "--env",
+        "BACKBONE_TEST_TOKEN",
+        "--env",
+        "BACKBONE_TEST_INTENT_ID",
+        "--volume",
+        f"{tls_dir}:/certs:ro",
+        "--volume",
+        f"{PROJECT_ROOT / 'scripts' / 'verify_network_mcp_client.py'}:/probe.py:ro",
+        "--entrypoint",
+        "python",
+        image,
+        "/probe.py",
+        env=client_env,
+    )
 
 
 def verify_tls(
@@ -359,6 +399,7 @@ def verify_tls(
         "BACKBONE_TLS_PORT": str(port),
         "BACKBONE_UID": str(os.getuid()),
         "BACKBONE_GID": str(os.getgid()),
+        "BACKBONE_MCP_ALLOWED_HOSTS": "conductor:8000",
     }
     certificate = tls_dir / "server.crt"
     branch = "backbone" if separate else "HEAD"
@@ -384,6 +425,12 @@ def verify_tls(
         review_intent(port, intent_id, token, reviewer_token, certificate)
         mcp_intent_id = "tls-separate-mcp-intent" if separate else "tls-inline-mcp-intent"
         verify_member_mcp(port, member_token, mcp_intent_id, certificate)
+        network_intent_id = (
+            "tls-separate-network-intent" if separate else "tls-inline-network-intent"
+        )
+        verify_network_member(
+            project, env, tls_dir, member_token, network_intent_id, separate=separate
+        )
         assert git(repo, "rev-parse", branch) != ledger_head
         assert "Backbone-HTTP-Principal: alice" in git(repo, "log", "-1", branch, "--format=%B")
         assert git(repo, "status", "--porcelain") == ""
@@ -407,6 +454,7 @@ def verify_tls(
         status, state = request(port, "/state", token, certificate=certificate)
         assert status == 200 and state["intents"][intent_id]["status"] == "accepted"
         assert state["intents"][mcp_intent_id]["author"] == "alice"
+        assert state["intents"][network_intent_id]["author"] == "alice"
     except BaseException:
         try:
             print(
@@ -474,7 +522,7 @@ def main() -> None:
             member_token,
             separate=True,
         )
-    print("Compose HTTP and HTTPS inline and separate-ledger member MCP verification passed")
+    print("Compose HTTP/HTTPS, ledger, and isolated network member MCP verification passed")
 
 
 if __name__ == "__main__":
