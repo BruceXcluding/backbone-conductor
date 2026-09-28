@@ -120,3 +120,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 日期：2026-09-29。验证了启用 `commit.gpgsign=true` 后，普通元数据写入、分叉合并和内联快照迁移都生成可由 Git 验证的 SSH 签名提交；签名私钥缺失会回滚元数据事务。审计查询区分有效、未签名和无效签名，并报告检查上限及是否还有更早的提交未检查。CLI 严格模式对未签名或无效签名返回非零状态；HTTP 审查者可读取报告，管理员 MCP 可调用检查。`backbone log` 现在也展示审查者 HTTP 身份记录。可信密钥签名不能证明 Git author、HTTP principal 或自然人身份，真实多人身份验证仍待完成。
 
 强制执行真实 HTTP/HTTPS 用例的完整套件：**285 passed，1 个可选 DSH 用例 skipped，覆盖率 90.81%**。Ruff 检查与格式检查、合成评测 24/24、Git 示例、0.18.0 wheel/source distribution 构建、锁定开发环境离线同步及 wheel 独立导入通过。本环境隐藏 editable `.pth`，示例和源码测试使用 `PYTHONPATH=src`；本次未调用付费模型或做真实多人审查。
+
+## v0.19 可筛选审计时间线
+
+日期：2026-09-29。`backbone log` 与 HTTP `/timeline` 增加精确 Git author、已认证 HTTP principal、事件类型和带时区的 ISO 8601 起止时间筛选。先筛选再应用数量上限，因此可以取到较早的匹配提交；审查者仍可读、成员仍被拒绝。事件类型根据提交主题归类，时间来自 Git author 元数据，均不能作为独立验证的身份或事件事实。完整套件强制执行真实 HTTP/HTTPS 用例后 **286 passed，1 个可选 DSH 用例 skipped，覆盖率 90.84%**；Ruff、合成评测 24/24、Git 示例、0.19.0 wheel/source distribution 构建及隔离 wheel 导入通过。本机源码测试和示例继续使用 `PYTHONPATH=src`，因为环境隐藏 editable `.pth`。

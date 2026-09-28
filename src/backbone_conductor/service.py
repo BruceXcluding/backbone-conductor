@@ -739,8 +739,24 @@ class Conductor:
             change, f"backbone: task {task_id} merged and reviewed by {author}"
         )
 
-    def log(self, limit: int = 50) -> list[dict]:
-        return self.store.log(limit)
+    def log(
+        self,
+        limit: int = 50,
+        *,
+        author: str | None = None,
+        http_principal: str | None = None,
+        event_type: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[dict]:
+        return self.store.log(
+            limit,
+            author=author,
+            http_principal=http_principal,
+            event_type=event_type,
+            since=since,
+            until=until,
+        )
 
     def verify_audit_signatures(self, limit: int = 50) -> dict:
         return self.store.verify_audit_signatures(limit)

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .service import Conductor
+from .storage import AUDIT_EVENT_TYPES
 
 
 def _json_file(filename: str) -> dict[str, Any]:
@@ -154,6 +155,11 @@ def build_parser() -> argparse.ArgumentParser:
     updates.add_argument("--since-version")
     log = commands.add_parser("log")
     log.add_argument("--limit", type=int, default=50)
+    log.add_argument("--author", help="Exact Git author name")
+    log.add_argument("--http-principal", help="Exact authenticated HTTP principal")
+    log.add_argument("--type", dest="event_type", choices=AUDIT_EVENT_TYPES)
+    log.add_argument("--since", help="Inclusive ISO 8601 author timestamp with timezone")
+    log.add_argument("--until", help="Inclusive ISO 8601 author timestamp with timezone")
     audit = commands.add_parser("audit", help="Inspect Git audit commit signatures")
     audit_actions = audit.add_subparsers(dest="action", required=True)
     verify = audit_actions.add_parser("verify", help="Verify recent Backbone commit signatures")
@@ -329,7 +335,14 @@ def _run(args: argparse.Namespace) -> Any:
     if args.command == "log":
         if not 1 <= args.limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
-        return conductor.log(args.limit)
+        return conductor.log(
+            args.limit,
+            author=args.author,
+            http_principal=args.http_principal,
+            event_type=args.event_type,
+            since=args.since,
+            until=args.until,
+        )
     if args.command == "audit":
         return conductor.verify_audit_signatures(args.limit)
     raise ValueError(f"Unknown command: {args.command}")

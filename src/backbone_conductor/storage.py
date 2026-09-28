@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -27,6 +28,39 @@ from backbone_conductor.models import BackboneState, IntentStatus, TaskStatus
 
 T = TypeVar("T")
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\Z")
+AUDIT_EVENT_TYPES = (
+    "initialize",
+    "intent",
+    "decision",
+    "task",
+    "artifact",
+    "conflict",
+    "reconcile",
+    "migrate",
+    "other",
+)
+
+
+def _audit_event_type(message: str) -> str:
+    """Classify a commit subject for navigation, not as verified semantic evidence."""
+    if not message.startswith("backbone: "):
+        return "other"
+    category = message.removeprefix("backbone: ").split(" ", 1)[0]
+    if category == "conflicts":
+        category = "conflict"
+    return category if category in AUDIT_EVENT_TYPES else "other"
+
+
+def _audit_time(value: str | None, name: str) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StorageError(f"{name} must be an ISO 8601 timestamp with a timezone") from exc
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise StorageError(f"{name} must be an ISO 8601 timestamp with a timezone")
+    return timestamp
 
 
 class StorageError(RuntimeError):
@@ -331,9 +365,27 @@ class GitStore:
         finally:
             index_lock.unlink(missing_ok=True)
 
-    def log(self, limit: int = 50) -> list[dict[str, str]]:
+    def log(
+        self,
+        limit: int = 50,
+        *,
+        author: str | None = None,
+        http_principal: str | None = None,
+        event_type: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> list[dict[str, str]]:
         if not isinstance(limit, int) or not 1 <= limit <= 1000:
             raise StorageError("Log limit must be between 1 and 1000")
+        if event_type is not None and event_type not in AUDIT_EVENT_TYPES:
+            raise StorageError(f"Unknown audit event type: {event_type!r}")
+        start = _audit_time(since, "since")
+        end = _audit_time(until, "until")
+        if start is not None and end is not None and start > end:
+            raise StorageError("since must not be after until")
+        filtered = any(
+            value is not None for value in (author, http_principal, event_type, since, until)
+        )
         with self._lock:
             self._ensure_clean()
             if self._head() is None:
@@ -341,7 +393,7 @@ class GitStore:
             output = self._git(
                 "log",
                 "-z",
-                f"-{limit}",
+                *(() if filtered else (f"-{limit}",)),
                 "--format=%H%x00%an%x00%aI%x00%s%x00"
                 "%(trailers:key=Backbone-HTTP-Principal,valueonly)%x00"
                 "%(trailers:key=Backbone-HTTP-Role,valueonly)",
@@ -355,18 +407,35 @@ class GitStore:
                 raise StorageError("Could not parse Backbone Git audit log")
             entries = []
             for offset in range(0, len(fields), 6):
-                commit, author, timestamp, message, principal, role = fields[offset : offset + 6]
+                commit, git_author, timestamp, message, principal, role = fields[
+                    offset : offset + 6
+                ]
                 entry = {
                     "commit": commit,
-                    "author": author,
+                    "author": git_author,
                     "timestamp": timestamp,
                     "message": message,
+                    "event_type": _audit_event_type(message),
                 }
                 principal, role = principal.strip(), role.strip()
                 if principal and "\n" not in principal and role in {"admin", "member", "reviewer"}:
                     entry["http_principal"] = principal
                     entry["http_role"] = role
+                if author is not None and git_author != author:
+                    continue
+                if http_principal is not None and entry.get("http_principal") != http_principal:
+                    continue
+                if event_type is not None and entry["event_type"] != event_type:
+                    continue
+                if start is not None or end is not None:
+                    event_time = datetime.fromisoformat(timestamp)
+                    if start is not None and event_time < start:
+                        continue
+                    if end is not None and event_time > end:
+                        continue
                 entries.append(entry)
+                if len(entries) == limit:
+                    break
             return entries
 
     def verify_audit_signatures(self, limit: int = 50) -> dict[str, Any]:

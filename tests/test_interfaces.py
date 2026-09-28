@@ -199,7 +199,16 @@ def test_http_lifecycle_and_error_mapping(interface_repo: Path) -> None:
         )
         assert client.get("/tasks").json()["tasks"][0]["status"] == "in_progress"
         assert client.get("/timeline", params={"limit": 0}).status_code == 422
-        assert len(client.get("/timeline").json()) >= 4
+        assert client.get("/timeline", params={"event_type": "invalid"}).status_code == 422
+        assert client.get("/timeline", params={"since": "2026-09-29"}).status_code == 422
+        timeline = client.get("/timeline").json()
+        assert len(timeline) >= 4
+        exact_time = client.get(
+            "/timeline",
+            params={"since": timeline[0]["timestamp"], "until": timeline[0]["timestamp"]},
+        )
+        assert exact_time.status_code == 200
+        assert exact_time.json()[0]["commit"] == timeline[0]["commit"]
         assert client.get("/schema").status_code == 200
         assert client.get("/openapi.json").status_code == 200
 

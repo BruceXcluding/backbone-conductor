@@ -296,6 +296,24 @@ def test_reviewer_can_review_others_intent_with_bound_identity(
         assert timeline.status_code == 200
         assert timeline.json()[0]["http_principal"] == "carol"
         assert timeline.json()[0]["http_role"] == "reviewer"
+        filtered = client.get(
+            "/timeline",
+            headers=auth_header(CAROL_TOKEN),
+            params={"http_principal": "carol", "event_type": "intent", "limit": 1},
+        )
+        assert filtered.status_code == 200
+        assert len(filtered.json()) == 1
+        assert filtered.json()[0]["http_principal"] == "carol"
+        assert filtered.json()[0]["event_type"] == "intent"
+        older = client.get(
+            "/timeline",
+            headers=auth_header(CAROL_TOKEN),
+            params={"http_principal": "alice", "limit": 1},
+        )
+        assert older.status_code == 200
+        assert len(older.json()) == 1
+        assert older.json()[0]["http_principal"] == "alice"
+        assert client.get("/timeline", headers=auth_header(ALICE_TOKEN)).status_code == 403
         assert client.get("/audit/verify", headers=auth_header(ALICE_TOKEN)).status_code == 403
         audit = client.get("/audit/verify", headers=auth_header(CAROL_TOKEN))
         assert audit.status_code == 200

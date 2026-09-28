@@ -140,6 +140,62 @@ def test_audit_reports_unsigned_history_and_strict_cli_fails(repo: Path, capsys)
     assert json.loads(capsys.readouterr().out)["all_inspected_signed_and_valid"] is False
 
 
+def test_log_filters_author_type_and_time_before_limit(repo: Path, monkeypatch, capsys):
+    store = GitStore(repo)
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-27T09:00:00+00:00")
+    store.init()
+    git(repo, "config", "user.name", "Alice")
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-28T09:00:00+00:00")
+    Conductor(repo).create_intent(
+        {"id": "intent-one", "author": "alice", "problem": "One", "proposed_outcome": "One"}
+    )
+    git(repo, "config", "user.name", "Bob")
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-29T09:00:00+00:00")
+    Conductor(repo).log_decision(
+        {
+            "id": "decision-one",
+            "author": "bob",
+            "decision_type": "architecture",
+            "summary": "Use one parser",
+            "rationale": "Reuse",
+        }
+    )
+    git(repo, "config", "user.name", "Alice")
+    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-30T09:00:00+00:00")
+    Conductor(repo).create_intent(
+        {"id": "intent-two", "author": "alice", "problem": "Two", "proposed_outcome": "Two"}
+    )
+
+    assert [entry["event_type"] for entry in store.log()] == [
+        "intent",
+        "decision",
+        "intent",
+        "initialize",
+    ]
+    assert [entry["message"] for entry in store.log(1, author="Alice", event_type="intent")] == [
+        "backbone: intent intent-two created by alice"
+    ]
+    assert [entry["author"] for entry in store.log(2, author="Alice")] == ["Alice", "Alice"]
+    assert [entry["message"] for entry in store.log(since="2026-09-28T09:00:00Z")] == [
+        "backbone: intent intent-two created by alice",
+        "backbone: decision decision-one proposed by bob",
+        "backbone: intent intent-one created by alice",
+    ]
+    assert [entry["event_type"] for entry in store.log(until="2026-09-28T09:00:00Z")] == [
+        "intent",
+        "initialize",
+    ]
+    assert store.log(http_principal="alice") == []
+    assert main(["--repo", str(repo), "log", "--type", "decision", "--author", "Bob"]) == 0
+    assert [entry["event_type"] for entry in json.loads(capsys.readouterr().out)] == ["decision"]
+    with pytest.raises(StorageError, match="timezone"):
+        store.log(since="2026-09-28T09:00:00")
+    with pytest.raises(StorageError, match="since must not be after until"):
+        store.log(since="2026-09-30T09:00:00Z", until="2026-09-28T09:00:00Z")
+    with pytest.raises(StorageError, match="Unknown audit event type"):
+        store.log(event_type="unknown")
+
+
 @pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="ssh-keygen unavailable")
 def test_commit_tree_honors_git_signing_and_verifies_trust(repo: Path, tmp_path: Path, capsys):
     key = tmp_path / "audit-signing-key"

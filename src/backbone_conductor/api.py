@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -406,8 +407,31 @@ def create_app(
         )
 
     @app.get("/timeline")
-    def timeline(limit: int = Query(default=50, ge=1, le=1000)) -> list[dict]:
-        return conductor.log(limit)
+    def timeline(
+        limit: int = Query(default=50, ge=1, le=1000),
+        author: str | None = None,
+        http_principal: str | None = None,
+        event_type: str | None = Query(
+            default=None,
+            pattern="^(initialize|intent|decision|task|artifact|conflict|reconcile|migrate|other)$",
+        ),
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[dict]:
+        if (since is not None and since.tzinfo is None) or (
+            until is not None and until.tzinfo is None
+        ):
+            raise ValueError("Timeline dates must include a timezone")
+        if since is not None and until is not None and since > until:
+            raise ValueError("since must not be after until")
+        return conductor.log(
+            limit,
+            author=author,
+            http_principal=http_principal,
+            event_type=event_type,
+            since=since.isoformat() if since is not None else None,
+            until=until.isoformat() if until is not None else None,
+        )
 
     @app.get("/audit/verify")
     def verify_audit(limit: int = Query(default=50, ge=1, le=1000)) -> dict:
