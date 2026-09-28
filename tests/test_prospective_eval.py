@@ -10,11 +10,137 @@ from pathlib import Path
 
 import pytest
 
+from backbone_conductor.ledger import create_ledger
+from backbone_conductor.service import Conductor
+
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "evaluate_prospective.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from evaluate_prospective import freeze, score  # noqa: E402
+from evaluate_prospective import capture, freeze, score  # noqa: E402
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def _capture_repo(tmp_path: Path, *, separate_ledger: bool = False) -> Path:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.name", "Study")
+    _git(repo, "config", "user.email", "study@example.invalid")
+    (repo / "app.py").write_text("value = 1\n")
+    _git(repo, "add", "app.py")
+    _git(repo, "commit", "-m", "Initial code")
+    if separate_ledger:
+        create_ledger(repo)
+        conductor = Conductor(repo, ledger_branch="backbone")
+    else:
+        conductor = Conductor(repo)
+        conductor.initialize()
+    for name, path in (
+        ("alice", "src/shared.py"),
+        ("bob", "src/shared.py"),
+        ("carol", "src/other.py"),
+    ):
+        conductor.create_intent(
+            {
+                "id": f"intent-{name}",
+                "author": name,
+                "problem": f"Plan {name}'s work",
+                "proposed_outcome": "Complete the planned change",
+                "affected_paths": [path],
+            }
+        )
+    return repo
+
+
+def test_capture_freezes_all_unassigned_pairs_from_real_git_baseline(tmp_path: Path):
+    repo = _capture_repo(tmp_path)
+    dataset = tmp_path / "cases.json"
+    predictions = tmp_path / "predictions.json"
+    baseline = _git(repo, "rev-parse", "HEAD")
+    command = subprocess.run(
+        [
+            sys.executable,
+            str(RUNNER),
+            "capture",
+            "--repo",
+            str(repo),
+            "--project",
+            "example/project",
+            "--sampling",
+            "All unassigned pairs at this snapshot",
+            "--dataset",
+            str(dataset),
+            "--predictions",
+            str(predictions),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert command.returncode == 0, command.stderr
+    result = json.loads(command.stdout)
+    assert result["case_count"] == 3
+    assert result["base_sha"] == baseline
+    assert result["backbone_version"] == Conductor(repo).state()["version"]
+    data = json.loads(dataset.read_text())
+    assert len(data["cases"]) == 3
+    assert {case["base_sha"] for case in data["cases"]} == {baseline}
+    assert all(len({item["author"] for item in case["intents"]}) == 2 for case in data["cases"])
+    frozen = json.loads(predictions.read_text())
+    assert sum(bool(case["findings"]) for case in frozen["cases"]) == 1
+    assert dataset.stat().st_mode & 0o777 == 0o600
+    assert predictions.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(FileExistsError):
+        capture(repo, "example/project", "Same snapshot", dataset, predictions)
+    assert _git(repo, "status", "--porcelain") == ""
+
+
+def test_capture_rejects_dirty_or_public_checkout_outputs(tmp_path: Path):
+    repo = _capture_repo(tmp_path)
+    dataset = tmp_path / "cases.json"
+    predictions = tmp_path / "predictions.json"
+    with pytest.raises(ValueError, match="outside the public code repository"):
+        capture(repo, "example/project", "All pairs", repo / "cases.json", predictions)
+    (repo / "untracked.txt").write_text("unfinished work\n")
+    with pytest.raises(ValueError, match="clean"):
+        capture(repo, "example/project", "All pairs", dataset, predictions)
+    assert not dataset.exists() and not predictions.exists()
+
+
+def test_capture_excludes_reopened_intents_with_task_history(tmp_path: Path):
+    repo = _capture_repo(tmp_path)
+    conductor = Conductor(repo)
+    conductor.transition_intent("intent-carol", "accepted")
+    task = conductor.dispatch_task("intent-carol", "carol")
+    conductor.cancel_task(task["id"], "coordinator", "Replan before implementation")
+    assert conductor.state()["intents"]["intent-carol"]["status"] == "accepted"
+    dataset = tmp_path / "cases.json"
+    capture(repo, "example/project", "All eligible pairs", dataset, tmp_path / "predictions.json")
+    assert [case["id"] for case in json.loads(dataset.read_text())["cases"]] == [
+        "pair-intent-alice-intent-bob"
+    ]
+
+
+def test_capture_separate_ledger_records_code_baseline(tmp_path: Path):
+    repo = _capture_repo(tmp_path, separate_ledger=True)
+    code_sha = _git(repo, "rev-parse", "HEAD")
+    result = capture(
+        repo,
+        "example/project",
+        "All unassigned pairs in the separate ledger",
+        tmp_path / "cases.json",
+        tmp_path / "predictions.json",
+        ledger_branch="backbone",
+    )
+    assert result["base_sha"] == code_sha
+    assert result["backbone_version"] != code_sha
+    assert _git(repo, "status", "--porcelain") == ""
 
 
 def _case(identifier: str, left_path: str, right_path: str) -> dict:

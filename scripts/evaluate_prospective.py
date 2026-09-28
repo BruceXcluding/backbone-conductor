@@ -9,7 +9,9 @@ import json
 import os
 import re
 import sys
+import tempfile
 from datetime import UTC, datetime
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from backbone_conductor.conflicts import detect_conflicts  # noqa: E402
 from backbone_conductor.models import BackboneState, Intent, IntentStatus  # noqa: E402
+from backbone_conductor.service import Conductor  # noqa: E402
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 LIMITATION = (
@@ -99,6 +102,99 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _write_exclusive(path: Path, value: dict[str, Any]) -> None:
+    """Publish a complete private JSON file without replacing an existing artifact."""
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=".backbone-study-", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            os.chmod(temporary, 0o600)
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def capture(
+    repo: Path,
+    project: str,
+    sampling: str,
+    dataset: Path,
+    predictions: Path,
+    ledger_branch: str | None = None,
+) -> dict[str, Any]:
+    """Capture all currently unassigned pre-work intent pairs and freeze warnings."""
+    conductor = Conductor(repo, ledger_branch=ledger_branch)
+    root = conductor.code_store.root
+    if not dataset.is_absolute() or not predictions.is_absolute():
+        raise ValueError("dataset and predictions must use absolute private paths")
+    if dataset.resolve() == predictions.resolve():
+        raise ValueError("dataset and predictions must be different files")
+    if any(path.resolve().is_relative_to(root) for path in (dataset, predictions)):
+        raise ValueError("study files must be outside the public code repository")
+    _nonempty(project, "project")
+    _nonempty(sampling, "sampling")
+    if dataset.exists() or predictions.exists():
+        raise FileExistsError("study outputs already exist; capture never overwrites evidence")
+    if conductor.code_store._git("status", "--porcelain", "--untracked-files=all").stdout:
+        raise ValueError("code worktree must be clean before capturing a baseline")
+    base_sha = conductor.code_store._git("rev-parse", "--verify", "HEAD^{commit}").stdout.strip()
+    state = conductor.store.read()
+    assigned = {task.intent_id for task in state.tasks.values()}
+    eligible = sorted(
+        (
+            intent
+            for intent in state.intents.values()
+            if intent.status in {IntentStatus.DRAFT, IntentStatus.ACCEPTED}
+            and intent.id not in assigned
+        ),
+        key=lambda intent: intent.id,
+    )
+    captured_at = datetime.now(UTC)
+    cases = [
+        {
+            "id": f"pair-{left.id}-{right.id}",
+            "project": project,
+            "base_sha": base_sha,
+            "captured_at": captured_at.isoformat(),
+            "intents": [left.model_dump(mode="json"), right.model_dump(mode="json")],
+        }
+        for left, right in combinations(eligible, 2)
+        if left.author != right.author
+    ]
+    if not cases:
+        raise ValueError("no eligible unassigned intent pairs with distinct authors")
+    if any(intent.created_at > captured_at for intent in eligible):
+        raise ValueError("an intent timestamp is after capture time")
+    if (
+        conductor.code_store._git("rev-parse", "--verify", "HEAD^{commit}").stdout.strip()
+        != base_sha
+    ):
+        raise ValueError("code HEAD changed during capture")
+    if conductor.store.read().version != state.version:
+        raise ValueError("Backbone state changed during capture")
+    data = {"schema_version": 1, "sampling": sampling, "cases": cases}
+    _write_exclusive(dataset, data)
+    try:
+        frozen = freeze(dataset, predictions)
+    except Exception:
+        dataset.unlink()
+        raise
+    return {
+        "case_count": len(cases),
+        "base_sha": base_sha,
+        "backbone_version": state.version,
+        "dataset_sha256": frozen["dataset_sha256"],
+        "predictions_sha256": _digest(predictions),
+    }
+
+
 def freeze(dataset: Path, output: Path) -> dict[str, Any]:
     data, cases = _dataset(dataset)
     detector = hashlib.sha256()
@@ -127,11 +223,7 @@ def freeze(dataset: Path, output: Path) -> dict[str, Any]:
             if not item.resolved
         ]
         frozen["cases"].append({"id": case["id"], "findings": findings})
-    with output.open("x", encoding="utf-8") as stream:
-        json.dump(frozen, stream, ensure_ascii=False, indent=2)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    _write_exclusive(output, frozen)
     return frozen
 
 
@@ -307,6 +399,16 @@ def score(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     actions = parser.add_subparsers(dest="action", required=True)
+    capture_command = actions.add_parser(
+        "capture",
+        help="Capture all unassigned intent pairs from a clean Git checkout and freeze them",
+    )
+    capture_command.add_argument("--repo", type=Path, required=True)
+    capture_command.add_argument("--ledger-branch")
+    capture_command.add_argument("--project", required=True)
+    capture_command.add_argument("--sampling", required=True)
+    capture_command.add_argument("--dataset", type=Path, required=True)
+    capture_command.add_argument("--predictions", type=Path, required=True)
     freeze_command = actions.add_parser("freeze", help="Freeze predictions before human labeling")
     freeze_command.add_argument("--dataset", type=Path, required=True)
     freeze_command.add_argument("--output", type=Path, required=True)
@@ -318,6 +420,17 @@ def main(argv: list[str] | None = None) -> int:
     score_command.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.action == "capture":
+            result = capture(
+                args.repo,
+                args.project,
+                args.sampling,
+                args.dataset,
+                args.predictions,
+                args.ledger_branch,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
         if args.action == "freeze":
             frozen = freeze(args.dataset, args.output)
             print(f"Frozen {len(frozen['cases'])} cases to {args.output}")

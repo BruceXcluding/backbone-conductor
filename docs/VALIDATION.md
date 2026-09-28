@@ -194,3 +194,9 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 日期：2026-09-29。成员可通过 MCP `fetch_artifact_branch`、HTTP `POST /tasks/{task_id}/fetch` 或 CLI `task fetch` 请求协调端从已配置 Git remote 获取自己任务的功能分支。请求必须给出完整小写提交 SHA；获取先写入临时引用，核对远端 tip，再只允许快进远端跟踪引用。Git 默认 refmap 会在验证前隐式更新跟踪引用，因此实现显式使用空 `--refmap=`；端到端测试验证错误 SHA、正常快进、强推改写和身份冒用分别被拒绝或正确处理。`submit_artifact` 若携带 `commit_sha`，则必须与 Git 实际解析的提交一致；真实路径和检查仍由协调端计算。获取操作不切换 HEAD，也不产生元数据审计提交。
 
 强制执行真实 HTTP/HTTPS 的完整本机套件 **316 passed，2 个 DSH 专项用例 skipped，覆盖率 89.71%**；增加正常快进用例后另单独重跑该跨克隆测试 **1 passed**。Ruff 检查与格式检查、锁文件检查、24/24 合成规则评测、四例历史 Git 合并回放、示例、0.32.0 source distribution/wheel 构建及 wheel 导入通过。Compose 的 HTTP/HTTPS、独立元数据分支与隔离网络成员 MCP 验证亦通过，两个部署检查器已更新为八工具契约。上述多人角色仍由同一测试进程模拟；真实不同自然人、公网部署和前瞻人工标签尚未验证。
+
+## v0.33 从 Git 与 Backbone 快照采集前瞻评测案例
+
+日期：2026-09-29。`evaluate_prospective.py capture` 从干净代码工作树与当前 Backbone 快照生成未分派、无任务历史、不同作者的所有意图配对；使用真实代码 HEAD 作为共同基线，并立即运行现有预测冻结。输出要求仓库外绝对路径，采用不覆盖的私有文件创建。新增测试验证真实 Git 基线、三意图的完整配对、预测结果、已取消任务历史的排除、脏工作树/仓库内输出拒绝，以及独立元数据分支使用代码而非账本 HEAD。手工采样计划、外部时间戳与事后独立人工标签仍必需；自动采集不构成真实检测率数据。
+
+强制执行真实 HTTP/HTTPS 的本机完整套件 **320 passed，2 个 DSH 专项用例 skipped，覆盖率 89.71%**；Ruff、锁文件检查、24/24 合成规则评测、四例历史 Git 合并回放、示例、0.33.0 source distribution/wheel 构建及 wheel 导入通过。

@@ -4,6 +4,19 @@
 
 先写采样方案：项目范围、纳入/排除标准、连续收集的起止时间、任务对如何产生、标签定义，以及预期负例来源。不要按已知冲突或检测结果挑样本。每条 case 固定一个项目、同一代码基线的完整 Git SHA、采集时间和两份工作开始前的意图。意图字段遵循 `Intent` 模型，必须显式写 `id`、`author`、`created_at`；作者不同、状态为 `draft` 或 `accepted`，创建时间不晚于采集时间。路径和符号范围须按当时的计划声明，不能在完成代码后回填实际改动。
 
+已有 Backbone 仓库可在工作开始、任务分派之前，从当前记录中一次采集**全部**合格配对并立即冻结预测：
+
+```sh
+python scripts/evaluate_prospective.py capture \
+  --repo /absolute/project-checkout \
+  --project owner/project \
+  --sampling '事前固定的纳入窗口与所有候选配对规则' \
+  --dataset /private/study/cases.json \
+  --predictions /private/study/predictions.json
+```
+
+独立元数据分支增加 `--ledger-branch backbone`。`capture` 要求代码工作树干净，只选择当前 `draft` 或 `accepted`、**从未有任务记录**的意图，并生成不同作者之间的所有配对；若没有合格配对则失败。它从代码 HEAD 取得 `base_sha`，返回 Backbone 快照版本和两个文件的 SHA-256。输出必须是仓库外的绝对路径，以私有权限新建，不覆盖已有文件。采样文字仍需人工预先制定；重复快照、事前已有仓库外代码工作、伪造作者或时间戳都不能靠该命令排除。生成后应立刻将数据与预测固定在私有证据仓库或可信时间戳存储，再开始工作。
+
 数据文件放在适当的**私有**位置。例如：
 
 ```json
