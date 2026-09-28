@@ -1,6 +1,6 @@
 # Backbone Conductor 架构设计
 
-> **实现状态**：本文为原始设计草案。当前可运行架构及差异见 [v0.1 实现说明](docs/IMPLEMENTATION.md)。其中 DSH Python 插件伪代码、MCP client 充当 server、SQLite 与独立 backbone 分支尚不代表实际实现。
+> **实现状态**：本文为原始设计草案。当前可运行架构及差异见 [实现说明](docs/IMPLEMENTATION.md)。其中 DSH Python 插件伪代码、MCP client 充当 server、SQLite 与独立 backbone 分支尚不代表实际实现。
 
 > **版本**：v1.0
 > **状态**：草案——待团队评审

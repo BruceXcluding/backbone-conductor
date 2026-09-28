@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from backbone_conductor.models import Decision, Intent, Task
+from backbone_conductor.service import Conductor
 from backbone_conductor.storage import GitStore, StorageError
 
 
@@ -332,6 +333,100 @@ def test_explicit_sync_pushes_to_local_remote(repo: Path, tmp_path: Path):
         store.sync("--force")
     with pytest.raises(StorageError, match="Invalid destination branch"):
         store.sync(branch="main:other")
+
+
+def clone_pair(repo: Path, tmp_path: Path) -> tuple[GitStore, GitStore, Path]:
+    first = GitStore(repo)
+    first.init()
+    remote = tmp_path / "shared.git"
+    remote.mkdir()
+    git(remote, "init", "--bare")
+    git(repo, "remote", "add", "origin", str(remote))
+    first.sync()
+    second_path = tmp_path / "second"
+    subprocess.run(
+        ["git", "clone", "--branch", "main", str(remote), str(second_path)],
+        check=True,
+        capture_output=True,
+    )
+    git(second_path, "config", "user.name", "Second Clone")
+    git(second_path, "config", "user.email", "second@example.test")
+    return first, GitStore(second_path), remote
+
+
+def test_refresh_fast_forwards_peer_metadata_and_preserves_history(repo: Path, tmp_path: Path):
+    first, second, remote = clone_pair(repo, tmp_path)
+    baseline = second.read().version
+    first.mutate(lambda state: state.sessions.update({"alice": {"value": 1}}), "alice update")
+    first.sync()
+    result = Conductor(second.root).refresh()
+    assert result["status"] == "fast_forwarded"
+    assert result["local_version"] == baseline
+    assert result["remote_version"] == first.read().version
+    assert result["version"] == first.read().version
+    assert second.read().sessions == {"alice": {"value": 1}}
+    assert git(second.root, "rev-parse", "HEAD") == git(remote, "rev-parse", "main")
+    assert git(second.root, "status", "--porcelain") == ""
+    assert git(second.root, "for-each-ref", "--format=%(refname)", "refs/backbone/fetch") == ""
+    assert second.refresh()["status"] == "up_to_date"
+
+
+def test_refresh_reports_local_ahead_and_divergent_objects_without_rewriting(
+    repo: Path, tmp_path: Path
+):
+    first, second, remote = clone_pair(repo, tmp_path)
+    second.mutate(lambda state: state.sessions.update({"bob": {"value": 2}}), "bob update")
+    local_head = git(second.root, "rev-parse", "HEAD")
+    ahead = second.refresh()
+    assert ahead["status"] == "local_ahead"
+    assert ahead["updated"] is False
+    assert git(second.root, "rev-parse", "HEAD") == local_head
+
+    first.mutate(lambda state: state.sessions.update({"alice": {"value": 1}}), "alice update")
+    first.sync()
+    remote_head = git(remote, "rev-parse", "main")
+    divergent = second.refresh()
+    assert divergent["status"] == "diverged"
+    assert divergent["updated"] is False
+    assert divergent["local_objects"]["sessions"] == ["bob"]
+    assert divergent["remote_objects"]["sessions"] == ["alice"]
+    assert divergent["overlapping_objects"]["sessions"] == []
+    assert ".backbone/state.json" in divergent["overlapping_paths"]
+    assert git(second.root, "rev-parse", "HEAD") == local_head
+    assert git(remote, "rev-parse", "main") == remote_head
+    with pytest.raises(StorageError, match="failed"):
+        second.sync()
+
+
+def test_refresh_rejects_dirty_worktree_before_fast_forward(repo: Path, tmp_path: Path):
+    first, second, _ = clone_pair(repo, tmp_path)
+    first.mutate(lambda state: state.sessions.update({"alice": {}}), "alice update")
+    first.sync()
+    before = git(second.root, "rev-parse", "HEAD")
+    (second.root / "notes.txt").write_text("keep this local file\n")
+    with pytest.raises(StorageError, match="clean worktree"):
+        second.refresh()
+    assert git(second.root, "rev-parse", "HEAD") == before
+    assert (second.root / "notes.txt").read_text() == "keep this local file\n"
+
+
+def test_refresh_rejects_invalid_remote_state_before_checkout(repo: Path, tmp_path: Path):
+    first, second, _ = clone_pair(repo, tmp_path)
+    before = git(second.root, "rev-parse", "HEAD")
+    (first.root / ".backbone/state.json").write_text('{"invalid": true}\n')
+    git(first.root, "add", ".backbone/state.json")
+    git(first.root, "commit", "-m", "invalid external metadata")
+    git(first.root, "push", "origin", "main")
+    with pytest.raises(StorageError, match="Invalid Backbone state"):
+        second.refresh()
+    assert git(second.root, "rev-parse", "HEAD") == before
+    assert second.read().version == before
+
+
+def test_refresh_requires_current_branch(repo: Path, tmp_path: Path):
+    _, second, _ = clone_pair(repo, tmp_path)
+    with pytest.raises(StorageError, match="checked-out branch"):
+        second.refresh(branch="other")
 
 
 def test_diff_includes_rename_source_and_destination_for_scope_checks(repo: Path):

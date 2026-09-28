@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
@@ -339,19 +340,7 @@ class GitStore:
         """Explicitly push the current branch; never pull or force-push."""
         with self._lock:
             state = self._read()
-            remotes = self._git("remote").stdout.splitlines()
-            if remote.startswith("-") or remote not in remotes:
-                raise StorageError(f"Unknown Git remote: {remote!r}")
-            if branch is None:
-                result = self._git("symbolic-ref", "--quiet", "--short", "HEAD", check=False)
-                if result.returncode:
-                    raise StorageError("Detached HEAD requires an explicit destination branch")
-                branch = result.stdout.strip()
-            if (
-                branch.startswith("-")
-                or self._git("check-ref-format", f"refs/heads/{branch}", check=False).returncode
-            ):
-                raise StorageError(f"Invalid destination branch: {branch!r}")
+            _, branch = self._remote_branch(remote, branch)
             result = self._git(
                 "push", "--porcelain", "--", remote, f"HEAD:refs/heads/{branch}", timeout=120
             )
@@ -362,6 +351,145 @@ class GitStore:
                 "version": state.version,
                 "detail": result.stdout.strip(),
             }
+
+    def _remote_branch(self, remote: str, branch: str | None) -> tuple[str, str]:
+        remotes = self._git("remote").stdout.splitlines()
+        if remote.startswith("-") or remote not in remotes:
+            raise StorageError(f"Unknown Git remote: {remote!r}")
+        current = self._git("symbolic-ref", "--quiet", "--short", "HEAD", check=False)
+        current_branch = current.stdout.strip() if current.returncode == 0 else ""
+        if branch is None:
+            if not current_branch:
+                raise StorageError("Detached HEAD requires an explicit destination branch")
+            branch = current_branch
+        if (
+            branch.startswith("-")
+            or self._git("check-ref-format", f"refs/heads/{branch}", check=False).returncode
+        ):
+            raise StorageError(f"Invalid destination branch: {branch!r}")
+        return current_branch, branch
+
+    def _state_at(self, revision: str) -> BackboneState:
+        result = self._git("show", f"{revision}:.backbone/state.json", check=False)
+        if result.returncode:
+            raise StorageError(f"Remote history has no Backbone state at {revision}")
+        try:
+            return BackboneState.model_validate(json.loads(result.stdout))
+        except ValueError as exc:
+            raise StorageError(f"Invalid Backbone state in remote history: {exc}") from exc
+
+    @staticmethod
+    def _object_delta(before: BackboneState, after: BackboneState) -> dict[str, list[str]]:
+        return {
+            collection: sorted(
+                key
+                for key in set(getattr(before, collection)) | set(getattr(after, collection))
+                if getattr(before, collection).get(key) != getattr(after, collection).get(key)
+            )
+            for collection in ("intents", "decisions", "conflicts", "tasks", "sessions")
+        }
+
+    def _changed_paths(self, before: str, after: str) -> list[str]:
+        output = self._git("diff", "--name-only", "-z", before, after, "--").stdout
+        return sorted(path for path in output.split("\x00") if path)
+
+    def refresh(self, remote: str = "origin", branch: str | None = None) -> dict[str, Any]:
+        """Fetch a peer branch and fast-forward only; describe divergence for review."""
+        with self._lock:
+            local_state = self._read()
+            current_branch, branch = self._remote_branch(remote, branch)
+            if branch != current_branch:
+                raise StorageError("Refresh destination must match the checked-out branch")
+            local_head = self._head()
+            if local_head is None:
+                raise StorageError("Refresh requires a local commit")
+            temporary_ref = f"refs/backbone/fetch/{uuid.uuid4().hex}"
+            try:
+                self._git(
+                    "fetch",
+                    "--no-tags",
+                    remote,
+                    f"refs/heads/{branch}:{temporary_ref}",
+                    timeout=120,
+                )
+                remote_head = self._resolve_revision(temporary_ref)
+                remote_state = self._state_at(remote_head)
+                remote_version = (
+                    self._git(
+                        "log", "-1", "--format=%H", remote_head, "--", ".backbone"
+                    ).stdout.strip()
+                    or None
+                )
+                if not remote_version:
+                    raise StorageError("Remote branch has no Backbone audit commit")
+                if self._head() != local_head:
+                    raise StorageError("Local branch changed during refresh; retry")
+                result: dict[str, Any] = {
+                    "remote": remote,
+                    "branch": branch,
+                    "local_head": local_head,
+                    "remote_head": remote_head,
+                    "local_version": local_state.version,
+                    "remote_version": remote_version,
+                }
+                if local_head == remote_head:
+                    return {**result, "status": "up_to_date", "updated": False}
+                if (
+                    self._git(
+                        "merge-base", "--is-ancestor", local_head, remote_head, check=False
+                    ).returncode
+                    == 0
+                ):
+                    if self._git("status", "--porcelain=v1", "--untracked-files=all").stdout:
+                        raise StorageError("Fast-forward requires a clean worktree and index")
+                    self._git("merge", "--ff-only", "--no-edit", remote_head)
+                    updated = self._read()
+                    return {
+                        **result,
+                        "status": "fast_forwarded",
+                        "updated": True,
+                        "version": updated.version,
+                    }
+                if (
+                    self._git(
+                        "merge-base", "--is-ancestor", remote_head, local_head, check=False
+                    ).returncode
+                    == 0
+                ):
+                    return {**result, "status": "local_ahead", "updated": False}
+                base = self._git("merge-base", local_head, remote_head, check=False)
+                if base.returncode:
+                    return {
+                        **result,
+                        "status": "unrelated",
+                        "updated": False,
+                        "detail": "Histories do not share an ancestor; inspect manually.",
+                    }
+                base_head = base.stdout.strip()
+                base_state = self._state_at(base_head)
+                local_delta = self._object_delta(base_state, local_state)
+                remote_delta = self._object_delta(base_state, remote_state)
+                local_paths = self._changed_paths(base_head, local_head)
+                remote_paths = self._changed_paths(base_head, remote_head)
+                overlap = {
+                    kind: sorted(set(local_delta[kind]) & set(remote_delta[kind]))
+                    for kind in local_delta
+                }
+                return {
+                    **result,
+                    "status": "diverged",
+                    "updated": False,
+                    "base_head": base_head,
+                    "local_objects": local_delta,
+                    "remote_objects": remote_delta,
+                    "overlapping_objects": overlap,
+                    "local_paths": local_paths,
+                    "remote_paths": remote_paths,
+                    "overlapping_paths": sorted(set(local_paths) & set(remote_paths)),
+                    "detail": "Review and merge divergent Git history manually; no metadata was combined.",
+                }
+            finally:
+                self._git("update-ref", "-d", temporary_ref, check=False)
 
     def _resolve_revision(self, revision: str) -> str:
         if not revision or revision.startswith("-") or "\x00" in revision:

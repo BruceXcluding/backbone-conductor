@@ -196,6 +196,7 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
                 "merge_task",
                 "revise_intent",
                 "cancel_task",
+                "refresh_backbone",
             }
             & names
         )
@@ -222,6 +223,7 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             "merge_task",
             "revise_intent",
             "cancel_task",
+            "refresh_backbone",
         } <= admin_names
 
     asyncio.run(check())

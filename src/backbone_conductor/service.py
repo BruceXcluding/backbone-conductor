@@ -701,3 +701,6 @@ class Conductor:
 
     def sync(self, remote: str = "origin", branch: str | None = None) -> dict:
         return self.store.sync(remote, branch)
+
+    def refresh(self, remote: str = "origin", branch: str | None = None) -> dict:
+        return self.store.refresh(remote, branch)

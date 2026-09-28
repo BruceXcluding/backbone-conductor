@@ -88,7 +88,7 @@ def create_app(repo: str | Path, *, auth_file: str | Path | None = None) -> Fast
     auth = TokenAuth(auth_file, conductor.store.root) if auth_file is not None else None
     app = FastAPI(
         title="Backbone Conductor",
-        version="0.3.0",
+        version="0.4.0",
         description=(
             "Without --auth-file, bind to loopback for trusted local administrators. "
             "With --auth-file, bearer tokens authorize admin and bound member operations. "
@@ -291,6 +291,10 @@ def create_app(repo: str | Path, *, auth_file: str | Path | None = None) -> Fast
     @app.post("/sync")
     def sync(data: Sync) -> dict:
         return conductor.sync(data.remote, data.branch)
+
+    @app.post("/refresh")
+    def refresh(data: Sync) -> dict:
+        return conductor.refresh(data.remote, data.branch)
 
     @app.get("/timeline")
     def timeline(limit: int = Query(default=50, ge=1, le=1000)) -> list[dict]:

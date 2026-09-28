@@ -129,4 +129,9 @@ def create_server(repo: str | Path, member_id: str | None = None) -> FastMCP:
             """Administrator: record human approval after the actual Git merge has occurred."""
             return conductor.merge_task(task_id, author, rationale)
 
+        @server.tool()
+        def refresh_backbone(remote: str = "origin", branch: str | None = None) -> dict:
+            """Administrator: fetch peer history and fast-forward, or report divergence."""
+            return conductor.refresh(remote, branch)
+
     return server

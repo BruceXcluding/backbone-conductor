@@ -93,6 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
     sync = commands.add_parser("sync", help="Synchronize with the configured Git remote")
     sync.add_argument("--remote", default="origin")
     sync.add_argument("--branch")
+    refresh = commands.add_parser("refresh", help="Fetch and fast-forward from the Git remote")
+    refresh.add_argument("--remote", default="origin")
+    refresh.add_argument("--branch")
     updates = commands.add_parser("updates", help="Check ledger changes affecting a member")
     updates.add_argument("--member")
     updates.add_argument("--since-version")
@@ -197,6 +200,8 @@ def _run(args: argparse.Namespace) -> Any:
         )
     if args.command == "sync":
         return conductor.sync(args.remote, args.branch)
+    if args.command == "refresh":
+        return conductor.refresh(args.remote, args.branch)
     if args.command == "updates":
         return conductor.check_backbone_sync(args.member, args.since_version)
     if args.command == "review":
