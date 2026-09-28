@@ -175,6 +175,18 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--dsh-home", required=True, help="Path to the configured DSH home")
     review.add_argument("--model", required=True)
     review.add_argument("--provider", default="deepseek-official")
+    dsh = commands.add_parser("dsh", help="Run a member-scoped DSH agent with Backbone MCP")
+    dsh.add_argument("--member", required=True)
+    dsh.add_argument("--workspace", required=True, help="Separate coding workspace or worktree")
+    dsh.add_argument(
+        "--dsh-home", required=True, help="Dedicated DSH home outside both repositories"
+    )
+    dsh.add_argument("--model", required=True)
+    dsh.add_argument("--provider", default="deepseek-official")
+    dsh.add_argument("--session-id", help="Continue an existing DSH session in this home")
+    dsh_prompt = dsh.add_mutually_exclusive_group(required=True)
+    dsh_prompt.add_argument("--prompt")
+    dsh_prompt.add_argument("--prompt-file", help="UTF-8 prompt file")
 
     serve = commands.add_parser("serve", help="Run the HTTP API")
     serve.add_argument("--host", default="127.0.0.1")
@@ -261,6 +273,21 @@ def _run(args: argparse.Namespace) -> Any:
             transport="stdio"
         )
         return None
+    if args.command == "dsh":
+        from .dsh_agent import DSHMemberRunner
+
+        prompt = (
+            Path(args.prompt_file).read_text(encoding="utf-8") if args.prompt_file else args.prompt
+        )
+        return DSHMemberRunner(
+            args.repo,
+            args.workspace,
+            args.dsh_home,
+            args.member,
+            args.model,
+            args.provider,
+            ledger_branch=args.ledger_branch,
+        ).run(prompt, session_id=args.session_id)
 
     conductor = Conductor(args.repo, ledger_branch=args.ledger_branch)
     if args.command == "init":

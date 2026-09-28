@@ -4,13 +4,30 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from backbone_conductor.dsh_agent import DSHMemberRunner
 from backbone_conductor.runtime import DSHReviewer
+from backbone_conductor.service import Conductor
+
+
+def initialized_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "project"
+    repo.mkdir()
+    for args in (
+        ("init", "-b", "main"),
+        ("config", "user.name", "Runtime Tests"),
+        ("config", "user.email", "runtime@example.invalid"),
+        ("config", "commit.gpgsign", "false"),
+    ):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    Conductor(repo).initialize()
+    return repo
 
 
 @pytest.fixture
@@ -203,3 +220,151 @@ def test_installed_sdk_accepts_adapter_configuration_without_starting_runtime(
     assert harness.config.request_timeout_seconds == 120
     assert harness.config.dsh_home == str(tmp_path / "home")
     harness.close()
+
+
+def test_member_runner_mounts_scoped_mcp_and_closes_sdk(tmp_path: Path, monkeypatch) -> None:
+    repo = initialized_repo(tmp_path)
+    workspace = tmp_path / "coding-worktree"
+    workspace.mkdir()
+    home = tmp_path / "dsh-home"
+    observed = SimpleNamespace(options=None, patch=None, prompt=None, session_id=None, closed=False)
+
+    class Harness:
+        def __init__(self, **options):
+            observed.options = options
+            observed.patch = json.loads(Path(options["patches"][0]).read_text())
+            observed.patch_path = Path(options["patches"][0])
+
+        def run(self, prompt, *, session_id):
+            observed.prompt = prompt
+            observed.session_id = session_id
+            return SimpleNamespace(
+                session_id=session_id,
+                finish_reason="completed",
+                final_response="Work recorded through member tools",
+            )
+
+        def close(self):
+            observed.closed = True
+
+    module = ModuleType("deepseek_harness")
+    module.DeepSeekHarness = Harness
+    monkeypatch.setitem(sys.modules, "deepseek_harness", module)
+    runner = DSHMemberRunner(repo, workspace, home, "alice", "chosen-model")
+    session_id = f"{runner.session_prefix}session-member-001"
+    result = runner.run("Read my Backbone task", session_id=session_id)
+
+    assert result["member"] == "alice"
+    assert result["final_response"] == "Work recorded through member tools"
+    assert result["elapsed_ms"] >= 0
+    assert observed.closed
+    assert observed.prompt == "Read my Backbone task"
+    assert observed.session_id == session_id
+    assert observed.options["cwd"] == str(workspace)
+    assert observed.options["dsh_home"] == str(home)
+    assert observed.options["profile"] == "sdk-minimal"
+    assert "never edit .backbone directly" in observed.options["env"]["DSH_SYSTEM_PROMPT"]
+    assert observed.patch[0] == {
+        "id": "sandbox-policy",
+        "config": {"mode": "workspace-write", "workspaceRoot": str(workspace)},
+    }
+    mcp = observed.patch[1]["insert"][0]
+    assert mcp["name"] == "@deepseek-ai/dsh-mcp-client"
+    assert mcp["config"]["serverName"] == "backbone"
+    assert mcp["config"]["args"] == [
+        "-m",
+        "backbone_conductor",
+        "--repo",
+        str(repo),
+        "mcp",
+        "--member",
+        "alice",
+    ]
+    assert mcp["config"]["env"]["PYTHONPATH"].endswith("/src")
+    assert mcp["config"]["failOnStartupError"] is True
+    assert not observed.patch_path.exists()
+    assert not subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+
+
+def test_member_runner_rejects_shared_workspace_and_home(tmp_path: Path) -> None:
+    repo = initialized_repo(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    with pytest.raises(ValueError, match="separate"):
+        DSHMemberRunner(repo, repo, tmp_path / "home", "alice", "model")
+    with pytest.raises(ValueError, match="outside"):
+        DSHMemberRunner(repo, workspace, repo / "dsh-home", "alice", "model")
+    with pytest.raises(ValueError, match="control characters"):
+        DSHMemberRunner(repo, workspace, tmp_path / "home", "alice\nadmin", "model")
+    runner = DSHMemberRunner(repo, workspace, tmp_path / "home", "alice", "model")
+    with pytest.raises(ValueError, match="different repository or member"):
+        runner.run("Read task", session_id="session-from-another-member")
+
+
+def test_member_runner_preflight_rejects_admin_tool_scope(tmp_path: Path, monkeypatch) -> None:
+    repo = initialized_repo(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runner = DSHMemberRunner(repo, workspace, tmp_path / "home", "alice", "model")
+    patch = runner.member_patch()
+    patch[1]["insert"][0]["config"]["args"] = patch[1]["insert"][0]["config"]["args"][:-2]
+    monkeypatch.setattr(runner, "member_patch", lambda: patch)
+    with pytest.raises(ValueError, match="preflight failed"):
+        runner._preflight_mcp()
+
+
+def test_member_runner_closes_sdk_on_failed_turn(tmp_path: Path, monkeypatch) -> None:
+    repo = initialized_repo(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    closed = []
+
+    class Harness:
+        def __init__(self, **_options):
+            pass
+
+        def run(self, _prompt, *, session_id):
+            raise TimeoutError("provider deadline")
+
+        def close(self):
+            closed.append(True)
+
+    module = ModuleType("deepseek_harness")
+    module.DeepSeekHarness = Harness
+    monkeypatch.setitem(sys.modules, "deepseek_harness", module)
+    runner = DSHMemberRunner(repo, workspace, tmp_path / "home", "alice", "model")
+    with pytest.raises(ValueError, match="TimeoutError"):
+        runner.run("Read my task")
+    assert closed == [True]
+
+
+def test_installed_sdk_starts_member_mcp_without_model_call(tmp_path: Path) -> None:
+    if os.environ.get("BACKBONE_REQUIRE_DSH_MCP") != "1":
+        pytest.skip("set BACKBONE_REQUIRE_DSH_MCP=1 for the installed SDK startup check")
+    from deepseek_harness import DeepSeekHarness
+
+    repo = initialized_repo(tmp_path)
+    workspace = tmp_path / "coding-worktree"
+    workspace.mkdir()
+    runner = DSHMemberRunner(repo, workspace, tmp_path / "dsh-home", "alice", "placeholder")
+    patch = tmp_path / "backbone.patch.yml"
+    patch.write_text(json.dumps(runner.member_patch()))
+    harness = DeepSeekHarness(
+        dsh_home=str(runner.home),
+        cwd=str(workspace),
+        profile="sdk-minimal",
+        patches=(str(patch),),
+        provider="deepseek-official",
+        model="placeholder",
+        initialize_timeout_seconds=30,
+    )
+    try:
+        harness.start()
+        assert any("ListToolsRequest" in line for line in harness.client._stderr_lines)
+    finally:
+        harness.close()

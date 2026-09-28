@@ -39,6 +39,8 @@ args = ["--repo", "/absolute/your-project", "mcp", "--member", "alice"]
 
 配置已对照本机 CLI 和 [OpenAI 官方 MCP 文档](https://learn.chatgpt.com/docs/extend/mcp?surface=cli) 核实。项目不会自动修改全局客户端设置。其他 stdio MCP 客户端可使用相同 command/args。
 
+可选 DeepSeek Harness 成员代理可直接通过 `backbone dsh --member ... --workspace ... --dsh-home ... --model ... --prompt ...` 连接同一成员绑定服务；完整命令及运行边界见 [DSH_PLUGIN_PLAN.md](DSH_PLUGIN_PLAN.md)。
+
 ## 成员流程
 
 1. 获取任务，阅读约束与决策，调用 start_task。

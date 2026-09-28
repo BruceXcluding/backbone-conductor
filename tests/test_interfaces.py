@@ -149,6 +149,51 @@ def test_cli_rejects_non_object_json_and_exports_schema(interface_repo: Path, ca
     assert "tasks" in schema["properties"]
 
 
+def test_cli_runs_member_scoped_dsh_entry_with_prompt_file(
+    interface_repo: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from backbone_conductor.dsh_agent import DSHMemberRunner
+
+    Conductor(interface_repo).initialize()
+    workspace = tmp_path / "coding-worktree"
+    workspace.mkdir()
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("Read my task before coding", encoding="utf-8")
+    observed = {}
+
+    def run(self, prompt, *, session_id=None):
+        observed.update(member=self.member, workspace=self.workspace, prompt=prompt)
+        return {"member": self.member, "final_response": "Ready", "session_id": "session-1"}
+
+    monkeypatch.setattr(DSHMemberRunner, "run", run)
+    assert (
+        main(
+            [
+                "--repo",
+                str(interface_repo),
+                "dsh",
+                "--member",
+                "alice",
+                "--workspace",
+                str(workspace),
+                "--dsh-home",
+                str(tmp_path / "dsh-home"),
+                "--model",
+                "test-model",
+                "--prompt-file",
+                str(prompt_file),
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "member": "alice",
+        "workspace": workspace,
+        "prompt": "Read my task before coding",
+    }
+    assert json.loads(capsys.readouterr().out)["session_id"] == "session-1"
+
+
 def test_python_module_propagates_failure_exit_code(interface_repo: Path) -> None:
     result = subprocess.run(
         [
