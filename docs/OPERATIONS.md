@@ -88,6 +88,30 @@ docker compose -f compose.yaml -f compose.tls.yaml \
 
 成员客户端使用 `https://coordinator.example.org:8443/mcp` 与自己的 bearer 令牌。`BACKBONE_MCP_ALLOWED_HOSTS` 是以逗号分隔的**精确 Host header** 列表，含非默认端口；仅本机回环访问时可不设置。直接执行 `backbone serve` 也可用 `BACKBONE_MCP_HTTP=1` 和此环境变量，或使用同等 CLI 标志。服务会拒绝无令牌、非成员和未知 Host 的请求；轮换令牌无需重启。Compose 四种组合已用真实成员 MCP 客户端验证认证、写入、Git 审计和重启恢复；两种 HTTPS 模式还由不挂载仓库和服务端凭据文件的独立 Docker 客户端，经 Compose 网络以服务名和受信任证书连接。远程公网及不同自然人的共享部署仍待验证。
 
+### 独立代码克隆的提交与合并
+
+远程 MCP 只传递协调数据，不传送 Git 对象。管理员分派任务后，先把协调端目标代码分支推送到代码远端；独立元数据模式还需单独推送 `backbone` 分支。成员在自己的代码克隆中更新目标分支、通过成员 MCP 读取并开始任务、提交代码，再推送功能分支：
+
+```sh
+git -C /alice-worktree fetch origin main
+git -C /alice-worktree switch main
+git -C /alice-worktree merge --ff-only origin/main
+git -C /alice-worktree switch -c feature/alice
+# 在工作树内编辑并提交代码
+git -C /alice-worktree push origin HEAD:refs/heads/feature/alice
+```
+
+协调端必须在收到 `submit_artifact` 前获取该功能分支；提交请求中的 `branch` 使用协调端可解析的 `origin/feature/alice`，`base_ref` 使用任务分派时的目标分支（例如 `main`）。未获取分支时，提交会失败且不产生 Backbone 审计提交。
+
+```sh
+git -C /coordinator fetch origin \
+  refs/heads/feature/alice:refs/remotes/origin/feature/alice
+```
+
+成员通过 `/mcp` 的 `submit_artifact` 提供 `intent_id`、`branch`、`base_ref`、`summary`。协调端从 Git 解析真实提交和路径，检查范围与决策；请求中的自报 SHA 与检查结果不作为证据。收到 `accepted: true` 后，人工审阅代码及语义，再在协调端目标分支实际合并；审查者最后以自己的 bearer 凭据调用 `POST /tasks/{task_id}/merge`，提交 `{"author":"reviewer","rationale":"..."}`。未完成 Git 合并时该调用会被拒绝。合并和完成记录生成后再推送目标分支。成员功能分支若有新提交，必须重新进行检查和审阅。
+
+本流程已用两个独立 Git 克隆、一个裸远端、真实本机 MCP/HTTP 服务和审查者凭据完成端到端验证；客户端由测试进程模拟，尚不等于不同自然人的远程部署。
+
 ## 独立元数据分支
 
 新仓库至少要有一个代码提交，且不能已经有内联 `.backbone/state.json`。执行 `backbone --repo /repo ledger create` 后，元数据保存在 Git 管理目录的隐藏 `backbone-ledger` worktree 中，当前代码工作树不切分支。所有协调命令都要显式使用 `--ledger-branch backbone`；例如 `backbone --repo /repo --ledger-branch backbone sync` 只推送元数据分支。其他克隆在已有远端 `backbone` 分支时运行 `backbone --repo /clone ledger attach`。成员提交的代码分支必须可被协调端的代码工作树解析；代码推送仍走 Git 常规流程。
