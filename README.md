@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.21 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合已在本机及 Linux CI 验证。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。可选 Git 提交签名与审计签名验证；时间线支持按作者、HTTP principal、事件类型和时间筛选。新增四例公开历史 Git 合并回放试验，仍未验证真实意图冲突检测率。多人共享部署仍需独立验证。
+这是独立个人兴趣项目。v0.22 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合已在本机及 Linux CI 验证。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。可选 Git 提交签名与审计签名验证；时间线支持按作者、HTTP principal、事件类型和时间筛选。新增四例公开历史 Git 合并回放试验，仍未验证真实意图冲突检测率。多人共享部署仍需独立验证。
 
 ## 快速开始
 
@@ -174,10 +174,11 @@ uv run pytest --cov=backbone_conductor --cov-fail-under=85
 uv run pytest tests/test_live_http.py -q
 uv run python scripts/evaluate.py
 uv run python scripts/benchmark.py
+uv run python scripts/benchmark_mcp.py --clients 10
 uv build
 ```
 
-CI 对 Python 3.12、3.13 运行检查、测试、合成评测和示例；其中真实 HTTP 双客户端进程测试必须运行，不能因缺少 loopback socket 权限而跳过。本地受限沙箱若禁止监听 socket，该测试会明确跳过，可在允许本地网络的环境单独运行。合成用例通过率不代表真实项目冲突召回率。
+CI 对 Python 3.12、3.13 运行检查、测试、合成评测、十个独立 MCP stdio 会话的并发完整性验证和示例；其中真实 HTTP 双客户端进程测试必须运行，不能因缺少 loopback socket 权限而跳过。本地受限沙箱若禁止监听 socket，该测试会明确跳过，可在允许本地网络的环境单独运行。MCP 基准记录单次延迟，不设性能门槛；合成用例通过率不代表真实项目冲突召回率。
 
 若 macOS 的 editable `.pth` 被标记 hidden 导致模块不存在，可用 `uv sync --locked --group dev --no-editable`，随后执行 `uv run --no-sync ...`；源码修改后需重装。开发测试也可显式设置 `PYTHONPATH=src`。
 
