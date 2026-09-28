@@ -148,3 +148,9 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 日期：2026-09-29。新增 `backbone dsh` 入口：要求与协调仓库分开的代码工作目录和独立 DSH home；在模型调用前用真实 MCP stdio 客户端完成初始化、工具发现和成员上下文读取，拒绝管理员工具出现在成员范围。临时 DSH 补丁把 `sdk-minimal` 的工具写策略设为 `workspace-write`，装载绑定该成员的 Backbone MCP 客户端；会话 ID 按仓库与成员命名，错误命名空间不能复用。单元测试覆盖补丁、CLI、清理、错误路径及管理员工具暴露拒绝。安装了锁定 DSH SDK 的本机测试真实启动运行时，观察到 MCP `tools/list` 请求，无付费模型调用；新增 CI 作业以相同方式验证 Linux 启动。
 
 完整隔离环境强制执行真实 HTTP/HTTPS 测试后 **293 passed，2 个可选 SDK 用例 skipped，覆盖率 90.79%**。另在安装 SDK 的环境中运行 MCP 启动用例 **1 passed**；Ruff、24/24 合成评测、四例 Git 合并试验、Git 示例、锁文件校验、0.23.0 wheel/source distribution 构建和隔离 wheel 导入通过。仍未验证真实模型生成、代码修改质量、跨成员自然人认证或实际费用；MCP 预检查与 DSH 启动验证不等于模型已成功使用工具完成任务。
+
+## v0.24 DSH 审查工具收紧
+
+日期：2026-09-29。语义审查不再通过默认持久 shell 读取临时 `context.json` 和 `artifact.diff`；任务上下文与真实 diff 作为标明不可信数据的 JSON 随请求提供。一次性 DSH 补丁禁用默认 bash/PowerShell 工具，将文件策略设为 `read-only`。已安装 SDK 的有效配置输出确认两个 shell 行均禁用，真实 SDK 以该配置无模型启动；成员 MCP 启动用例也再次通过。此举不限制 Harness 进程权限、provider 数据传输或专用 DSH home 中可能存在的自定义工具插件。
+
+完整隔离环境强制执行真实 HTTP/HTTPS 测试后 **293 passed，3 个可选 SDK 用例 skipped，覆盖率 90.80%**；安装 SDK 的两个无模型启动用例另 **2 passed**。Ruff 检查与格式检查、24/24 合成评测、四例历史 Git 合并试验、Git 示例、锁文件检查、0.24.0 wheel/source distribution 构建及隔离 wheel 导入通过。未进行真实模型调用，费用和审查质量仍未验证。

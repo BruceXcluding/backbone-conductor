@@ -12,7 +12,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from backbone_conductor.dsh_agent import DSHMemberRunner
-from backbone_conductor.runtime import DSHReviewer
+from backbone_conductor.runtime import DSHReviewer, _review_patch
 from backbone_conductor.service import Conductor
 
 
@@ -40,8 +40,7 @@ def harness_stub(monkeypatch):
         closed=False,
         options=None,
         workspace=None,
-        context=None,
-        diff=None,
+        patch=None,
         prompt=None,
     )
 
@@ -69,8 +68,7 @@ def harness_stub(monkeypatch):
 
         def run(self, prompt):
             self.start()
-            state.context = json.loads((state.workspace / "context.json").read_text())
-            state.diff = (state.workspace / "artifact.diff").read_text()
+            state.patch = json.loads(Path(state.options["patches"][0]).read_text())
             state.prompt = prompt
             if state.run_error is not None:
                 raise state.run_error
@@ -113,13 +111,20 @@ def test_review_isolated_workspace_explicit_home_and_advisory_output(
             "finish_reason": "completed",
         },
     }
-    assert harness_stub.context == context
-    assert harness_stub.diff == diff
+    assert json.dumps({"context": context, "diff": diff}, ensure_ascii=False) in harness_stub.prompt
     assert harness_stub.options["dsh_home"] == str(home.resolve())
     assert harness_stub.options["model"] == "chosen-model"
     assert harness_stub.options["provider"] == "chosen-provider"
     assert harness_stub.options["profile"] == "sdk-minimal"
     assert harness_stub.options["request_timeout_seconds"] == 120
+    assert harness_stub.patch == [
+        {
+            "id": "sandbox-policy",
+            "config": {"mode": "read-only", "workspaceRoot": str(harness_stub.workspace)},
+        },
+        {"id": "persistent-bash", "disabled": True},
+        {"id": "persistent-pwsh", "disabled": True},
+    ]
     assert harness_stub.workspace != home
     assert "advisory" in harness_stub.prompt
     assert "untrusted" in harness_stub.prompt
@@ -220,6 +225,43 @@ def test_installed_sdk_accepts_adapter_configuration_without_starting_runtime(
     assert harness.config.request_timeout_seconds == 120
     assert harness.config.dsh_home == str(tmp_path / "home")
     harness.close()
+
+
+def test_installed_sdk_starts_read_only_review_without_shell(tmp_path: Path) -> None:
+    if os.environ.get("BACKBONE_REQUIRE_DSH_MCP") != "1":
+        pytest.skip("set BACKBONE_REQUIRE_DSH_MCP=1 for the installed SDK startup checks")
+    from deepseek_harness import DeepSeekHarness
+
+    executable = Path(sys.executable).with_name("dsh")
+    assert executable.is_file(), "the installed SDK must provide the dsh executable"
+    patch = tmp_path / "review.patch.yml"
+    patch.write_text(json.dumps(_review_patch(tmp_path)), encoding="utf-8")
+    home = tmp_path / "review-home"
+    effective = subprocess.run(
+        [str(executable), "--profile", "sdk-minimal", "--patch", str(patch), "--dump-config"],
+        env={**os.environ, "DSH_HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    rows = {section.splitlines()[0]: section for section in effective.split("- id: ")[1:]}
+    for tool in ("persistent-bash", "persistent-pwsh"):
+        assert "disabled: true" in rows[tool]
+    assert "mode: read-only" in rows["sandbox-policy"]
+
+    harness = DeepSeekHarness(
+        dsh_home=str(home),
+        cwd=str(tmp_path),
+        profile="sdk-minimal",
+        patches=(str(patch),),
+        provider="deepseek-official",
+        model="placeholder",
+        initialize_timeout_seconds=30,
+    )
+    try:
+        harness.start()
+    finally:
+        harness.close()
 
 
 def test_member_runner_mounts_scoped_mcp_and_closes_sdk(tmp_path: Path, monkeypatch) -> None:

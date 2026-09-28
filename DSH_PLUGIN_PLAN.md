@@ -2,7 +2,7 @@
 
 当前使用发布的 deepseek-harness-sdk；锁文件固定 SDK/runtime 为 0.1.5rc1，位于可选 dsh extra。
 
-DSHReviewer 将任务、意图、已接受决策和真实 diff 放入临时目录，以明确指定的 home 启动 DeepSeekHarness 的 sdk-minimal profile。输出必须符合 SemanticReview Schema；非法输出、超时和未完成回合不会生成批准。调用结束关闭 runtime，再核对 Backbone 版本和制品 SHA，拒绝过期结果。成功审查的 `runtime` 字段记录从创建 SDK 客户端到关闭的 `elapsed_ms`、SDK 返回的 `session_id` 与 `finish_reason`，随建议一起进入 Git 审计。失败尝试不修改 Backbone 状态；这些指标不代表模型生成阶段的独立耗时。
+DSHReviewer 将任务、意图、已接受决策和真实 diff 作为明确标记为不可信数据的 JSON 随请求提供，在一次性目录内以明确指定的 home 启动 DeepSeekHarness 的 sdk-minimal profile。运行时补丁禁用该 profile 默认的持久 bash/PowerShell 工具，并把文件策略设为 `read-only`；模型审查不需要本地命令或读取仓库。输出必须符合 SemanticReview Schema；非法输出、超时和未完成回合不会生成批准。调用结束关闭 runtime，再核对 Backbone 版本和制品 SHA，拒绝过期结果。成功审查的 `runtime` 字段记录从创建 SDK 客户端到关闭的 `elapsed_ms`、SDK 返回的 `session_id` 与 `finish_reason`，随建议一起进入 Git 审计。失败尝试不修改 Backbone 状态；这些指标不代表模型生成阶段的独立耗时。
 
 ```sh
 uv sync --locked --extra dsh
@@ -10,7 +10,7 @@ uv run backbone --repo /absolute/project review TASK_ID \
   --dsh-home /absolute/isolated-dsh-home --model YOUR_MODEL
 ```
 
-需在本地配置 provider 凭据，不写入 Git。审查会向该 provider 发送任务和代码 diff；结果只作建议。输入目录隔离不是 OS 沙箱，SDK 最小 profile 仍有 shell 能力，应使用可信 profile 与适当的运行账户。
+需在本地配置 provider 凭据，不写入 Git。审查会向该 provider 发送任务和代码 diff；结果只作建议。补丁禁用默认 shell，但指定的 DSH home 若有自定义补丁，仍可能装载其他工具；请使用专用 home 和适当的运行账户。一次性目录与只读工具策略不限制 Harness 进程自身的 OS 权限或向 provider 发送数据。
 
 ## 成员代理接入
 
@@ -26,6 +26,6 @@ uv run backbone --repo /absolute/project dsh --member alice \
 
 此入口会实际向配置的 provider 发起模型请求；必须由操作者自行配置凭据。返回的会话 ID 带仓库与成员命名空间，可用 `--session-id` 继续同一成员会话；其他命名空间的 ID 会被拒绝。DSH 最小 profile 的 shell 与 MCP 子进程仍以调用者的 OS 身份运行；`workspace-write` 限制模型工具的写入范围，但不构成完整的读取或网络隔离。MCP `--member` 是本地工具约束，不是不同自然人之间的认证。会话日志保存在指定的 DSH home；不要把凭据或敏感日志放入 Git。模型建议、工具调用和代码修改都不能替代人工复核及真实 Git 合并。
 
-SDK 接口、结构化输出、错误清理和成功审查指标经过无模型测试；成员 MCP 接入已通过真实 SDK 的无模型启动及工具发现验证。真实模型调用、token 用量与费用尚未验证。当前 SDK `RunResult` 未提供稳定的用量/费用字段，因此不推算费用。更完整的原生 DSH 插件组合、工作内存和多 Agent 调度插件仍待实现。
+SDK 接口、结构化输出、错误清理和成功审查指标经过无模型测试；审查专用补丁经有效配置输出和真实 SDK 无模型启动验证；成员 MCP 接入已通过真实 SDK 的无模型启动及工具发现验证。真实模型调用、token 用量与费用尚未验证。当前 SDK `RunResult` 未提供稳定的用量/费用字段，因此不推算费用。更完整的原生 DSH 插件组合、工作内存和多 Agent 调度插件仍待实现。
 
 依据：[DSH 官方 Python SDK](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md)、[SDK 入门](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/python-sdk.md)、[DSH MCP 客户端](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)。MCP 服务端使用 [官方 MCP Python SDK v1](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x)，固定 `<2` 避免主版本 API 变化。

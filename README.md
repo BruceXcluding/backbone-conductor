@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.23 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合已在本机及 Linux CI 验证。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。可选 Git 提交签名与审计签名验证；时间线支持按作者、HTTP principal、事件类型和时间筛选。新增四例公开历史 Git 合并回放试验，仍未验证真实意图冲突检测率。多人共享部署仍需独立验证。
+这是独立个人兴趣项目。v0.24 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合已在本机及 Linux CI 验证。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。可选 Git 提交签名与审计签名验证；时间线支持按作者、HTTP principal、事件类型和时间筛选。新增四例公开历史 Git 合并回放试验，仍未验证真实意图冲突检测率。多人共享部署仍需独立验证。
 
 ## 快速开始
 
@@ -163,7 +163,7 @@ uv run backbone --repo /path/to/project review TASK_ID \
   --dsh-home /absolute/path/to/isolated-dsh-home --model YOUR_MODEL
 ```
 
-需自行配置模型凭据。成功审查返回 `aligned / concerns / uncertain` 建议，连同 SDK 会话 ID、完成状态和本次调用耗时记入 Git 审计；建议不替代人工裁决或合并。真实模型调用、用量和费用尚未验证。见 [DSH_PLUGIN_PLAN.md](DSH_PLUGIN_PLAN.md)。
+需自行配置模型凭据。审查输入随请求发送，运行补丁禁用默认 shell 工具并设置只读策略；请使用没有额外工具插件的专用 DSH home。成功审查返回 `aligned / concerns / uncertain` 建议，连同 SDK 会话 ID、完成状态和本次调用耗时记入 Git 审计；建议不替代人工裁决或合并。真实模型调用、用量和费用尚未验证。见 [DSH_PLUGIN_PLAN.md](DSH_PLUGIN_PLAN.md)。
 
 成员也可用可选 DSH 运行时接入 Backbone。先执行 `uv sync --locked --group dev --extra dsh`，准备与协调仓库分开的代码工作树，再显式运行：
 
