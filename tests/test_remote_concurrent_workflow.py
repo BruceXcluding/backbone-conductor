@@ -301,6 +301,7 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
             by_name = {report["name"]: report for report in reports}
             assert set(by_name) == set(names)
             assert git(coordinator, "rev-parse", "HEAD") != git(origin, "rev-parse", "main")
+            inspections = {}
             for name in names:
                 report = by_name[name]
                 assert report["task_id"] == task_ids[name]
@@ -310,6 +311,7 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
                     git(coordinator, "rev-parse", f"origin/feature/{name}") == report["commit_sha"]
                 )
                 inspection = reviewer_command("inspect", task_ids[name])
+                inspections[name] = inspection
                 assert f"+def {name}():" in inspection["diff"]["patch"]
                 assert inspection["git"]["integrated_into_target"] is False
 
@@ -325,6 +327,10 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
                         task_ids["alice"],
                         "--rationale",
                         "Reviewed before Git integration",
+                        "--version",
+                        inspections["alice"]["version"],
+                        "--target-sha",
+                        inspections["alice"]["git"]["target_sha"],
                     ]
                 )
                 == 1
@@ -333,11 +339,50 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
 
             for name in names:
                 git(coordinator, "merge", "--no-ff", "--no-edit", f"origin/feature/{name}")
+                inspection = reviewer_command("inspect", task_ids[name])
+                assert inspection["git"]["integrated_into_target"] is True
+                if name == "alice":
+                    changed = client.post(
+                        "/intents",
+                        headers=owner,
+                        json={
+                            "id": "intent-after-inspection",
+                            "problem": "Check concurrent review freshness",
+                            "proposed_outcome": "Require reinspection",
+                        },
+                    )
+                    assert changed.status_code == 201, changed.text
+                    assert (
+                        main(
+                            [
+                                "reviewer",
+                                "--url",
+                                url,
+                                "--token-file",
+                                str(reviewer_token),
+                                "approve",
+                                task_ids[name],
+                                "--rationale",
+                                "Stale inspection",
+                                "--version",
+                                inspection["version"],
+                                "--target-sha",
+                                inspection["git"]["target_sha"],
+                            ]
+                        )
+                        == 1
+                    )
+                    assert "Backbone changed since task inspection" in capsys.readouterr().err
+                    inspection = reviewer_command("inspect", task_ids[name])
                 approved = reviewer_command(
                     "approve",
                     task_ids[name],
                     "--rationale",
                     f"Reviewed {name}'s final code and current decisions",
+                    "--version",
+                    inspection["version"],
+                    "--target-sha",
+                    inspection["git"]["target_sha"],
                 )
                 assert approved["task"]["status"] == "merged"
             state = client.get("/state", headers=owner).json()

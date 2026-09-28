@@ -108,9 +108,11 @@ git -C /coordinator fetch origin \
   refs/heads/feature/alice:refs/remotes/origin/feature/alice
 ```
 
-成员通过 `/mcp` 的 `submit_artifact` 提供 `intent_id`、`branch`（例如 `origin/feature/alice`）、`base_ref`（例如分派目标 `main`）、`summary` 和刚获取的 `commit_sha`。协调端从 Git 解析真实提交和路径，检查范围与决策；请求中的 SHA 只用于核对，不代替 Git 证据。收到 `accepted: true` 后，审查者可用 `GET /tasks/{task_id}/inspection`、管理员 MCP `inspect_task` 或本地 `backbone task inspect TASK_ID` 读取固定提交的代码差异、当前目标分支 SHA、分支是否变动、决策变化与阻塞冲突。响应最多展示 128 KiB 补丁并附完整补丁 SHA-256；若 `truncated=true`，审查者须在可访问仓库的环境中用响应里的完整 SHA 重新查看全部差异，不能只凭预览审批。超过 1 MB 的差异需拆分任务后重新提交。此接口只读，也不代替人工语义审阅。人工实际合并代码后，审查者最后以自己的 bearer 凭据调用 `POST /tasks/{task_id}/merge`，提交 `{"author":"reviewer","rationale":"..."}`。未完成 Git 合并时该调用会被拒绝。合并和完成记录生成后再推送目标分支。成员功能分支若有新提交，必须重新进行检查和审阅。
+成员通过 `/mcp` 的 `submit_artifact` 提供 `intent_id`、`branch`（例如 `origin/feature/alice`）、`base_ref`（例如分派目标 `main`）、`summary` 和刚获取的 `commit_sha`。协调端从 Git 解析真实提交和路径，检查范围与决策；请求中的 SHA 只用于核对，不代替 Git 证据。收到 `accepted: true` 后，审查者可用 `GET /tasks/{task_id}/inspection`、管理员 MCP `inspect_task` 或本地 `backbone task inspect TASK_ID` 读取固定提交的代码差异、当前目标分支 SHA、分支是否变动、决策变化与阻塞冲突。响应最多展示 128 KiB 补丁并附完整补丁 SHA-256；若 `truncated=true`，审查者须在可访问仓库的环境中用响应里的完整 SHA 重新查看全部差异，不能只凭预览审批。超过 1 MB 的差异需拆分任务后重新提交。此接口只读，也不代替人工语义审阅。人工实际合并代码后，审查者最后以自己的 bearer 凭据调用 `POST /tasks/{task_id}/merge`，提交 `{"author":"reviewer","rationale":"...","expected_version":"...","expected_target_sha":"..."}`，两个预期值须取自合并后重新获取的审查包。未完成 Git 合并、账本或目标分支在检查后变化时该调用会被拒绝。合并和完成记录生成后再推送目标分支。成员功能分支若有新提交，必须重新进行检查和审阅。
 
 完成记录除检查固定提交已成为目标分支祖先，还会比较产物声明的代码路径：若这些路径相对提交时基线完全没有净改动，即使 Git 历史含产物提交（例如 `git merge -s ours`），也拒绝完成。若目标树在相关路径上与原产物不同，审查者须提交非空复核理由；记录会保存产物 SHA、目标 SHA 与差异路径。这是明显丢弃改动的确定性防线，不证明较复杂的同路径改写仍保留了原意图。审查者必须核对最终代码。合并后若代码已回退到基线，任务可取消或刷新后重新提交，避免只因 Git 祖先关系而无法恢复。
+
+完成请求中的账本版本与目标 SHA 是并发检查值，不是已做过人工审查的证明。独立元数据分支模式无法把代码分支与元数据分支两次 Git 引用更新做成跨引用原子事务；审批窗口内应暂停其他进程对协调端代码 checkout 的写入，完成后再推送和继续合并。
 
 本流程已用两个独立 Git 克隆、一个裸远端、真实本机 MCP/HTTP 服务和审查者凭据完成端到端验证；客户端由测试进程模拟，尚不等于不同自然人的远程部署。
 
@@ -132,11 +134,14 @@ backbone reviewer --url https://coordinator.example.org:8443 \
   --token-file /private/path/carol.token inspect TASK_ID
 # 管理员在协调代码仓库中审阅并真正执行 Git 合并后：
 backbone reviewer --url https://coordinator.example.org:8443 \
+  --token-file /private/path/carol.token inspect TASK_ID
+backbone reviewer --url https://coordinator.example.org:8443 \
   --token-file /private/path/carol.token approve TASK_ID \
-  --rationale '已核对最终代码与当前决策'
+  --rationale '已核对最终代码与当前决策' \
+  --version OBSERVED_VERSION --target-sha OBSERVED_TARGET_SHA
 ```
 
-`state` 返回用于意图审查的当前 `version`；若期间有人写入，旧版本会被拒绝，应重新读取后审查。`inspect` 返回固定提交的差异、完整补丁哈希及 `truncated` 标志。审查者须核对完整代码与最终目标树，不能仅凭截断预览审批；`approve` 只记录审阅结论，不执行 Git 合并。命令先向 `/whoami` 核对令牌确属审查者，写入请求的 author 自动使用服务端返回的 principal。真实不同自然人的远程使用仍待验收。
+`state` 返回用于意图审查的当前 `version`；若期间有人写入，旧版本会被拒绝，应重新读取后审查。`inspect` 返回固定提交的差异、完整补丁哈希及 `truncated` 标志。代码合并后须重新运行 `inspect`，从该次响应复制 `version` 和 `git.target_sha` 给 `approve`；若账本或目标分支随后改变，审批会拒绝。审查者须核对完整代码与最终目标树，不能仅凭截断预览审批；`approve` 只记录审阅结论，不执行 Git 合并。命令先向 `/whoami` 核对令牌确属审查者，写入请求的 author 自动使用服务端返回的 principal。真实不同自然人的远程使用仍待验收。
 
 ## 独立元数据分支
 

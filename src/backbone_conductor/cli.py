@@ -123,7 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("task_id")
     merge.add_argument("--author", required=True)
     merge.add_argument(
-        "--rationale", help="Required when accepted decisions changed after submission"
+        "--rationale", help="Required when decisions or integrated code changed after submission"
+    )
+    merge.add_argument("--version", required=True, help="Version from task inspect after Git merge")
+    merge.add_argument(
+        "--target-sha", required=True, help="Target SHA from task inspect after Git merge"
     )
     cancel = tasks.add_parser("cancel", help="Cancel active work with an audited reason")
     cancel.add_argument("task_id")
@@ -224,6 +228,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reviewer_approve.add_argument("task_id")
     reviewer_approve.add_argument("--rationale", required=True)
+    reviewer_approve.add_argument("--version", required=True, help="Version from task inspect")
+    reviewer_approve.add_argument("--target-sha", required=True, help="SHA from task inspect")
 
     serve = commands.add_parser("serve", help="Run the HTTP API")
     serve.add_argument("--host", default="127.0.0.1")
@@ -434,7 +440,13 @@ def _run(args: argparse.Namespace) -> Any:
             return conductor.cancel_task(args.task_id, args.author, args.reason)
         if args.action == "rebase":
             return conductor.rebase_task(args.task_id, args.member, args.version)
-        return conductor.merge_task(args.task_id, args.author, args.rationale)
+        return conductor.merge_task(
+            args.task_id,
+            args.author,
+            args.rationale,
+            expected_version=args.version,
+            expected_target_sha=args.target_sha,
+        )
     if args.command == "conflict":
         if args.action == "check":
             return conductor.detect_conflicts()

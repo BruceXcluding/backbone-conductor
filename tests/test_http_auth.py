@@ -473,9 +473,16 @@ def test_reviewer_can_approve_integrated_work_but_not_manage_tasks(
         )
         assert submitted.status_code == 200, submitted.text
         git(repo, "merge", "--no-edit", "review-feature")
+        packet = client.get(f"/tasks/{task_id}/inspection", headers=reviewer).json()
+        anchor = {
+            "expected_version": packet["version"],
+            "expected_target_sha": packet["git"]["target_sha"],
+        }
         assert (
             client.post(
-                f"/tasks/{task_id}/merge", headers=reviewer, json={"author": "carol"}
+                f"/tasks/{task_id}/merge",
+                headers=reviewer,
+                json={"author": "carol", **anchor},
             ).status_code
             == 422
         )
@@ -483,14 +490,14 @@ def test_reviewer_can_approve_integrated_work_but_not_manage_tasks(
             client.post(
                 f"/tasks/{task_id}/merge",
                 headers=reviewer,
-                json={"author": "owner", "rationale": "Reviewed feature and constraints"},
+                json={"author": "owner", "rationale": "Reviewed feature and constraints", **anchor},
             ).status_code
             == 403
         )
         approved = client.post(
             f"/tasks/{task_id}/merge",
             headers=reviewer,
-            json={"author": "carol", "rationale": "Reviewed feature and constraints"},
+            json={"author": "carol", "rationale": "Reviewed feature and constraints", **anchor},
         )
         assert approved.status_code == 200, approved.text
         assert approved.json()["review_decision"]["author"] == "carol"
@@ -516,7 +523,12 @@ def test_reviewer_can_approve_integrated_work_but_not_manage_tasks(
             client.post(
                 f"/tasks/{own_task.json()['id']}/merge",
                 headers=reviewer,
-                json={"author": "carol", "rationale": "Cannot approve my own assignment"},
+                json={
+                    "author": "carol",
+                    "rationale": "Cannot approve my own assignment",
+                    "expected_version": client.get("/state", headers=reviewer).json()["version"],
+                    "expected_target_sha": "0" * 40,
+                },
             ).status_code
             == 403
         )

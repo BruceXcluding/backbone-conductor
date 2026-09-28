@@ -143,6 +143,11 @@ def run_reviewer_command(args) -> dict | list:
                 client,
                 "POST",
                 f"/tasks/{_identifier(args.task_id)}/merge",
-                {"author": author, "rationale": args.rationale},
+                {
+                    "author": author,
+                    "rationale": args.rationale,
+                    "expected_version": args.version,
+                    "expected_target_sha": args.target_sha,
+                },
             )
         raise ValueError(f"Unknown reviewer command: {args.action}")

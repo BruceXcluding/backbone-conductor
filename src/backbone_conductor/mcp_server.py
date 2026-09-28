@@ -196,9 +196,21 @@ def create_server(
             return conductor.resolve_conflict(conflict_id, author, action, rationale)
 
         @server.tool()
-        def merge_task(task_id: str, author: str, rationale: str | None = None) -> dict:
-            """Administrator: record human approval after the actual Git merge has occurred."""
-            return conductor.merge_task(task_id, author, rationale)
+        def merge_task(
+            task_id: str,
+            author: str,
+            expected_version: str,
+            expected_target_sha: str,
+            rationale: str | None = None,
+        ) -> dict:
+            """Administrator: approve the exact inspected target and Backbone version."""
+            return conductor.merge_task(
+                task_id,
+                author,
+                rationale,
+                expected_version=expected_version,
+                expected_target_sha=expected_target_sha,
+            )
 
         @server.tool()
         def inspect_task(task_id: str) -> dict:

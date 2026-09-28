@@ -56,7 +56,13 @@ def run_demo(repo: Path) -> dict:
         raise RuntimeError(submission)
     # This example performs the human's review step for its fixed, known artifact.
     git("merge", "--no-edit", "feature/greeting")
-    approval = conductor.merge_task(task["id"], "demo-reviewer")
+    inspection = conductor.inspect_task(task["id"])
+    approval = conductor.merge_task(
+        task["id"],
+        "demo-reviewer",
+        expected_version=inspection["version"],
+        expected_target_sha=inspection["git"]["target_sha"],
+    )
     return {
         "intent": conductor.state()["intents"][intent["id"]]["status"],
         "task": approval["task"]["status"],

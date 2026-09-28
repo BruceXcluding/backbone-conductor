@@ -785,10 +785,22 @@ class Conductor:
 
         return self.store.mutate(change, f"backbone: conflict {conflict_id} resolved by {author}")
 
-    def merge_task(self, task_id: str, author: str, rationale: str | None = None) -> dict:
+    def merge_task(
+        self,
+        task_id: str,
+        author: str,
+        rationale: str | None = None,
+        *,
+        expected_version: str,
+        expected_target_sha: str,
+    ) -> dict:
         author = _actor(author)
+        if not expected_version or not expected_target_sha:
+            raise ValueError("Merge approval requires the inspected version and target SHA")
 
         def change(state: BackboneState):
+            if state.version != expected_version:
+                raise ValueError("Backbone changed since task inspection; inspect again")
             task = state.tasks[task_id]
             artifact = task.artifact
             if task.status != TaskStatus.SUBMITTED or not artifact or not artifact.commit_sha:
@@ -807,6 +819,8 @@ class Conductor:
             ).returncode:
                 raise ValueError("Artifact must be merged into its declared base branch first")
             target_sha = self._commit("HEAD")
+            if target_sha != expected_target_sha:
+                raise ValueError("Target branch changed since task inspection; inspect again")
             net_paths, divergent_paths = self._integration_paths(artifact, target_sha)
             if not net_paths:
                 raise ValueError(
@@ -838,7 +852,8 @@ class Conductor:
                 else "Human records intent, constraints and decision review after Git integration."
             )
             review_rationale = (
-                f"Artifact {artifact.commit_sha} integrated into {task.base_ref} at {target_sha}; "
+                f"Inspection version {expected_version}; artifact {artifact.commit_sha} "
+                f"integrated into {task.base_ref} at {target_sha}; "
                 f"net paths {net_paths}; divergent paths {divergent_paths}. {review_rationale}"
             )
             review = Decision(

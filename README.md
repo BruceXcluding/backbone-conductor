@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.37 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合及可选成员 MCP 已在容器中验证，HTTPS 成员客户端还经过独立容器网络与挂载隔离测试。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由，并在审批任务前读取固定提交的只读代码审查包。合并审批会拒绝保留提交祖先但丢弃全部产物改动的目标树；同一路径最终内容与产物不同则需记录复核理由。可选 Git 提交签名与审计签名验证；时间线支持按作者、HTTP principal、事件类型和时间筛选。前瞻评测工具可从干净的仓库采集未分派意图配对、冻结事前预测并合并双人盲审标签，但真实意图冲突检测率仍无数据可报告。DSH 审查失败可选择写入仓库外的私有运行日志；审查者可在无协调仓库的机器上用私有令牌通过远程 CLI 审阅意图和固定代码补丁，并在实际 Git 合并后记录审批；多人共享部署仍需独立验证。
+这是独立个人兴趣项目。v0.38 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合及可选成员 MCP 已在容器中验证，HTTPS 成员客户端还经过独立容器网络与挂载隔离测试。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由，并在审批任务前读取固定提交的只读代码审查包。合并审批必须带上审查时观察到的账本版本与目标代码 SHA，并会拒绝保留提交祖先但丢弃全部产物改动的目标树；同一路径最终内容与产物不同则需记录复核理由。可选 Git 提交签名与审计签名验证；时间线支持按作者、HTTP principal、事件类型和时间筛选。前瞻评测工具可从干净的仓库采集未分派意图配对、冻结事前预测并合并双人盲审标签，但真实意图冲突检测率仍无数据可报告。DSH 审查失败可选择写入仓库外的私有运行日志；审查者可在无协调仓库的机器上用私有令牌通过远程 CLI 审阅意图和固定代码补丁，并在实际 Git 合并后记录审批；多人共享部署仍需独立验证。
 
 ## 快速开始
 
@@ -90,12 +90,14 @@ backbone --repo /path/to/project conflict resolve CONFLICT_ID \
 ```sh
 git -C /path/to/project switch main
 git -C /path/to/project merge --no-edit feature/greeting
-backbone --repo /path/to/project task merge TASK_ID --author owner
+backbone --repo /path/to/project task inspect TASK_ID
+backbone --repo /path/to/project task merge TASK_ID --author owner \
+  --version OBSERVED_VERSION --target-sha OBSERVED_TARGET_SHA
 backbone --repo /path/to/project log
 backbone --repo /path/to/project sync
 ```
 
-`task merge` 验证提交已进入目标分支并记录人工审查，不执行代码合并。`sync` 显式推送当前分支，包括代码和元数据提交，不拉取或强推。另一个克隆在同名分支可运行 `backbone --repo /path/to/project refresh`：远端领先且本地工作树干净时快进；本地领先或双方分叉时只报告状态和差异，不自动合并。`refresh` 返回 `diverged` 时须人工检查和合并 Git 历史。已成功提交的任务在分支更新后，需 `task start` 再重新提交；检查失败的任务仍为 in_progress，可直接修复后重交。
+合并后由 `task inspect` 获取当前 `version` 和 `git.target_sha`；人工核对最终代码，再把两个观察值交给 `task merge`。期间若账本或目标代码变化，完成操作会拒绝并要求重新检查。`task merge` 验证提交已进入目标分支并记录人工审查，不执行代码合并。`sync` 显式推送当前分支，包括代码和元数据提交，不拉取或强推。另一个克隆在同名分支可运行 `backbone --repo /path/to/project refresh`：远端领先且本地工作树干净时快进；本地领先或双方分叉时只报告状态和差异，不自动合并。`refresh` 返回 `diverged` 时须人工检查和合并 Git 历史。已成功提交的任务在分支更新后，需 `task start` 再重新提交；检查失败的任务仍为 in_progress，可直接修复后重交。
 
 若分叉只涉及 `.backbone/`，且两侧修改的是不同领域对象，管理员审查 `refresh` 返回的 `local_head`、`remote_head` 和差异后，可记录理由并合并：
 

@@ -101,6 +101,11 @@ class Approval(Action):
     rationale: str | None = None
 
 
+class MergeApproval(Approval):
+    expected_version: str = Field(min_length=1)
+    expected_target_sha: str = Field(min_length=1)
+
+
 class IntentRevision(Approval):
     patch: dict[str, Any]
     expected_version: str = Field(min_length=1)
@@ -416,7 +421,7 @@ def create_app(
         return conductor.submit_artifact(data.member_id, artifact)
 
     @app.post("/tasks/{task_id}/merge")
-    def merge_task(task_id: str, data: Approval, request: Request) -> dict:
+    def merge_task(task_id: str, data: MergeApproval, request: Request) -> dict:
         """Record human approval after performing the actual Git merge externally."""
         principal = request.state.principal
         if principal.role == "reviewer":
@@ -424,7 +429,13 @@ def create_app(
                 raise ValueError("Reviewer approval requires a rationale")
             if conductor.state()["tasks"][task_id]["member_id"] == principal.name:
                 raise PermissionError("Reviewers cannot approve their own assigned task")
-        return conductor.merge_task(task_id, actor(request, data.author), data.rationale)
+        return conductor.merge_task(
+            task_id,
+            actor(request, data.author),
+            data.rationale,
+            expected_version=data.expected_version,
+            expected_target_sha=data.expected_target_sha,
+        )
 
     @app.get("/conflicts")
     def conflicts() -> list[dict]:

@@ -59,3 +59,4 @@ ASGI 挂载与会话管理遵循 [官方 MCP Python SDK 的部署说明](https:/
 
 协调端保持在目标分支。get_my_task 是拉取接口；首版不主动向 Agent 会话推送消息。
 当 check_backbone_sync 返回 new_decisions 或 withdrawn_decisions，成员应执行 rebase_task，使用当前 version 作为 expected_version，再提交制品。提交后才发生的决策变化由管理员在 merge_task 的 rationale 中明确审查并记录。
+代码实际合入目标分支后，管理员须重新调用 `inspect_task`，从结果取 `version` 和 `git.target_sha`，作为 `merge_task` 的 `expected_version` 与 `expected_target_sha`；若审查后账本或目标分支变化，调用被拒绝并须重新审查。

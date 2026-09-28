@@ -366,12 +366,28 @@ def test_http_task_submission_binds_path_and_requires_real_merge(interface_repo:
         assert client.post(f"/tasks/{task['id']}/submit", json=spoof).status_code == 403
         result = client.post(f"/tasks/{task['id']}/submit", json=payload)
         assert result.status_code == 200, result.text
+        packet = client.get(f"/tasks/{task['id']}/inspection").json()
         assert (
-            client.post(f"/tasks/{task['id']}/merge", json={"author": "reviewer"}).status_code
+            client.post(
+                f"/tasks/{task['id']}/merge",
+                json={
+                    "author": "reviewer",
+                    "expected_version": packet["version"],
+                    "expected_target_sha": packet["git"]["target_sha"],
+                },
+            ).status_code
             == 422
         )
         git(interface_repo, "merge", "--no-edit", "member-export")
-        approved = client.post(f"/tasks/{task['id']}/merge", json={"author": "reviewer"})
+        packet = client.get(f"/tasks/{task['id']}/inspection").json()
+        approved = client.post(
+            f"/tasks/{task['id']}/merge",
+            json={
+                "author": "reviewer",
+                "expected_version": packet["version"],
+                "expected_target_sha": packet["git"]["target_sha"],
+            },
+        )
         assert approved.status_code == 200, approved.text
         assert client.get(f"/intents/{intent['id']}").json()["status"] == "completed"
 

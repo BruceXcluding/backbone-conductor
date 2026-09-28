@@ -95,7 +95,13 @@ def test_separate_ledger_uses_source_branch_for_artifacts_and_merge(source_repo:
     assert submitted["accepted"] is True
     assert submitted["checks"]["code"]["status"] == "passed"
     git(source_repo, "merge", "--no-edit", "feature/export")
-    merged = conductor.merge_task(task["id"], "owner")
+    packet = conductor.inspect_task(task["id"])
+    merged = conductor.merge_task(
+        task["id"],
+        "owner",
+        expected_version=packet["version"],
+        expected_target_sha=packet["git"]["target_sha"],
+    )
     assert merged["task"]["status"] == "merged"
     assert conductor.state()["intents"][intent["id"]]["status"] == "completed"
     assert not (source_repo / ".backbone").exists()

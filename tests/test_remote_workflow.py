@@ -279,17 +279,29 @@ def test_remote_member_clone_can_fetch_and_requires_real_human_merge(tmp_path: P
             assert failed, "A rewritten remote branch must not replace the reviewed ref"
             assert git(coordinator, "rev-parse", "origin/feature/alice") == feature_sha
 
+            packet = admin.get(f"/tasks/{task_id}/inspection", headers=reviewer).json()
             premature = admin.post(
                 f"/tasks/{task_id}/merge",
                 headers=reviewer,
-                json={"author": "reviewer", "rationale": "Reviewed implementation"},
+                json={
+                    "author": "reviewer",
+                    "rationale": "Reviewed implementation",
+                    "expected_version": packet["version"],
+                    "expected_target_sha": packet["git"]["target_sha"],
+                },
             )
             assert premature.status_code == 422, premature.text
             git(coordinator, "merge", "--no-ff", "--no-edit", "origin/feature/alice")
+            packet = admin.get(f"/tasks/{task_id}/inspection", headers=reviewer).json()
             integrated = admin.post(
                 f"/tasks/{task_id}/merge",
                 headers=reviewer,
-                json={"author": "reviewer", "rationale": "Reviewed implementation and tests"},
+                json={
+                    "author": "reviewer",
+                    "rationale": "Reviewed implementation and tests",
+                    "expected_version": packet["version"],
+                    "expected_target_sha": packet["git"]["target_sha"],
+                },
             )
             assert integrated.status_code == 200, integrated.text
             state = admin.get("/state", headers=owner).json()

@@ -57,6 +57,14 @@ def prepare_artifact(service, repo):
     )
 
 
+def approval_anchor(service, task_id):
+    packet = service.inspect_task(task_id)
+    return {
+        "expected_version": packet["version"],
+        "expected_target_sha": packet["git"]["target_sha"],
+    }
+
+
 def test_merge_approval_must_be_recorded_on_assigned_base_branch(audit_project):
     service, repo = audit_project
     intent, task, artifact = prepare_artifact(service, repo)
@@ -65,11 +73,16 @@ def test_merge_approval_must_be_recorded_on_assigned_base_branch(audit_project):
     git(repo, "switch", "-c", "unrelated-work")
     before = git(repo, "rev-parse", "HEAD")
     with pytest.raises(ValueError, match="base|target|branch"):
-        service.merge_task(task["id"], "reviewer")
+        service.merge_task(task["id"], "reviewer", **approval_anchor(service, task["id"]))
     assert git(repo, "rev-parse", "HEAD") == before
     assert service.state()["intents"][intent["id"]]["status"] == "in_progress"
     git(repo, "switch", "main")
-    assert service.merge_task(task["id"], "reviewer")["task"]["status"] == "merged"
+    assert (
+        service.merge_task(task["id"], "reviewer", **approval_anchor(service, task["id"]))["task"][
+            "status"
+        ]
+        == "merged"
+    )
 
 
 @pytest.mark.parametrize("recovery", ["cancel", "rebase"])
@@ -80,7 +93,9 @@ def test_ancestry_only_ours_merge_cannot_complete_task(audit_project, recovery):
     git(repo, "merge", "-s", "ours", "--no-edit", "feature/database")
     assert "database.py" not in git(repo, "ls-tree", "-r", "--name-only", "HEAD").splitlines()
     with pytest.raises(ValueError, match="discarded all declared artifact changes"):
-        service.merge_task(task["id"], "reviewer", "Approved")
+        service.merge_task(
+            task["id"], "reviewer", "Approved", **approval_anchor(service, task["id"])
+        )
     assert service.state()["tasks"][task["id"]]["status"] == "submitted"
     assert service.state()["intents"][intent["id"]]["status"] == "in_progress"
     if recovery == "cancel":
@@ -107,14 +122,57 @@ def test_divergent_integrated_content_requires_review_reason(audit_project):
     assert packet["git"]["net_changed_paths"] == ["database.py"]
     assert packet["git"]["divergent_paths"] == ["database.py"]
     with pytest.raises(ValueError, match="explicit review rationale"):
-        service.merge_task(task["id"], "reviewer")
+        service.merge_task(task["id"], "reviewer", **approval_anchor(service, task["id"]))
     merged = service.merge_task(
-        task["id"], "reviewer", "Reviewed the adapted database implementation"
+        task["id"],
+        "reviewer",
+        "Reviewed the adapted database implementation",
+        **approval_anchor(service, task["id"]),
     )
     rationale = merged["review_decision"]["rationale"]
     assert target_sha in rationale
     assert submitted["artifact"]["commit_sha"] in rationale
     assert "database.py" in rationale
+
+
+def test_completion_rejects_target_commit_changed_after_inspection(audit_project):
+    service, repo = audit_project
+    _intent, task, artifact = prepare_artifact(service, repo)
+    assert service.submit_artifact("alice", artifact)["accepted"]
+    git(repo, "merge", "--no-edit", "feature/database")
+    observed = approval_anchor(service, task["id"])
+    (repo / "README.md").write_text("Additional unrelated source change\n")
+    git(repo, "add", "README.md")
+    git(repo, "commit", "-m", "Change target after inspection")
+    with pytest.raises(ValueError, match="Target branch changed since task inspection"):
+        service.merge_task(task["id"], "reviewer", **observed)
+    assert service.state()["tasks"][task["id"]]["status"] == "submitted"
+    assert (
+        service.merge_task(task["id"], "reviewer", **approval_anchor(service, task["id"]))["task"][
+            "status"
+        ]
+        == "merged"
+    )
+
+
+def test_completion_rejects_ledger_change_after_inspection(audit_project):
+    service, repo = audit_project
+    _intent, task, artifact = prepare_artifact(service, repo)
+    assert service.submit_artifact("alice", artifact)["accepted"]
+    git(repo, "merge", "--no-edit", "feature/database")
+    observed = approval_anchor(service, task["id"])
+    service.create_intent(
+        {"author": "bob", "problem": "New plan", "proposed_outcome": "A second task"}
+    )
+    with pytest.raises(ValueError, match="Backbone changed since task inspection"):
+        service.merge_task(task["id"], "reviewer", **observed)
+    assert service.state()["tasks"][task["id"]]["status"] == "submitted"
+    assert (
+        service.merge_task(task["id"], "reviewer", **approval_anchor(service, task["id"]))["task"][
+            "status"
+        ]
+        == "merged"
+    )
 
 
 def test_reverted_integration_can_be_cancelled(audit_project):

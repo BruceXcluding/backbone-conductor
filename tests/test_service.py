@@ -64,6 +64,14 @@ def submission(service, intent, **extra):
     )
 
 
+def approval_anchor(service, task_id):
+    packet = service.inspect_task(task_id)
+    return {
+        "expected_version": packet["version"],
+        "expected_target_sha": packet["git"]["target_sha"],
+    }
+
+
 def test_complete_workflow_survives_restart_and_records_human_review(project):
     service, repo = project
     intent, task = assigned(service, affected_paths=["greeting.py"])
@@ -74,9 +82,9 @@ def test_complete_workflow_survives_restart_and_records_human_review(project):
     assert result["artifact"]["commit_sha"] == commit
     assert result["checks"]["intent"]["status"] == "requires_human_review"
     with pytest.raises(ValueError, match="Merge the reviewed"):
-        service.merge_task(task["id"], "owner")
+        service.merge_task(task["id"], "owner", **approval_anchor(service, task["id"]))
     git(repo, "merge", "--no-edit", "feature/greeting")
-    result = service.merge_task(task["id"], "owner")
+    result = service.merge_task(task["id"], "owner", **approval_anchor(service, task["id"]))
     assert result["task"]["status"] == "merged"
     restored = Conductor(repo).state()
     assert restored["intents"][intent["id"]]["status"] == "completed"
@@ -139,7 +147,7 @@ def test_branch_change_invalidates_submission(project):
     git(repo, "switch", "main")
     git(repo, "merge", "--no-edit", "feature/greeting")
     with pytest.raises(ValueError, match="changed after"):
-        service.merge_task(task["id"], "owner")
+        service.merge_task(task["id"], "owner", **approval_anchor(service, task["id"]))
 
 
 def test_arbitration_is_audited_and_new_evidence_is_not_waived(project):
@@ -549,9 +557,12 @@ def test_decision_after_submission_requires_explicit_merge_review(project):
     service.transition_decision(decision["id"], "accepted")
     git(repo, "merge", "--no-edit", "feature/greeting")
     with pytest.raises(ValueError, match="review rationale"):
-        service.merge_task(task["id"], "owner")
+        service.merge_task(task["id"], "owner", **approval_anchor(service, task["id"]))
     result = service.merge_task(
-        task["id"], "owner", "Checked the new guideline against greeting.py"
+        task["id"],
+        "owner",
+        "Checked the new guideline against greeting.py",
+        **approval_anchor(service, task["id"]),
     )
     assert result["task"]["status"] == "merged"
     assert decision["id"] in result["review_decision"]["rationale"]

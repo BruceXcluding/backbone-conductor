@@ -115,10 +115,17 @@ def _review_merge(url: str, token: str, task_id: str, barrier, results) -> None:
     try:
         barrier.wait(timeout=20)
         with httpx.Client(base_url=url, timeout=15, trust_env=False) as client:
+            headers = {"Authorization": f"Bearer {token}"}
+            packet = client.get(f"/tasks/{task_id}/inspection", headers=headers).json()
             response = client.post(
                 f"/tasks/{task_id}/merge",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"author": "carol", "rationale": "Reviewed the merged implementation"},
+                headers=headers,
+                json={
+                    "author": "carol",
+                    "rationale": "Reviewed the merged implementation",
+                    "expected_version": packet["version"],
+                    "expected_target_sha": packet["git"]["target_sha"],
+                },
             )
             results.put({"status": response.status_code, "body": response.json()})
     except Exception as exc:
