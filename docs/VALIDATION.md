@@ -193,4 +193,4 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 
 日期：2026-09-29。成员可通过 MCP `fetch_artifact_branch`、HTTP `POST /tasks/{task_id}/fetch` 或 CLI `task fetch` 请求协调端从已配置 Git remote 获取自己任务的功能分支。请求必须给出完整小写提交 SHA；获取先写入临时引用，核对远端 tip，再只允许快进远端跟踪引用。Git 默认 refmap 会在验证前隐式更新跟踪引用，因此实现显式使用空 `--refmap=`；端到端测试验证错误 SHA、正常快进、强推改写和身份冒用分别被拒绝或正确处理。`submit_artifact` 若携带 `commit_sha`，则必须与 Git 实际解析的提交一致；真实路径和检查仍由协调端计算。获取操作不切换 HEAD，也不产生元数据审计提交。
 
-强制执行真实 HTTP/HTTPS 的完整本机套件 **316 passed，2 个 DSH 专项用例 skipped，覆盖率 89.71%**；增加正常快进用例后另单独重跑该跨克隆测试 **1 passed**。Ruff 检查与格式检查、锁文件检查、24/24 合成规则评测、四例历史 Git 合并回放、示例、0.32.0 source distribution/wheel 构建及 wheel 导入通过。上述多人角色仍由同一测试进程模拟；真实不同自然人、公网部署和前瞻人工标签尚未验证。
+强制执行真实 HTTP/HTTPS 的完整本机套件 **316 passed，2 个 DSH 专项用例 skipped，覆盖率 89.71%**；增加正常快进用例后另单独重跑该跨克隆测试 **1 passed**。Ruff 检查与格式检查、锁文件检查、24/24 合成规则评测、四例历史 Git 合并回放、示例、0.32.0 source distribution/wheel 构建及 wheel 导入通过。Compose 的 HTTP/HTTPS、独立元数据分支与隔离网络成员 MCP 验证亦通过，两个部署检查器已更新为八工具契约。上述多人角色仍由同一测试进程模拟；真实不同自然人、公网部署和前瞻人工标签尚未验证。

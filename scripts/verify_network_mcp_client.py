@@ -34,6 +34,7 @@ async def main() -> None:
                 tools = {tool.name for tool in (await session.list_tools()).tools}
                 assert tools == {
                     "get_my_task",
+                    "fetch_artifact_branch",
                     "submit_artifact",
                     "check_backbone_sync",
                     "create_intent",

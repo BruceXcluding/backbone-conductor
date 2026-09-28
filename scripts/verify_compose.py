@@ -164,7 +164,8 @@ def verify_member_mcp(
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     tools = {item.name for item in (await session.list_tools()).tools}
-                    assert len(tools) == 7 and "dispatch_task" not in tools
+                    assert len(tools) == 8 and "fetch_artifact_branch" in tools
+                    assert "dispatch_task" not in tools
                     result = await session.call_tool(
                         "create_intent",
                         {
