@@ -149,12 +149,13 @@ uv run backbone --repo /path/to/project review TASK_ID \
 uv run ruff check .
 uv run ruff format --check .
 uv run pytest --cov=backbone_conductor --cov-fail-under=85
+uv run pytest tests/test_live_http.py -q
 uv run python scripts/evaluate.py
 uv run python scripts/benchmark.py
 uv build
 ```
 
-CI 对 Python 3.12、3.13 运行检查、测试、合成评测和示例。合成用例通过率不代表真实项目冲突召回率。
+CI 对 Python 3.12、3.13 运行检查、测试、合成评测和示例；其中真实 HTTP 双客户端进程测试必须运行，不能因缺少 loopback socket 权限而跳过。本地受限沙箱若禁止监听 socket，该测试会明确跳过，可在允许本地网络的环境单独运行。合成用例通过率不代表真实项目冲突召回率。
 
 若 macOS 的 editable `.pth` 被标记 hidden 导致模块不存在，可用 `uv sync --locked --group dev --no-editable`，随后执行 `uv run --no-sync ...`；源码修改后需重装。开发测试也可显式设置 `PYTHONPATH=src`。
 
