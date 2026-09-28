@@ -6,7 +6,10 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from backbone_conductor.api import create_app
+from backbone_conductor.auth import create_token_file
 from backbone_conductor.cli import main
 from backbone_conductor.models import Decision, Intent, Task
 from backbone_conductor.service import Conductor
@@ -104,6 +107,7 @@ def test_persistence_versions_and_generated_views(repo: Path):
     assert entry["author"] == "Storage Test"
     assert entry["message"] == "backbone: add coordination objects"
     assert entry["timestamp"]
+    assert "http_principal" not in entry
 
 
 def test_unrelated_staged_and_unstaged_changes_preserved(repo: Path):
@@ -519,6 +523,34 @@ def test_reconcile_same_object_changes_require_review(repo: Path, tmp_path: Path
     assert second.read().intents[intent["id"]].problem == "First edit"
     assert resolved["parents"] == [inspection["local_head"], inspection["remote_head"]]
     assert '"intents/intent-shared": "remote"' in git(second.root, "show", "-s", "--format=%B")
+
+
+def test_authenticated_http_reconcile_attributes_merge_commit(repo: Path, tmp_path: Path):
+    first, second, _ = clone_pair(repo, tmp_path)
+    first.mutate(lambda state: state.sessions.update({"alice": {"value": 1}}), "alice update")
+    second.mutate(lambda state: state.sessions.update({"bob": {"value": 2}}), "bob update")
+    first.sync()
+    inspection = second.refresh()
+    credentials = tmp_path / "credentials.json"
+    token = create_token_file(credentials, second.root, "owner", [])[0]["token"]
+    with TestClient(create_app(second.root, auth_file=credentials)) as client:
+        response = client.post(
+            "/reconcile",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "local_head": inspection["local_head"],
+                "remote_head": inspection["remote_head"],
+                "author": "owner",
+                "rationale": "Reviewed independent session updates",
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "reconciled"
+    message = git(second.root, "show", "-s", "--format=%B", "HEAD")
+    assert "Backbone-HTTP-Principal: owner" in message
+    assert "Backbone-HTTP-Role: admin" in message
+    assert token not in message
+    assert second.log(limit=1)[0]["http_principal"] == "owner"
 
 
 def test_reconcile_reviewed_object_value_merges_both_edits_via_cli(

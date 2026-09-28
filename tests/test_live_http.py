@@ -217,6 +217,27 @@ def test_authenticated_live_server_coordinates_two_member_processes(tmp_path: Pa
         )
         assert _git(repo, "rev-list", "--count", "HEAD") == "9"
         assert _git(repo, "status", "--porcelain") == ""
+        history = _git(repo, "log", "--format=%B", "--", ".backbone")
+        assert "Backbone-HTTP-Principal: alice" in history
+        assert "Backbone-HTTP-Principal: bob" in history
+        assert "Backbone-HTTP-Principal: owner" in history
+        assert all(token not in history for token in tokens.values())
+        for name in names:
+            creation = _git(
+                repo,
+                "log",
+                "-1",
+                "--format=%B",
+                "--grep",
+                f"backbone: intent intent-{name} created",
+            )
+            assert f"Backbone-HTTP-Principal: {name}" in creation
+            assert "Backbone-HTTP-Role: member" in creation
+        dispatched = _git(repo, "log", "-1", "--format=%B", "--grep", "dispatched to bob")
+        assert "Backbone-HTTP-Principal: owner" in dispatched
+        assert "Backbone-HTTP-Role: admin" in dispatched
+        initial = _git(repo, "rev-list", "--max-parents=0", "HEAD")
+        assert "Backbone-HTTP-" not in _git(repo, "show", "-s", "--format=%B", initial)
         rotated = rotate_token_file(credentials, repo, "owner", ["alice", "bob"])
         new_owner_token = next(item["token"] for item in rotated if item["name"] == "owner")
         with httpx.Client(base_url=url, timeout=15, trust_env=False) as client:

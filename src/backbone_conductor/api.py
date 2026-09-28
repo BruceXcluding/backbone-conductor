@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
+from .audit import bind_http_actor, reset_http_actor
 from .auth import Principal, TokenAuth
 from .service import Conductor
 
@@ -135,7 +136,13 @@ def create_app(
             request.state.principal = principal
             if principal.role == "member" and not _member_route(request.method, request.url.path):
                 return JSONResponse(status_code=403, content={"detail": "Admin role required"})
-        return await call_next(request)
+        if auth is None or request.state.principal is None:
+            return await call_next(request)
+        token = bind_http_actor(request.state.principal.name, request.state.principal.role)
+        try:
+            return await call_next(request)
+        finally:
+            reset_http_actor(token)
 
     def bind_member(request: Request, member_id: str | None) -> str | None:
         principal = request.state.principal

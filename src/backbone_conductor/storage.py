@@ -21,6 +21,7 @@ from typing import Any, TypeVar
 
 from filelock import FileLock, Timeout
 
+from backbone_conductor.audit import attributed_message
 from backbone_conductor.conflicts import refresh_conflicts
 from backbone_conductor.models import BackboneState, IntentStatus, TaskStatus
 
@@ -276,7 +277,7 @@ class GitStore:
                     tree = self._git("write-tree", env=commit_env).stdout.strip()
                     parents = ["-p", head] if head else []
                     commit = self._git(
-                        "commit-tree", tree, *parents, input=message + "\n"
+                        "commit-tree", tree, *parents, input=attributed_message(message)
                     ).stdout.strip()
 
                     # Prepare an index which retains every unrelated staged change.
@@ -324,19 +325,35 @@ class GitStore:
             if self._head() is None:
                 return []
             output = self._git(
-                "log", f"-{limit}", "--format=%H%x00%an%x00%aI%x00%s", "--", ".backbone"
+                "log",
+                "-z",
+                f"-{limit}",
+                "--format=%H%x00%an%x00%aI%x00%s%x00"
+                "%(trailers:key=Backbone-HTTP-Principal,valueonly)%x00"
+                "%(trailers:key=Backbone-HTTP-Role,valueonly)",
+                "--",
+                ".backbone",
             ).stdout
-            return [
-                dict(
-                    zip(
-                        ("commit", "author", "timestamp", "message"),
-                        line.split("\x00", 3),
-                        strict=True,
-                    )
-                )
-                for line in output.splitlines()
-                if line
-            ]
+            fields = output.split("\x00")
+            if fields and not fields[-1]:
+                fields.pop()
+            if len(fields) % 6:
+                raise StorageError("Could not parse Backbone Git audit log")
+            entries = []
+            for offset in range(0, len(fields), 6):
+                commit, author, timestamp, message, principal, role = fields[offset : offset + 6]
+                entry = {
+                    "commit": commit,
+                    "author": author,
+                    "timestamp": timestamp,
+                    "message": message,
+                }
+                principal, role = principal.strip(), role.strip()
+                if principal and "\n" not in principal and role in {"admin", "member"}:
+                    entry["http_principal"] = principal
+                    entry["http_role"] = role
+                entries.append(entry)
+            return entries
 
     def sync(self, remote: str = "origin", branch: str | None = None) -> dict[str, Any]:
         """Explicitly push the current branch; never pull or force-push."""
@@ -617,7 +634,13 @@ class GitStore:
                     }
                     message += "\nResolutions: " + json.dumps(choices, sort_keys=True) + "\n"
                 commit = self._git(
-                    "commit-tree", tree, "-p", local_head, "-p", remote_head, input=message
+                    "commit-tree",
+                    tree,
+                    "-p",
+                    local_head,
+                    "-p",
+                    remote_head,
+                    input=attributed_message(message),
                 ).stdout.strip()
                 if (
                     self._head() != local_head

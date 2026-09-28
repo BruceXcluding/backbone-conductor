@@ -78,3 +78,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## 本地真实 HTTP 多进程演练
 
 日期：2026-09-28。新增 `tests/test_live_http.py`：启动实际 Uvicorn 子进程，两个独立客户端进程同时以各自 bearer 身份创建意图；管理员接受并分派后，客户端再次并发读取、隔离并开始自己的任务。测试核对仓库快照、9 个审计提交、干净工作树，并在服务不停机时轮换令牌，确认旧管理员令牌被拒而新令牌生效。本机受限沙箱禁止绑定 loopback，普通本地运行明确跳过；允许 socket 的本机完整套件 **263 passed，1 个可选 DSH 测试 skipped，覆盖率 90.70%**。CI 设置 `BACKBONE_REQUIRE_LIVE_HTTP=1`，不允许因 socket 权限而跳过。此为本地模拟客户端流程，不等于真实用户、TLS 或远程部署验证。
+
+## v0.10 增量
+
+日期：2026-09-28。经 bearer 验证的 HTTP 元数据写入，在 Git 提交消息中追加 principal 与角色 trailer；`backbone log`/时间线接口从提交中展示 `http_principal`、`http_role`。请求上下文在响应后清理，未认证本地调用没有 HTTP 归属。针对性测试覆盖普通领域写入、两个独立客户端进程并发写入、HTTP `reconcile` 双父提交、正确的成员/管理员对应关系、无明文令牌及请求结束后的本地写入。完整套件在强制执行真实 HTTP 测试时 **264 passed，1 个可选 DSH 测试 skipped，覆盖率 90.81%**；Ruff 检查与格式检查、合成评测 24/24、Git 示例、0.10.0 wheel/source distribution 构建通过。Git trailer 可由有仓库写权限者伪造，不是密码学签名；TLS、外部 Git 权限控制与真实多人部署仍未验证。

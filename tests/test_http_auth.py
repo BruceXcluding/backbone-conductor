@@ -200,6 +200,33 @@ def test_http_authenticates_and_limits_member_to_own_tasks(auth_repo: tuple[Path
         )
         assert cancelled.status_code == 200, cancelled.text
         assert cancelled.json()["task"]["cancelled_by"] == "owner"
+    history = subprocess.run(
+        ["git", "-C", str(repo), "log", "--format=%B", "--", ".backbone"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "Backbone-HTTP-Principal: alice" in history
+    assert "Backbone-HTTP-Role: member" in history
+    assert "Backbone-HTTP-Principal: owner" in history
+    assert "Backbone-HTTP-Role: admin" in history
+    assert all(token not in history for token in (ADMIN_TOKEN, ALICE_TOKEN, BOB_TOKEN))
+    entries = Conductor(repo).log()
+    assert {entry.get("http_principal") for entry in entries} >= {"owner", "alice"}
+    assert any(
+        entry.get("http_principal") == "owner" and entry.get("http_role") == "admin"
+        for entry in entries
+    )
+    Conductor(repo).create_intent(
+        {"id": "intent-local", "author": "local", "problem": "Local", "proposed_outcome": "Work"}
+    )
+    local_commit = subprocess.run(
+        ["git", "-C", str(repo), "show", "-s", "--format=%B", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "Backbone-HTTP-" not in local_commit
 
 
 def test_member_decisions_and_admin_author_are_bound(auth_repo: tuple[Path, Path]) -> None:

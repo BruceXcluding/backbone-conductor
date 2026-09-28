@@ -44,7 +44,7 @@ docker compose up -d
 
 ## 审计与恢复
 
-- `backbone log` / `git log -- .backbone` 查看历史。
+- `backbone log` / `git log -- .backbone` 查看历史。已认证 HTTP 写入会在提交中留下 `Backbone-HTTP-Principal` 与 `Backbone-HTTP-Role` trailer，`backbone log` 返回 `http_principal` / `http_role`；未认证本地调用没有这些字段。它们记录服务端已验证的 bearer principal，不是 Git 签名，也无法阻止拥有仓库写权限的人伪造提交；Git author 仍由仓库配置决定。
 - `backbone decision transition DECISION_ID reverted` 撤销接受过的决策并重算冲突。
 - 整体回退需先停服务和备份，查看差异后 `git revert <metadata-commit>`；再确认 backbone status。首选领域命令，整提交回退可能改变多个对象。
 - state.json 是权威快照，其他文件是生成视图。未提交的手工修改会被拒绝；修复时先停服务、检查并提交一致快照。
