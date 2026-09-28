@@ -99,7 +99,12 @@ class Conductor:
     def create_intent(self, data: dict) -> dict:
         intent = Intent.model_validate(data)
         _actor(intent.author)
-        if intent.status != IntentStatus.DRAFT or intent.artifacts:
+        if (
+            intent.status != IntentStatus.DRAFT
+            or intent.artifacts
+            or intent.supersedes
+            or intent.change_reason
+        ):
             raise ValueError("New intents must be draft with no artifacts; use lifecycle actions")
 
         def change(state: BackboneState):
@@ -119,6 +124,8 @@ class Conductor:
         target = IntentStatus(status)
         if target == IntentStatus.COMPLETED:
             raise ValueError("Complete an intent by recording a verified task merge")
+        if target == IntentStatus.SUPERSEDED:
+            raise ValueError("Supersede an intent by creating an audited replacement")
 
         def change(state: BackboneState):
             intent = state.intents[intent_id]
@@ -184,6 +191,63 @@ class Conductor:
             return _dump(revised)
 
         return self.store.mutate(change, f"backbone: intent {intent_id} revised by {author}")
+
+    def replace_intent(
+        self,
+        intent_id: str,
+        patch: dict,
+        author: str,
+        reason: str,
+        expected_version: str,
+    ) -> dict:
+        """Atomically close accepted work and draft a linked successor for fresh approval."""
+        author = _actor(author)
+        if not isinstance(patch, dict) or not patch or set(patch) - _EDITABLE_INTENT_FIELDS:
+            raise ValueError("Provide nonempty editable intent fields only")
+        if not reason.strip():
+            raise ValueError("A replacement reason is required")
+        if not expected_version:
+            raise ValueError("expected_version is required for safe replacement")
+
+        def change(state: BackboneState):
+            if state.version != expected_version:
+                raise ValueError("Backbone changed; refresh the intent and retry")
+            current = state.intents[intent_id]
+            if current.status != IntentStatus.ACCEPTED:
+                raise ValueError("Only accepted intents can be replaced; cancel active tasks first")
+            if any(
+                task.intent_id == intent_id and task.status not in _TERMINAL_TASKS
+                for task in state.tasks.values()
+            ):
+                raise ValueError("Cancel active tasks before replacing their intent")
+            replacement = Intent.model_validate(
+                {
+                    **{key: getattr(current, key) for key in _EDITABLE_INTENT_FIELDS},
+                    **patch,
+                    "author": author,
+                    "supersedes": intent_id,
+                    "change_reason": reason.strip(),
+                }
+            )
+            if replacement.parent_intent:
+                if (
+                    replacement.parent_intent == intent_id
+                    or replacement.parent_intent not in state.intents
+                ):
+                    raise ValueError("parent_intent must reference another existing intent")
+                ancestor = replacement.parent_intent
+                visited = {replacement.id}
+                while ancestor:
+                    if ancestor in visited:
+                        raise ValueError("parent_intent cannot create a cycle")
+                    visited.add(ancestor)
+                    ancestor = state.intents[ancestor].parent_intent
+            state.intents[intent_id] = transition_intent(current, IntentStatus.SUPERSEDED)
+            state.intents[replacement.id] = replacement
+            self._refresh(state)
+            return {"previous": _dump(state.intents[intent_id]), "replacement": _dump(replacement)}
+
+        return self.store.mutate(change, f"backbone: intent {intent_id} replaced by {author}")
 
     def log_decision(self, data: dict) -> dict:
         decision = Decision.model_validate(data)

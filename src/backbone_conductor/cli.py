@@ -70,6 +70,16 @@ def build_parser() -> argparse.ArgumentParser:
             revise.add_argument(
                 "--version", required=True, help="Backbone version observed before editing"
             )
+            replace = group.add_parser(
+                "replace", help="Draft an audited replacement for an accepted intent"
+            )
+            replace.add_argument("id")
+            replace.add_argument("--file", required=True, help="JSON patch file, or - for stdin")
+            replace.add_argument("--author", required=True)
+            replace.add_argument("--reason", required=True)
+            replace.add_argument(
+                "--version", required=True, help="Backbone version observed before editing"
+            )
 
     tasks = commands.add_parser("task").add_subparsers(dest="action", required=True)
     dispatch = tasks.add_parser("dispatch", help="Assign an accepted intent to a member")
@@ -243,6 +253,10 @@ def _run(args: argparse.Namespace) -> Any:
         if args.command == "intent" and args.action == "revise":
             return conductor.revise_intent(
                 args.id, _json_file(args.file), args.author, args.version
+            )
+        if args.command == "intent" and args.action == "replace":
+            return conductor.replace_intent(
+                args.id, _json_file(args.file), args.author, args.reason, args.version
             )
         method = (
             conductor.transition_intent

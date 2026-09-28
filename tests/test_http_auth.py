@@ -231,6 +231,39 @@ def test_http_authenticates_and_limits_member_to_own_tasks(auth_repo: tuple[Path
     assert "Backbone-HTTP-" not in local_commit
 
 
+def test_only_admin_can_replace_intent_with_bound_author(auth_repo: tuple[Path, Path]) -> None:
+    repo, auth_file = auth_repo
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        original = client.post(
+            "/intents",
+            headers=auth_header(ALICE_TOKEN),
+            json={"problem": "Old scope", "proposed_outcome": "Deliver"},
+        ).json()
+        client.post(
+            f"/intents/{original['id']}/transition",
+            headers=auth_header(ADMIN_TOKEN),
+            json={"status": "accepted"},
+        )
+        payload = {
+            "author": "owner",
+            "patch": {"problem": "New scope"},
+            "reason": "Priority changed",
+            "expected_version": Conductor(repo).state()["version"],
+        }
+        path = f"/intents/{original['id']}/replace"
+        assert client.post(path, headers=auth_header(ALICE_TOKEN), json=payload).status_code == 403
+        assert client.post(path, headers=auth_header(CAROL_TOKEN), json=payload).status_code == 403
+        assert (
+            client.post(
+                path, headers=auth_header(ADMIN_TOKEN), json={**payload, "author": "alice"}
+            ).status_code
+            == 403
+        )
+        result = client.post(path, headers=auth_header(ADMIN_TOKEN), json=payload)
+        assert result.status_code == 201, result.text
+        assert result.json()["replacement"]["author"] == "owner"
+
+
 def test_reviewer_can_approve_integrated_work_but_not_manage_tasks(
     auth_repo: tuple[Path, Path],
 ) -> None:

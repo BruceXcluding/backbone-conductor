@@ -497,6 +497,12 @@ class GitStore:
         for intent in state.intents.values():
             if intent.parent_intent and intent.parent_intent not in state.intents:
                 raise StorageError(f"Merged intent has missing parent: {intent.id}")
+            if intent.supersedes:
+                previous = state.intents.get(intent.supersedes)
+                if previous is None or previous.status != IntentStatus.SUPERSEDED:
+                    raise StorageError(f"Merged intent has invalid predecessor: {intent.id}")
+                if not intent.change_reason:
+                    raise StorageError(f"Merged intent lacks replacement reason: {intent.id}")
             visited = {intent.id}
             ancestor = intent.parent_intent
             while ancestor:

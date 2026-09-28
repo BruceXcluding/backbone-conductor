@@ -91,6 +91,10 @@ class IntentRevision(Approval):
     expected_version: str = Field(min_length=1)
 
 
+class IntentReplacement(IntentRevision):
+    reason: str = Field(min_length=1)
+
+
 class Cancellation(Approval):
     reason: str = Field(min_length=1)
 
@@ -261,6 +265,12 @@ def create_app(
     def revise_intent(intent_id: str, data: IntentRevision, request: Request) -> dict:
         return conductor.revise_intent(
             intent_id, data.patch, actor(request, data.author), data.expected_version
+        )
+
+    @app.post("/intents/{intent_id}/replace", status_code=201)
+    def replace_intent(intent_id: str, data: IntentReplacement, request: Request) -> dict:
+        return conductor.replace_intent(
+            intent_id, data.patch, actor(request, data.author), data.reason, data.expected_version
         )
 
     @app.get("/decisions")

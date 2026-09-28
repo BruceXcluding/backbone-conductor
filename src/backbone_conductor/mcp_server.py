@@ -92,6 +92,13 @@ def create_server(
             return conductor.revise_intent(intent_id, patch, author, expected_version)
 
         @server.tool()
+        def replace_intent(
+            intent_id: str, patch: dict[str, Any], author: str, reason: str, expected_version: str
+        ) -> dict:
+            """Administrator: draft a linked replacement for accepted work after cancelling tasks."""
+            return conductor.replace_intent(intent_id, patch, author, reason, expected_version)
+
+        @server.tool()
         def cancel_task(task_id: str, author: str, reason: str) -> dict:
             """Administrator: cancel active work, recording the reason and reopening its intent."""
             return conductor.cancel_task(task_id, author, reason)

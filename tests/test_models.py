@@ -183,6 +183,7 @@ def test_intent_lifecycle(current, target):
         ("draft", "accepted"),
         ("accepted", "in_progress"),
         ("accepted", "rejected"),
+        ("accepted", "superseded"),
         ("in_progress", "completed"),
         ("in_progress", "superseded"),
         ("in_progress", "accepted"),

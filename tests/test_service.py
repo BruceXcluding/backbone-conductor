@@ -282,6 +282,67 @@ def test_cancel_reopens_intent_and_allows_new_assignment(project):
     assert service.get_my_task("bob")["tasks"][0]["id"] == replacement["id"]
 
 
+def test_cancel_then_replace_intent_preserves_history_and_requires_fresh_acceptance(project):
+    service, repo = project
+    original, task = assigned(service, affected_paths=["greeting.py"])
+    before = service.state()["version"]
+    with pytest.raises(ValueError, match="Only accepted"):
+        service.replace_intent(original["id"], {"problem": "New scope"}, "owner", "Changed", before)
+    assert service.state()["version"] == before
+    service.cancel_task(task["id"], "owner", "Scope changed")
+    version = service.state()["version"]
+    with pytest.raises(ValueError, match="changed"):
+        service.replace_intent(original["id"], {"problem": "New"}, "owner", "Changed", before)
+    with pytest.raises(ValueError, match="editable"):
+        service.replace_intent(original["id"], {"status": "completed"}, "owner", "Changed", version)
+    with pytest.raises(ValueError, match="reason"):
+        service.replace_intent(original["id"], {"problem": "New"}, "owner", " ", version)
+    result = service.replace_intent(
+        original["id"],
+        {"problem": "New scope", "affected_paths": ["src/"]},
+        "owner",
+        "Requirements changed",
+        version,
+    )
+    successor = result["replacement"]
+    assert result["previous"]["status"] == "superseded"
+    assert successor["status"] == "draft"
+    assert successor["supersedes"] == original["id"]
+    assert successor["change_reason"] == "Requirements changed"
+    assert successor["problem"] == "New scope"
+    assert successor["affected_paths"] == ["src/"]
+    assert successor["proposed_outcome"] == original["proposed_outcome"]
+    assert service.state()["tasks"][task["id"]]["status"] == "cancelled"
+    assert service.state()["intents"][original["id"]]["problem"] == original["problem"]
+    assert git(repo, "log", "-1", "--format=%s").endswith("replaced by owner")
+    with pytest.raises(ValueError, match="invalid Intent transition"):
+        service.transition_intent(original["id"], "accepted")
+    with pytest.raises(ValueError, match="accepted"):
+        service.dispatch_task(successor["id"], "bob")
+    service.transition_intent(successor["id"], "accepted")
+    assert service.dispatch_task(successor["id"], "bob")["intent_id"] == successor["id"]
+
+
+def test_direct_supersession_and_forged_replacement_are_rejected(project):
+    service, _ = project
+    original = service.create_intent(
+        {"author": "owner", "problem": "Original", "proposed_outcome": "Build"}
+    )
+    with pytest.raises(ValueError, match="lifecycle"):
+        service.create_intent(
+            {
+                "author": "owner",
+                "problem": "Fake replacement",
+                "proposed_outcome": "Build",
+                "supersedes": original["id"],
+                "change_reason": "Changed",
+            }
+        )
+    service.transition_intent(original["id"], "accepted")
+    with pytest.raises(ValueError, match="audited replacement"):
+        service.transition_intent(original["id"], "superseded")
+
+
 def test_task_rebase_refreshes_decisions_and_invalidates_submitted_artifact(project):
     service, repo = project
     intent, task = assigned(service)

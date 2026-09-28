@@ -75,6 +75,39 @@ def test_cli_initialization_creation_and_readable_failures(interface_repo: Path,
     assert "limit" in json.loads(capsys.readouterr().err)["error"]
 
 
+def test_cli_replaces_accepted_intent_with_audited_draft(interface_repo: Path, capsys) -> None:
+    prefix = ["--repo", str(interface_repo)]
+    assert main([*prefix, "init"]) == 0
+    capsys.readouterr()
+    original = Conductor(interface_repo).create_intent(intent_data())
+    Conductor(interface_repo).transition_intent(original["id"], "accepted")
+    version = Conductor(interface_repo).state()["version"]
+    patch_file = interface_repo.parent / "replacement.json"
+    patch_file.write_text(json.dumps({"problem": "Export needs a new shape"}), encoding="utf-8")
+    assert (
+        main(
+            [
+                *prefix,
+                "intent",
+                "replace",
+                original["id"],
+                "--file",
+                str(patch_file),
+                "--author",
+                "owner",
+                "--reason",
+                "Requirements changed",
+                "--version",
+                version,
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["previous"]["status"] == "superseded"
+    assert result["replacement"]["supersedes"] == original["id"]
+
+
 def test_cli_rejects_non_object_json_and_exports_schema(interface_repo: Path, capsys) -> None:
     payload = interface_repo.parent / "invalid.json"
     payload.write_text("[]", encoding="utf-8")
@@ -141,6 +174,28 @@ def test_http_lifecycle_and_error_mapping(interface_repo: Path) -> None:
         assert client.get("/openapi.json").status_code == 200
 
 
+def test_http_replacement_requires_current_version_and_returns_linked_draft(
+    interface_repo: Path,
+) -> None:
+    conductor = Conductor(interface_repo)
+    conductor.initialize()
+    with TestClient(create_app(interface_repo)) as client:
+        original = client.post("/intents", json=intent_data()).json()
+        client.post(f"/intents/{original['id']}/transition", json={"status": "accepted"})
+        version = conductor.state()["version"]
+        payload = {
+            "author": "owner",
+            "patch": {"problem": "Export needs a new shape"},
+            "reason": "Requirements changed",
+            "expected_version": version,
+        }
+        response = client.post(f"/intents/{original['id']}/replace", json=payload)
+        assert response.status_code == 201, response.text
+        assert response.json()["replacement"]["supersedes"] == original["id"]
+        assert client.get(f"/intents/{original['id']}").json()["status"] == "superseded"
+        assert client.post(f"/intents/{original['id']}/replace", json=payload).status_code == 422
+
+
 def test_http_task_submission_binds_path_and_requires_real_merge(interface_repo: Path) -> None:
     conductor = Conductor(interface_repo)
     conductor.initialize()
@@ -195,6 +250,7 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
                 "resolve_conflict",
                 "merge_task",
                 "revise_intent",
+                "replace_intent",
                 "cancel_task",
                 "refresh_backbone",
                 "reconcile_backbone",
@@ -223,10 +279,29 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             "resolve_conflict",
             "merge_task",
             "revise_intent",
+            "replace_intent",
             "cancel_task",
             "refresh_backbone",
             "reconcile_backbone",
         } <= admin_names
+        intent_id = next(iter(state["intents"]))
+        Conductor(interface_repo).transition_intent(intent_id, "accepted")
+        await create_server(interface_repo).call_tool(
+            "replace_intent",
+            {
+                "intent_id": intent_id,
+                "patch": {"problem": "Revised scope"},
+                "author": "owner",
+                "reason": "Requirements changed",
+                "expected_version": Conductor(interface_repo).state()["version"],
+            },
+        )
+        successors = [
+            item
+            for item in Conductor(interface_repo).state()["intents"].values()
+            if item["supersedes"] == intent_id
+        ]
+        assert len(successors) == 1
 
     asyncio.run(check())
 

@@ -109,6 +109,8 @@ class Intent(ProtocolModel):
     constraints: list[Text] = Field(default_factory=list)
     status: IntentStatus = IntentStatus.DRAFT
     parent_intent: Identifier | None = None
+    supersedes: Identifier | None = None
+    change_reason: Text | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)
     artifacts: list[Identifier] = Field(default_factory=list)
     operations: dict[Text, Operation] = Field(default_factory=dict)
@@ -213,7 +215,11 @@ class BackboneState(ProtocolModel):
 
 INTENT_TRANSITIONS = {
     IntentStatus.DRAFT: {IntentStatus.ACCEPTED},
-    IntentStatus.ACCEPTED: {IntentStatus.IN_PROGRESS, IntentStatus.REJECTED},
+    IntentStatus.ACCEPTED: {
+        IntentStatus.IN_PROGRESS,
+        IntentStatus.REJECTED,
+        IntentStatus.SUPERSEDED,
+    },
     IntentStatus.IN_PROGRESS: {
         IntentStatus.ACCEPTED,
         IntentStatus.COMPLETED,
