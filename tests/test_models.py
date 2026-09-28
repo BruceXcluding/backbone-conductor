@@ -185,6 +185,7 @@ def test_intent_lifecycle(current, target):
         ("accepted", "rejected"),
         ("in_progress", "completed"),
         ("in_progress", "superseded"),
+        ("in_progress", "accepted"),
     }
     original = intent(status=current)
     if (current.value, target.value) in legal:
@@ -217,6 +218,9 @@ def test_task_lifecycle(current, target):
         ("in_progress", "submitted"),
         ("submitted", "in_progress"),
         ("submitted", "merged"),
+        ("dispatched", "cancelled"),
+        ("in_progress", "cancelled"),
+        ("submitted", "cancelled"),
     }
     original = task(status=current)
     if (current.value, target.value) in legal:

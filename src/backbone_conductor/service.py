@@ -23,6 +23,17 @@ from .models import (
 )
 from .storage import GitStore
 
+_TERMINAL_TASKS = {TaskStatus.MERGED, TaskStatus.CANCELLED}
+_EDITABLE_INTENT_FIELDS = {
+    "problem",
+    "proposed_outcome",
+    "affected_symbols",
+    "constraints",
+    "parent_intent",
+    "operations",
+    "affected_paths",
+}
+
 
 def _dump(value: Any) -> dict:
     return value.model_dump(mode="json")
@@ -90,6 +101,15 @@ class Conductor:
             and relevant.intersection(c.parties)
         ]
 
+    @staticmethod
+    def _decision_delta(state: BackboneState, task: Task) -> dict[str, list[str]]:
+        accepted = {d.id for d in state.decisions.values() if d.status == DecisionStatus.ACCEPTED}
+        at_fork = set(task.decisions_at_fork)
+        return {
+            "new_decisions": sorted(accepted - at_fork),
+            "withdrawn_decisions": sorted(at_fork - accepted),
+        }
+
     def create_intent(self, data: dict) -> dict:
         intent = Intent.model_validate(data)
         _actor(intent.author)
@@ -99,6 +119,8 @@ class Conductor:
         def change(state: BackboneState):
             if intent.id in state.intents:
                 raise ValueError(f"Intent already exists: {intent.id}")
+            if intent.parent_intent == intent.id:
+                raise ValueError("An intent cannot be its own parent")
             if intent.parent_intent and intent.parent_intent not in state.intents:
                 raise KeyError(intent.parent_intent)
             state.intents[intent.id] = intent
@@ -117,8 +139,10 @@ class Conductor:
             active = [
                 t
                 for t in state.tasks.values()
-                if t.intent_id == intent_id and t.status != TaskStatus.MERGED
+                if t.intent_id == intent_id and t.status not in _TERMINAL_TASKS
             ]
+            if active and target == IntentStatus.ACCEPTED:
+                raise ValueError("Cannot return an intent to accepted with an active task")
             if active and target in (IntentStatus.SUPERSEDED, IntentStatus.REJECTED):
                 raise ValueError("Cannot close an intent with an active task")
             updated = transition_intent(intent, target)
@@ -127,6 +151,53 @@ class Conductor:
             return _dump(updated)
 
         return self.store.mutate(change, f"backbone: intent {intent_id} {target.value}")
+
+    def revise_intent(
+        self,
+        intent_id: str,
+        patch: dict,
+        author: str,
+        expected_version: str,
+    ) -> dict:
+        """Revise a draft or undispatched intent; accepted work needs fresh approval."""
+        author = _actor(author)
+        if not isinstance(patch, dict) or not patch or set(patch) - _EDITABLE_INTENT_FIELDS:
+            raise ValueError("Provide nonempty editable intent fields only")
+        if not expected_version:
+            raise ValueError("expected_version is required for safe revision")
+
+        def change(state: BackboneState):
+            if state.version != expected_version:
+                raise ValueError("Backbone changed; refresh the intent and retry")
+            current = state.intents[intent_id]
+            if current.status not in {IntentStatus.DRAFT, IntentStatus.ACCEPTED}:
+                raise ValueError("Only draft or undispatched accepted intents can be revised")
+            if any(t.intent_id == intent_id for t in state.tasks.values()):
+                raise ValueError(
+                    "An intent with task history cannot be revised; create a child intent"
+                )
+            revised = Intent.model_validate(
+                {
+                    **current.model_dump(mode="json"),
+                    **patch,
+                    "status": IntentStatus.DRAFT,
+                }
+            )
+            if revised.parent_intent:
+                if revised.parent_intent == intent_id or revised.parent_intent not in state.intents:
+                    raise ValueError("parent_intent must reference another existing intent")
+                ancestor = revised.parent_intent
+                visited = {intent_id}
+                while ancestor:
+                    if ancestor in visited:
+                        raise ValueError("parent_intent cannot create a cycle")
+                    visited.add(ancestor)
+                    ancestor = state.intents[ancestor].parent_intent
+            state.intents[intent_id] = revised
+            self._refresh(state)
+            return _dump(revised)
+
+        return self.store.mutate(change, f"backbone: intent {intent_id} revised by {author}")
 
     def log_decision(self, data: dict) -> dict:
         decision = Decision.model_validate(data)
@@ -182,7 +253,7 @@ class Conductor:
             if intent.status != IntentStatus.ACCEPTED:
                 raise ValueError("Dispatch requires an accepted intent")
             if any(
-                t.intent_id == intent_id and t.status != TaskStatus.MERGED
+                t.intent_id == intent_id and t.status not in _TERMINAL_TASKS
                 for t in state.tasks.values()
             ):
                 raise ValueError("Intent already has an active task")
@@ -216,7 +287,7 @@ class Conductor:
         member_id = _actor(member_id)
         tasks = []
         for task in state.tasks.values():
-            if task.member_id != member_id or task.status == TaskStatus.MERGED:
+            if task.member_id != member_id or task.status in _TERMINAL_TASKS:
                 continue
             tasks.append(
                 {
@@ -242,6 +313,93 @@ class Conductor:
             return _dump(task)
 
         return self.store.mutate(change, f"backbone: task {task_id} started by {_actor(member_id)}")
+
+    def cancel_task(self, task_id: str, author: str, reason: str) -> dict:
+        """Close active work and return its intent to the accepted dispatch queue."""
+        author = _actor(author)
+        if not reason.strip():
+            raise ValueError("A cancellation reason is required")
+
+        def change(state: BackboneState):
+            task = state.tasks[task_id]
+            if task.status in _TERMINAL_TASKS:
+                raise ValueError("A completed or cancelled task cannot be cancelled")
+            if (
+                task.artifact
+                and task.artifact.commit_sha
+                and not self._git(
+                    "merge-base", "--is-ancestor", task.artifact.commit_sha, task.base_ref
+                ).returncode
+            ):
+                raise ValueError("Revert integrated artifact code before cancelling the task")
+            intent = state.intents[task.intent_id]
+            if intent.status != IntentStatus.IN_PROGRESS:
+                raise ValueError("Active task has an inconsistent intent status")
+            task = transition_task(task, TaskStatus.CANCELLED)
+            task.cancelled_by = author
+            task.cancel_reason = reason.strip()
+            state.tasks[task_id] = task
+            state.intents[intent.id] = transition_intent(intent, IntentStatus.ACCEPTED)
+            self._refresh(state)
+            return {"task": _dump(task), "intent": _dump(state.intents[intent.id])}
+
+        return self.store.mutate(change, f"backbone: task {task_id} cancelled by {author}")
+
+    def rebase_task(self, task_id: str, member_id: str, expected_version: str) -> dict:
+        """Refresh task context against current decisions and target branch.
+
+        This records a semantic rebase; it does not execute git rebase on source code.
+        Submitted artifacts lose approval and must be checked again.
+        """
+        member_id = _actor(member_id)
+        if not expected_version:
+            raise ValueError("expected_version is required for safe context refresh")
+
+        def change(state: BackboneState):
+            if state.version != expected_version:
+                raise ValueError("Backbone changed; refresh the task and retry")
+            task = state.tasks[task_id]
+            if task.member_id != member_id:
+                raise PermissionError("Task belongs to another member")
+            if task.status in _TERMINAL_TASKS:
+                raise ValueError("A completed or cancelled task cannot be rebased")
+            if (
+                task.artifact
+                and task.artifact.commit_sha
+                and not self._git(
+                    "merge-base", "--is-ancestor", task.artifact.commit_sha, task.base_ref
+                ).returncode
+            ):
+                raise ValueError("Artifact is already integrated; record merge review or revert it")
+            current_branch = self._git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
+            if current_branch != task.base_ref:
+                raise ValueError(f"Refresh task context on its target branch: {task.base_ref}")
+            new_base = self._commit(task.base_ref)
+            if (
+                task.base_sha
+                and self._git("merge-base", "--is-ancestor", task.base_sha, new_base).returncode
+            ):
+                raise ValueError("Target branch history was rewritten; inspect it before rebasing")
+            task.base_sha = new_base
+            task.backbone_version = state.version
+            task.decisions_at_fork = sorted(
+                d.id for d in state.decisions.values() if d.status == DecisionStatus.ACCEPTED
+            )
+            task.constraints = list(state.intents[task.intent_id].constraints)
+            had_artifact = task.artifact is not None
+            if task.status == TaskStatus.SUBMITTED:
+                task = transition_task(task, TaskStatus.IN_PROGRESS)
+            if had_artifact:
+                task.artifact = None
+            state.tasks[task_id] = task
+            self._refresh(state)
+            return {
+                "task": _dump(task),
+                "requires_resubmission": had_artifact,
+                "conflicts": [_dump(c) for c in self._blockers(state, task.intent_id, task.id)],
+            }
+
+        return self.store.mutate(change, f"backbone: task {task_id} context rebased by {member_id}")
 
     def _git(self, *args: str) -> subprocess.CompletedProcess:
         return self.store._git(*args, check=False)
@@ -270,7 +428,7 @@ class Conductor:
                 for t in state.tasks.values()
                 if t.intent_id == item.intent_id
                 and t.member_id == member_id
-                and t.status != TaskStatus.MERGED
+                and t.status not in _TERMINAL_TASKS
             ]
             if len(matching) != 1:
                 raise ValueError("Artifact must match exactly one assigned active task")
@@ -305,6 +463,8 @@ class Conductor:
             task.artifact = item
             conflicts = self._refresh(state)
             blocking = self._blockers(state, item.intent_id, task.id)
+            delta = self._decision_delta(state, task)
+            context_stale = bool(delta["new_decisions"] or delta["withdrawn_decisions"])
             code_ok = bool(diff["ok"]) and bool(item.changed_paths) and not metadata_changes
             checks = {
                 "code": {
@@ -327,9 +487,16 @@ class Conductor:
                     "conflict_ids": [c.id for c in blocking],
                     "detail": "Deterministic rules only; human semantic review required.",
                 },
+                "context": {
+                    "status": "failed" if context_stale else "passed",
+                    **delta,
+                    "detail": "Refresh task context and resubmit when decisions change."
+                    if context_stale
+                    else "Task decision snapshot is current.",
+                },
             }
             item.checks = checks
-            ready = code_ok and not forbidden and not outside and not blocking
+            ready = code_ok and not forbidden and not outside and not blocking and not context_stale
             if ready:
                 state.tasks[task.id] = transition_task(task, TaskStatus.SUBMITTED)
                 if item.id not in intent.artifacts:
@@ -358,17 +525,15 @@ class Conductor:
         tasks = [
             t
             for t in state.tasks.values()
-            if t.status != TaskStatus.MERGED and (member_id is None or t.member_id == member_id)
+            if t.status not in _TERMINAL_TASKS and (member_id is None or t.member_id == member_id)
         ]
-        accepted = {d.id for d in state.decisions.values() if d.status == DecisionStatus.ACCEPTED}
         return {
             "version": state.version,
             "changed": state.version != since_version,
             "updates": [
                 {
                     "task_id": t.id,
-                    "new_decisions": sorted(accepted - set(t.decisions_at_fork)),
-                    "withdrawn_decisions": sorted(set(t.decisions_at_fork) - accepted),
+                    **self._decision_delta(state, t),
                     "conflicts": [_dump(c) for c in self._blockers(state, t.intent_id, t.id)],
                 }
                 for t in tasks
@@ -420,7 +585,7 @@ class Conductor:
 
         return self.store.mutate(change, f"backbone: conflict {conflict_id} resolved by {author}")
 
-    def merge_task(self, task_id: str, author: str) -> dict:
+    def merge_task(self, task_id: str, author: str, rationale: str | None = None) -> dict:
         author = _actor(author)
 
         def change(state: BackboneState):
@@ -447,11 +612,26 @@ class Conductor:
                 raise ValueError(
                     "Unresolved blocking conflicts: " + ", ".join(c.id for c in blockers)
                 )
+            delta = self._decision_delta(state, task)
+            if (delta["new_decisions"] or delta["withdrawn_decisions"]) and not (
+                rationale and rationale.strip()
+            ):
+                raise ValueError(
+                    "Decisions changed after submission; give an explicit review rationale"
+                )
+            review_rationale = (
+                f"Reviewed new decisions {delta['new_decisions']} and withdrawn decisions "
+                f"{delta['withdrawn_decisions']}: {rationale.strip()}"
+                if delta["new_decisions"] or delta["withdrawn_decisions"]
+                else rationale.strip()
+                if rationale and rationale.strip()
+                else "Human records intent, constraints and decision review after Git integration."
+            )
             review = Decision(
                 author=author,
                 decision_type="human_review",
                 summary=f"Approve merged artifact {artifact.id}",
-                rationale="Human records intent, constraints and decision review after Git integration.",
+                rationale=review_rationale,
                 related_intents=[task.intent_id],
                 status=DecisionStatus.ACCEPTED,
             )

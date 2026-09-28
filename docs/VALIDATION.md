@@ -1,4 +1,4 @@
-# v0.1 验证报告
+# v0.1 验证报告（历史基线）
 
 日期：2026-09-16。环境：macOS arm64，Python 3.12.13，Git，uv 0.11.1。
 
@@ -40,3 +40,9 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 - PyPI 发布与许可证选择。
 
 可复现命令见 README；CI 状态以 GitHub Actions 实际运行结果为准。
+
+## v0.2 增量
+
+日期：2026-09-28。新增分派前意图修订、任务取消与上下文 rebase。新增回归测试覆盖过期版本拒绝、重新接受、父意图循环拒绝、取消后重新分派、成员归属检查、已提交产物失效、决策变化后的重检或人工复核理由，以及 CLI/HTTP 入口。
+
+基础环境完整测试：**236 passed，1 skipped，覆盖率 91.31%**。被跳过的是仅用于核对真实 DSH SDK 构造接口的可选测试；在安装了 `dsh` extra 的隔离环境中，runtime 测试 **17 passed**（含该检查）。Ruff 检查与格式检查、24 个合成冲突场景、完整 Git 示例、source distribution 和 wheel 构建通过。基础测试在 `/private/tmp` 隔离环境运行，因为本机 Documents 下旧 `.venv` 的部分包文件被系统标记为 `dataless`，导入时会等待文件回填。远程 CI 状态以对应提交的 GitHub Actions 为准。

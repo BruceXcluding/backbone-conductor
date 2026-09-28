@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.1 提供本地协调内核：CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。
+这是独立个人兴趣项目。v0.2 提供本地协调内核：CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。
 
 ## 快速开始
 
@@ -68,6 +68,25 @@ backbone --repo /path/to/project sync
 ```
 
 `task merge` 验证提交已进入目标分支并记录人工审查，不执行代码合并。`sync` 显式推送当前分支，包括代码和元数据提交，不拉取或强推。已成功提交的任务在分支更新后，需 `task start` 再重新提交；检查失败的任务仍为 in_progress，可直接修复后重交。
+若分派后有新的已接受决策或旧决策撤回，提交检查会要求先执行 `task rebase`，再重新提交产物。若决策是在提交通过之后才改变，而且代码已经合入目标分支，管理员需在 `task merge` 上提供 `--rationale`，说明如何审查了变更的决策。
+
+需求变化时，可在分派前修订意图。先从 `backbone status` 读取 `version`，再提交 JSON 字段补丁；已接受的意图会回到 draft，须重新接受：
+
+```sh
+backbone --repo /path/to/project intent revise INTENT_ID \
+  --file /path/to/patch.json --author owner --version OBSERVED_VERSION
+```
+
+已分派的任务可刷新到最新 Backbone 版本和决策集合。此操作仅刷新任务上下文，不执行 `git rebase`；旧检查结果会失效，需重新提交。取消任务会留下原因，并把意图重新开放给下一次分派：
+
+```sh
+backbone --repo /path/to/project task rebase TASK_ID \
+  --member alice --version OBSERVED_VERSION
+backbone --repo /path/to/project task cancel TASK_ID \
+  --author owner --reason '需求调整'
+```
+
+`intent revise` 和 `task rebase` 都要求先读取当前 `version`，防止使用过期上下文覆盖新决策；命令记录后版本会变化，下次需重新读取。已合入目标分支的产物不能通过取消或刷新任务来撤销，需先处理代码回退。
 
 ## Agent 接入
 

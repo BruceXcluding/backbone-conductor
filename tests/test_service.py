@@ -164,6 +164,8 @@ def test_arbitration_is_audited_and_new_evidence_is_not_waived(project):
         conflict["id"], "owner", "coordinate", "Keep compatibility until next release"
     )
     assert resolution["decision"]["status"] == "accepted"
+    assert not submission(service, intent)["accepted"]
+    service.rebase_task(task["id"], "alice", service.state()["version"])
     assert submission(service, intent)["accepted"]
     assert service.detect_conflicts()["blocking"] == 0
     with pytest.raises(ValueError, match="already resolved"):
@@ -219,3 +221,156 @@ def test_advisory_semantic_review_and_stale_review_rejected(project, monkeypatch
     monkeypatch.setattr(DSHReviewer, "review", stale)
     with pytest.raises(ValueError, match="changed during"):
         service.review_task(task["id"], str(repo / "dsh-home"), "test-model")
+
+
+def test_intent_revision_requires_current_version_and_reapproval(project):
+    service, _ = project
+    parent = service.create_intent(
+        {"author": "owner", "problem": "Parent", "proposed_outcome": "Plan"}
+    )
+    child = service.create_intent(
+        {
+            "author": "owner",
+            "problem": "Original",
+            "proposed_outcome": "Build",
+            "parent_intent": parent["id"],
+        }
+    )
+    original = service.state()["version"]
+    revised = service.revise_intent(
+        child["id"], {"problem": "Updated", "affected_paths": ["src/"]}, "owner", original
+    )
+    assert revised["status"] == "draft"
+    assert revised["problem"] == "Updated"
+    with pytest.raises(ValueError, match="changed"):
+        service.revise_intent(child["id"], {"problem": "Stale"}, "owner", original)
+    with pytest.raises(ValueError, match="editable"):
+        service.revise_intent(
+            child["id"], {"status": "completed"}, "owner", service.state()["version"]
+        )
+    service.transition_intent(child["id"], "accepted")
+    version = service.state()["version"]
+    assert (
+        service.revise_intent(child["id"], {"proposed_outcome": "Better"}, "owner", version)[
+            "status"
+        ]
+        == "draft"
+    )
+    with pytest.raises(ValueError, match="cycle"):
+        service.revise_intent(
+            parent["id"], {"parent_intent": child["id"]}, "owner", service.state()["version"]
+        )
+    assert service.state()["intents"][parent["id"]]["parent_intent"] is None
+
+
+def test_cancel_reopens_intent_and_allows_new_assignment(project):
+    service, repo = project
+    intent, task = assigned(service, affected_paths=["greeting.py"])
+    feature(repo)
+    assert submission(service, intent)["accepted"]
+    cancellation = service.cancel_task(task["id"], "owner", "Scope changed")
+    assert cancellation["task"]["status"] == "cancelled"
+    assert cancellation["task"]["cancel_reason"] == "Scope changed"
+    assert cancellation["intent"]["status"] == "accepted"
+    assert service.get_my_task("alice")["tasks"] == []
+    with pytest.raises(ValueError, match="cannot be cancelled"):
+        service.cancel_task(task["id"], "owner", "Again")
+    with pytest.raises(ValueError, match="cannot be revised"):
+        service.revise_intent(intent["id"], {"problem": "New"}, "owner", service.state()["version"])
+    replacement = service.dispatch_task(intent["id"], "bob")
+    assert replacement["id"] != task["id"]
+    assert service.get_my_task("bob")["tasks"][0]["id"] == replacement["id"]
+
+
+def test_task_rebase_refreshes_decisions_and_invalidates_submitted_artifact(project):
+    service, repo = project
+    intent, task = assigned(service)
+    feature(repo)
+    assert submission(service, intent)["accepted"]
+    decision = service.log_decision(
+        {
+            "author": "owner",
+            "decision_type": "api",
+            "summary": "Keep greeting",
+            "rationale": "Compatibility",
+        }
+    )
+    service.transition_decision(decision["id"], "accepted")
+    old_version = service.state()["version"]
+    with pytest.raises(PermissionError):
+        service.rebase_task(task["id"], "mallory", old_version)
+    rebased = service.rebase_task(task["id"], "alice", old_version)
+    assert rebased["requires_resubmission"]
+    assert rebased["task"]["status"] == "in_progress"
+    assert rebased["task"]["artifact"] is None
+    assert decision["id"] in rebased["task"]["decisions_at_fork"]
+    assert service.check_backbone_sync("alice")["updates"][0]["new_decisions"] == []
+    with pytest.raises(ValueError, match="changed"):
+        service.rebase_task(task["id"], "alice", old_version)
+    assert submission(service, intent)["accepted"]
+
+
+def test_task_rebase_rejects_wrong_branch(project):
+    service, repo = project
+    _, task = assigned(service)
+    git(repo, "switch", "-c", "feature")
+    with pytest.raises(ValueError, match="target branch"):
+        service.rebase_task(task["id"], "alice", service.state()["version"])
+
+
+def test_new_decision_blocks_submission_until_context_rebase(project):
+    service, repo = project
+    intent, task = assigned(service)
+    feature(repo)
+    decision = service.log_decision(
+        {
+            "author": "owner",
+            "decision_type": "api",
+            "summary": "Greet by name",
+            "rationale": "User needs it",
+        }
+    )
+    service.transition_decision(decision["id"], "accepted")
+    result = submission(service, intent)
+    assert not result["accepted"]
+    assert result["checks"]["context"]["status"] == "failed"
+    assert decision["id"] in result["checks"]["context"]["new_decisions"]
+    service.rebase_task(task["id"], "alice", service.state()["version"])
+    assert submission(service, intent)["accepted"]
+
+
+def test_decision_after_submission_requires_explicit_merge_review(project):
+    service, repo = project
+    intent, task = assigned(service)
+    feature(repo)
+    assert submission(service, intent)["accepted"]
+    decision = service.log_decision(
+        {
+            "author": "owner",
+            "decision_type": "api",
+            "summary": "New API guideline",
+            "rationale": "Consistency",
+        }
+    )
+    service.transition_decision(decision["id"], "accepted")
+    git(repo, "merge", "--no-edit", "feature/greeting")
+    with pytest.raises(ValueError, match="review rationale"):
+        service.merge_task(task["id"], "owner")
+    result = service.merge_task(
+        task["id"], "owner", "Checked the new guideline against greeting.py"
+    )
+    assert result["task"]["status"] == "merged"
+    assert decision["id"] in result["review_decision"]["rationale"]
+
+
+def test_integrated_artifact_cannot_be_cancelled_or_rebased(project):
+    service, repo = project
+    intent, task = assigned(service)
+    feature(repo)
+    assert submission(service, intent)["accepted"]
+    git(repo, "merge", "--no-edit", "feature/greeting")
+    with pytest.raises(ValueError, match="Revert integrated"):
+        service.cancel_task(task["id"], "owner", "Scope changed")
+    with pytest.raises(ValueError, match="already integrated"):
+        service.rebase_task(task["id"], "alice", service.state()["version"])
+    assert service.state()["tasks"][task["id"]]["status"] == "submitted"

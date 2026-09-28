@@ -206,7 +206,8 @@ def _task_conflicts(state: BackboneState, intents: list[Intent]) -> list[Conflic
         (
             task
             for task in state.tasks.values()
-            if task.status != TaskStatus.MERGED and task.intent_id in by_id
+            if task.status not in {TaskStatus.MERGED, TaskStatus.CANCELLED}
+            and task.intent_id in by_id
         ),
         key=lambda task: task.id,
     )

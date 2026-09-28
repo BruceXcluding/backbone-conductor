@@ -84,6 +84,7 @@ class TaskStatus(StrEnum):
     IN_PROGRESS = "in_progress"
     SUBMITTED = "submitted"
     MERGED = "merged"
+    CANCELLED = "cancelled"
 
 
 class ConflictType(StrEnum):
@@ -156,6 +157,8 @@ class Task(ProtocolModel):
     decisions_at_fork: list[Identifier] = Field(default_factory=list)
     backbone_version: str | None = None
     artifact: Artifact | None = None
+    cancelled_by: Text | None = None
+    cancel_reason: Text | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")
@@ -210,7 +213,11 @@ class BackboneState(ProtocolModel):
 INTENT_TRANSITIONS = {
     IntentStatus.DRAFT: {IntentStatus.ACCEPTED},
     IntentStatus.ACCEPTED: {IntentStatus.IN_PROGRESS, IntentStatus.REJECTED},
-    IntentStatus.IN_PROGRESS: {IntentStatus.COMPLETED, IntentStatus.SUPERSEDED},
+    IntentStatus.IN_PROGRESS: {
+        IntentStatus.ACCEPTED,
+        IntentStatus.COMPLETED,
+        IntentStatus.SUPERSEDED,
+    },
     IntentStatus.COMPLETED: set(),
     IntentStatus.SUPERSEDED: set(),
     IntentStatus.REJECTED: set(),
@@ -222,10 +229,11 @@ DECISION_TRANSITIONS = {
     DecisionStatus.REVERTED: set(),
 }
 TASK_TRANSITIONS = {
-    TaskStatus.DISPATCHED: {TaskStatus.IN_PROGRESS},
-    TaskStatus.IN_PROGRESS: {TaskStatus.SUBMITTED},
-    TaskStatus.SUBMITTED: {TaskStatus.MERGED, TaskStatus.IN_PROGRESS},
+    TaskStatus.DISPATCHED: {TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED},
+    TaskStatus.IN_PROGRESS: {TaskStatus.SUBMITTED, TaskStatus.CANCELLED},
+    TaskStatus.SUBMITTED: {TaskStatus.MERGED, TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED},
     TaskStatus.MERGED: set(),
+    TaskStatus.CANCELLED: set(),
 }
 
 

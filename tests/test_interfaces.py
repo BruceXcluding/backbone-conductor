@@ -187,7 +187,18 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             "create_intent",
             "log_decision",
         } <= names
-        assert not {"dispatch_task", "transition_intent", "resolve_conflict", "merge_task"} & names
+        assert "rebase_task" in names
+        assert (
+            not {
+                "dispatch_task",
+                "transition_intent",
+                "resolve_conflict",
+                "merge_task",
+                "revise_intent",
+                "cancel_task",
+            }
+            & names
+        )
         with pytest.raises(ToolError, match="bound member"):
             await server.call_tool("get_my_task", {"member_id": "bob"})
         with pytest.raises(ToolError, match="bound member"):
@@ -209,6 +220,8 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             "transition_intent",
             "resolve_conflict",
             "merge_task",
+            "revise_intent",
+            "cancel_task",
         } <= admin_names
 
     asyncio.run(check())
@@ -244,3 +257,122 @@ def test_mcp_stdio_protocol_roundtrip(interface_repo: Path) -> None:
             assert denied.isError
 
     asyncio.run(asyncio.wait_for(check(), timeout=20))
+
+
+def test_cli_revision_and_task_context_rebase(interface_repo: Path, capsys) -> None:
+    conductor = Conductor(interface_repo)
+    conductor.initialize()
+    created = conductor.create_intent(intent_data())
+    patch_file = interface_repo.parent / "intent-patch.json"
+    patch_file.write_text(json.dumps({"problem": "Export is missing in two modules"}))
+    version = conductor.state()["version"]
+    prefix = ["--repo", str(interface_repo)]
+    assert (
+        main(
+            [
+                *prefix,
+                "intent",
+                "revise",
+                created["id"],
+                "--file",
+                str(patch_file),
+                "--author",
+                "owner",
+                "--version",
+                version,
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["problem"] == "Export is missing in two modules"
+    conductor.transition_intent(created["id"], "accepted")
+    task = conductor.dispatch_task(created["id"], "alice")
+    version = conductor.state()["version"]
+    assert (
+        main([*prefix, "task", "rebase", task["id"], "--member", "alice", "--version", version])
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["task"]["id"] == task["id"]
+    assert (
+        main(
+            [
+                *prefix,
+                "task",
+                "cancel",
+                task["id"],
+                "--author",
+                "owner",
+                "--reason",
+                "Requirements changed",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["intent"]["status"] == "accepted"
+
+
+def test_http_revision_rebase_and_cancellation(interface_repo: Path) -> None:
+    conductor = Conductor(interface_repo)
+    conductor.initialize()
+    intent = conductor.create_intent(intent_data())
+    with TestClient(create_app(interface_repo)) as client:
+        version = client.get("/state").json()["version"]
+        revised = client.post(
+            f"/intents/{intent['id']}/revise",
+            json={
+                "patch": {"proposed_outcome": "Add a CSV export"},
+                "author": "owner",
+                "expected_version": version,
+            },
+        )
+        assert revised.status_code == 200
+        assert revised.json()["proposed_outcome"] == "Add a CSV export"
+        assert (
+            client.post(
+                f"/intents/{intent['id']}/revise",
+                json={
+                    "patch": {"problem": "Stale"},
+                    "author": "owner",
+                    "expected_version": version,
+                },
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"/intents/{intent['id']}/transition", json={"status": "accepted"}
+            ).status_code
+            == 200
+        )
+        task = client.post("/tasks", json={"intent_id": intent["id"], "member_id": "alice"}).json()
+        version = client.get("/state").json()["version"]
+        assert (
+            client.post(
+                f"/tasks/{task['id']}/rebase",
+                json={
+                    "member_id": "mallory",
+                    "expected_version": version,
+                },
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                f"/tasks/{task['id']}/rebase",
+                json={
+                    "member_id": "alice",
+                    "expected_version": version,
+                },
+            ).status_code
+            == 200
+        )
+        cancelled = client.post(
+            f"/tasks/{task['id']}/cancel",
+            json={
+                "author": "owner",
+                "reason": "Split the task",
+            },
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["task"]["status"] == "cancelled"
+        assert client.get("/tasks", params={"member_id": "alice"}).json()["tasks"] == []

@@ -37,6 +37,20 @@ class Submission(Member):
 
 class Approval(Action):
     author: str = Field(min_length=1)
+    rationale: str | None = None
+
+
+class IntentRevision(Approval):
+    patch: dict[str, Any]
+    expected_version: str = Field(min_length=1)
+
+
+class Cancellation(Approval):
+    reason: str = Field(min_length=1)
+
+
+class TaskRebase(Member):
+    expected_version: str = Field(min_length=1)
 
 
 class Resolution(Approval):
@@ -54,7 +68,7 @@ def create_app(repo: str | Path) -> FastAPI:
     conductor = Conductor(repo)
     app = FastAPI(
         title="Backbone Conductor",
-        version="0.1.0",
+        version="0.2.0",
         description=(
             "Trusted local administrator API. No built-in authentication; bind to loopback. "
             "Merge approval records require an actual Git merge and human semantic review."
@@ -111,6 +125,10 @@ def create_app(repo: str | Path) -> FastAPI:
     def transition_intent(intent_id: str, data: Transition) -> dict:
         return conductor.transition_intent(intent_id, data.status)
 
+    @app.post("/intents/{intent_id}/revise")
+    def revise_intent(intent_id: str, data: IntentRevision) -> dict:
+        return conductor.revise_intent(intent_id, data.patch, data.author, data.expected_version)
+
     @app.get("/decisions")
     def decisions() -> list[dict]:
         return list(conductor.state()["decisions"].values())
@@ -147,6 +165,14 @@ def create_app(repo: str | Path) -> FastAPI:
     def start_task(task_id: str, data: Member) -> dict:
         return conductor.start_task(task_id, data.member_id)
 
+    @app.post("/tasks/{task_id}/rebase")
+    def rebase_task(task_id: str, data: TaskRebase) -> dict:
+        return conductor.rebase_task(task_id, data.member_id, data.expected_version)
+
+    @app.post("/tasks/{task_id}/cancel")
+    def cancel_task(task_id: str, data: Cancellation) -> dict:
+        return conductor.cancel_task(task_id, data.author, data.reason)
+
     @app.post("/artifacts", status_code=201)
     def submit_artifact(data: Submission) -> dict:
         return conductor.submit_artifact(data.member_id, data.artifact)
@@ -165,7 +191,7 @@ def create_app(repo: str | Path) -> FastAPI:
     @app.post("/tasks/{task_id}/merge")
     def merge_task(task_id: str, data: Approval) -> dict:
         """Record human approval after performing the actual Git merge externally."""
-        return conductor.merge_task(task_id, data.author)
+        return conductor.merge_task(task_id, data.author, data.rationale)
 
     @app.get("/conflicts")
     def conflicts() -> list[dict]:

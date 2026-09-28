@@ -37,6 +37,14 @@ def build_parser() -> argparse.ArgumentParser:
         transition.add_argument("id")
         transition.add_argument("status")
         group.add_parser("list")
+        if kind == "intent":
+            revise = group.add_parser("revise", help="Revise an undispatched intent")
+            revise.add_argument("id")
+            revise.add_argument("--file", required=True, help="JSON patch file, or - for stdin")
+            revise.add_argument("--author", required=True)
+            revise.add_argument(
+                "--version", required=True, help="Backbone version observed before editing"
+            )
 
     tasks = commands.add_parser("task").add_subparsers(dest="action", required=True)
     dispatch = tasks.add_parser("dispatch", help="Assign an accepted intent to a member")
@@ -61,6 +69,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     merge.add_argument("task_id")
     merge.add_argument("--author", required=True)
+    merge.add_argument(
+        "--rationale", help="Required when accepted decisions changed after submission"
+    )
+    cancel = tasks.add_parser("cancel", help="Cancel active work with an audited reason")
+    cancel.add_argument("task_id")
+    cancel.add_argument("--author", required=True)
+    cancel.add_argument("--reason", required=True)
+    rebase = tasks.add_parser("rebase", help="Refresh task context without changing code")
+    rebase.add_argument("task_id")
+    rebase.add_argument("--member", required=True)
+    rebase.add_argument("--version", required=True, help="Backbone version observed before refresh")
 
     conflicts = commands.add_parser("conflict").add_subparsers(dest="action", required=True)
     conflicts.add_parser("check", help="Detect and record deterministic conflicts")
@@ -123,6 +142,10 @@ def _run(args: argparse.Namespace) -> Any:
         if args.action == "create":
             method = conductor.create_intent if args.command == "intent" else conductor.log_decision
             return method(_json_file(args.file))
+        if args.command == "intent" and args.action == "revise":
+            return conductor.revise_intent(
+                args.id, _json_file(args.file), args.author, args.version
+            )
         method = (
             conductor.transition_intent
             if args.command == "intent"
@@ -139,7 +162,11 @@ def _run(args: argparse.Namespace) -> Any:
             return conductor.start_task(args.task_id, args.member)
         if args.action == "submit":
             return conductor.submit_artifact(args.member, _json_file(args.file))
-        return conductor.merge_task(args.task_id, args.author)
+        if args.action == "cancel":
+            return conductor.cancel_task(args.task_id, args.author, args.reason)
+        if args.action == "rebase":
+            return conductor.rebase_task(args.task_id, args.member, args.version)
+        return conductor.merge_task(args.task_id, args.author, args.rationale)
     if args.command == "conflict":
         if args.action == "check":
             return conductor.detect_conflicts()

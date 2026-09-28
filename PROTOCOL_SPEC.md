@@ -1,6 +1,7 @@
 # Backbone Protocol 规范
 
 > **实现状态**：本文保留原始对象设计。v0.1 可执行协议以 `src/backbone_conductor/models.py` 和 `backbone schema` 输出为准；新增 Task、Artifact、操作/路径声明、Git 提交锚点和检查结果。MCP 参数见 [MCP_API.md](MCP_API.md)。
+> v0.2 新增 Task `cancelled` 终态，以及取消后 Intent `in_progress → accepted`、分派前修订后重置为 draft、任务上下文 rebase。实际状态机仍以代码和 Schema 为准。
 
 > **版本**：v1.0
 > **状态**：草案——待团队评审

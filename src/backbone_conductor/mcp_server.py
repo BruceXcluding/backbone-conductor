@@ -75,7 +75,24 @@ def create_server(repo: str | Path, member_id: str | None = None) -> FastMCP:
         """Start an assigned task; ownership is checked against the selected member."""
         return conductor.start_task(task_id, member(member_id))
 
+    @server.tool()
+    def rebase_task(task_id: str, expected_version: str, member_id: str | None = None) -> dict:
+        """Refresh an assigned task's decisions and target branch; resubmission is required."""
+        return conductor.rebase_task(task_id, member(member_id), expected_version)
+
     if bound_member is None:
+
+        @server.tool()
+        def revise_intent(
+            intent_id: str, patch: dict[str, Any], author: str, expected_version: str
+        ) -> dict:
+            """Administrator: revise an undispatched intent and return it to draft."""
+            return conductor.revise_intent(intent_id, patch, author, expected_version)
+
+        @server.tool()
+        def cancel_task(task_id: str, author: str, reason: str) -> dict:
+            """Administrator: cancel active work, recording the reason and reopening its intent."""
+            return conductor.cancel_task(task_id, author, reason)
 
         @server.tool()
         def dispatch_task(
@@ -108,8 +125,8 @@ def create_server(repo: str | Path, member_id: str | None = None) -> FastMCP:
             return conductor.resolve_conflict(conflict_id, author, action, rationale)
 
         @server.tool()
-        def merge_task(task_id: str, author: str) -> dict:
+        def merge_task(task_id: str, author: str, rationale: str | None = None) -> dict:
             """Administrator: record human approval after the actual Git merge has occurred."""
-            return conductor.merge_task(task_id, author)
+            return conductor.merge_task(task_id, author, rationale)
 
     return server
