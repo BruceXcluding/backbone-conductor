@@ -30,7 +30,7 @@ def git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def test_remote_member_clone_requires_fetch_and_real_human_merge(tmp_path: Path) -> None:
+def test_remote_member_clone_can_fetch_and_requires_real_human_merge(tmp_path: Path) -> None:
     origin = tmp_path / "origin.git"
     subprocess.run(
         ["git", "init", "--bare", "-b", "main", str(origin)],
@@ -165,7 +165,7 @@ def test_remote_member_clone_requires_fetch_and_real_human_merge(tmp_path: Path)
             assert not failed and started["status"] == "in_progress"
 
             git(member_repo, "switch", "-c", "feature/alice")
-            (member_repo / "app.py").write_text("def value():\n    return 2\n")
+            (member_repo / "app.py").write_text("def value():\n    return 2  # first pass\n")
             git(member_repo, "add", "app.py")
             git(member_repo, "commit", "-m", "Change app value")
             feature_sha = git(member_repo, "rev-parse", "HEAD")
@@ -176,6 +176,7 @@ def test_remote_member_clone_requires_fetch_and_real_human_merge(tmp_path: Path)
                     "branch": "origin/feature/alice",
                     "base_ref": "main",
                     "summary": "Change app value to 2",
+                    "commit_sha": feature_sha,
                 }
             }
             before_failed_submission = git(coordinator, "rev-parse", "HEAD")
@@ -183,18 +184,100 @@ def test_remote_member_clone_requires_fetch_and_real_human_merge(tmp_path: Path)
             assert failed, "The coordinator must not invent an unfetched member commit"
             assert git(coordinator, "rev-parse", "HEAD") == before_failed_submission
 
-            git(
-                coordinator,
-                "fetch",
-                "origin",
-                "refs/heads/feature/alice:refs/remotes/origin/feature/alice",
+            failed, _ = asyncio.run(
+                member_call(
+                    "fetch_artifact_branch",
+                    {
+                        "task_id": task_id,
+                        "branch": "feature/alice",
+                        "expected_sha": "0" * 40,
+                    },
+                )
             )
+            assert failed
+            assert (
+                subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(coordinator),
+                        "rev-parse",
+                        "--verify",
+                        "origin/feature/alice",
+                    ],
+                    capture_output=True,
+                ).returncode
+                != 0
+            )
+            failed, fetched = asyncio.run(
+                member_call(
+                    "fetch_artifact_branch",
+                    {
+                        "task_id": task_id,
+                        "branch": "feature/alice",
+                        "expected_sha": feature_sha,
+                    },
+                )
+            )
+            assert not failed and fetched["tracking_ref"] == "origin/feature/alice"
             assert git(coordinator, "rev-parse", "origin/feature/alice") == feature_sha
+            wrong_artifact = {"artifact": {**artifact["artifact"], "commit_sha": "0" * 40}}
+            failed, _ = asyncio.run(member_call("submit_artifact", wrong_artifact))
+            assert failed
+
+            (member_repo / "app.py").write_text("def value():\n    return 2\n")
+            git(member_repo, "add", "app.py")
+            git(member_repo, "commit", "-m", "Polish app value")
+            advanced_sha = git(member_repo, "rev-parse", "HEAD")
+            git(member_repo, "push", "origin", "feature/alice")
+            failed, advanced = asyncio.run(
+                member_call(
+                    "fetch_artifact_branch",
+                    {
+                        "task_id": task_id,
+                        "branch": "feature/alice",
+                        "expected_sha": advanced_sha,
+                    },
+                )
+            )
+            assert not failed and advanced["updated"] is True
+            artifact["artifact"]["commit_sha"] = advanced_sha
+            feature_sha = advanced_sha
             failed, submitted = asyncio.run(member_call("submit_artifact", artifact))
             assert not failed
-            assert submitted["accepted"] is True
+            assert submitted["accepted"] is True, submitted
             assert submitted["artifact"]["commit_sha"] == feature_sha
             assert submitted["artifact"]["changed_paths"] == ["app.py"]
+
+            impostor = admin.post(
+                f"/tasks/{task_id}/fetch",
+                headers={"Authorization": f"Bearer {tokens['alice']}"},
+                json={
+                    "member_id": "another-member",
+                    "branch": "feature/alice",
+                    "expected_sha": feature_sha,
+                },
+            )
+            assert impostor.status_code == 403
+
+            git(member_repo, "switch", "--orphan", "rewritten")
+            (member_repo / "app.py").write_text("def value():\n    return 3\n")
+            git(member_repo, "add", "app.py")
+            git(member_repo, "commit", "-m", "Rewrite published branch")
+            rewritten_sha = git(member_repo, "rev-parse", "HEAD")
+            git(member_repo, "push", "--force", "origin", "HEAD:refs/heads/feature/alice")
+            failed, _ = asyncio.run(
+                member_call(
+                    "fetch_artifact_branch",
+                    {
+                        "task_id": task_id,
+                        "branch": "feature/alice",
+                        "expected_sha": rewritten_sha,
+                    },
+                )
+            )
+            assert failed, "A rewritten remote branch must not replace the reviewed ref"
+            assert git(coordinator, "rev-parse", "origin/feature/alice") == feature_sha
 
             premature = admin.post(
                 f"/tasks/{task_id}/merge",

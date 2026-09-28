@@ -31,7 +31,7 @@ def _member_route(method: str, path: str) -> bool:
     if method == "GET":
         return re.fullmatch(r"/tasks/[^/]+", path) is not None
     if method == "POST":
-        return re.fullmatch(r"/tasks/[^/]+/(start|rebase|submit)", path) is not None
+        return re.fullmatch(r"/tasks/[^/]+/(start|rebase|submit|fetch)", path) is not None
     return False
 
 
@@ -83,6 +83,12 @@ class Member(Action):
 
 class Submission(Member):
     artifact: dict[str, Any]
+
+
+class BranchFetch(Member):
+    branch: str = Field(min_length=1)
+    expected_sha: str = Field(min_length=1)
+    remote: str = "origin"
 
 
 class Approval(Action):
@@ -363,6 +369,16 @@ def create_app(
     def rebase_task(task_id: str, data: TaskRebase, request: Request) -> dict:
         return conductor.rebase_task(
             task_id, bind_member(request, data.member_id), data.expected_version
+        )
+
+    @app.post("/tasks/{task_id}/fetch")
+    def fetch_task_branch(task_id: str, data: BranchFetch, request: Request) -> dict:
+        return conductor.fetch_artifact_branch(
+            task_id,
+            bind_member(request, data.member_id),
+            data.branch,
+            data.expected_sha,
+            data.remote,
         )
 
     @app.post("/tasks/{task_id}/cancel")

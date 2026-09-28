@@ -32,6 +32,7 @@ _MEMBER_SYSTEM_PROMPT = (
 )
 _MEMBER_TOOLS = {
     "get_my_task",
+    "fetch_artifact_branch",
     "submit_artifact",
     "check_backbone_sync",
     "create_intent",

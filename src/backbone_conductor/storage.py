@@ -28,6 +28,7 @@ from backbone_conductor.models import BackboneState, IntentStatus, TaskStatus
 
 T = TypeVar("T")
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\Z")
+_COMMIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 AUDIT_EVENT_TYPES = (
     "initialize",
     "intent",
@@ -507,6 +508,47 @@ class GitStore:
         ):
             raise StorageError(f"Invalid destination branch: {branch!r}")
         return current_branch, branch
+
+    def fetch_code_branch(self, remote: str, branch: str, expected_sha: str) -> dict[str, Any]:
+        """Fetch one configured remote branch after checking its exact tip and ancestry."""
+        if not isinstance(expected_sha, str) or not _COMMIT_SHA.fullmatch(expected_sha):
+            raise StorageError("Expected code commit must be a full lowercase Git SHA")
+        self._remote_branch(remote, branch)
+        tracking = f"refs/remotes/{remote}/{branch}"
+        if self._git("check-ref-format", tracking, check=False).returncode:
+            raise StorageError("Invalid remote-tracking branch")
+        temporary = f"refs/backbone/code-fetch/{uuid.uuid4().hex}"
+        try:
+            self._git(
+                "fetch",
+                "--no-tags",
+                "--refmap=",
+                remote,
+                f"refs/heads/{branch}:{temporary}",
+                timeout=120,
+            )
+            fetched = self._resolve_revision(temporary)
+            if fetched != expected_sha:
+                raise StorageError("Remote code branch tip differs from the expected commit")
+            with self._lock:
+                previous = self._git("rev-parse", "--verify", tracking, check=False)
+                old_sha = self._resolve_revision(tracking) if previous.returncode == 0 else None
+                if old_sha is not None and old_sha != fetched:
+                    if self._git(
+                        "merge-base", "--is-ancestor", old_sha, fetched, check=False
+                    ).returncode:
+                        raise StorageError("Remote code branch was rewritten; review it manually")
+                if old_sha != fetched:
+                    self._git("update-ref", tracking, fetched, old_sha or "0" * 40)
+            return {
+                "remote": remote,
+                "branch": branch,
+                "tracking_ref": f"{remote}/{branch}",
+                "commit_sha": fetched,
+                "updated": old_sha != fetched,
+            }
+        finally:
+            self._git("update-ref", "-d", temporary, check=False)
 
     def _state_at(self, revision: str) -> BackboneState:
         result = self._git("show", f"{revision}:.backbone/state.json", check=False)

@@ -35,7 +35,7 @@ backbone --repo /repo serve --host 0.0.0.0 --port 8443 \
 
 ## 成员 Streamable HTTP MCP（可选）
 
-在上述可信 HTTPS 命令中加入 `--mcp-http --mcp-allowed-host coordinator.example.org:8443`，成员 Agent 就可连接 `https://coordinator.example.org:8443/mcp` 并提供自己的 `Authorization: Bearer` 令牌。`--mcp-http` 必须与 `--auth-file` 一起使用；默认 Host 名单只含本机回环地址，远程实际 Host header（含非默认端口）须显式列出。该接口只注册七个成员工具，逐请求认证并绑定成员身份；管理员/审查者令牌返回 403，旧令牌轮换后返回 401。凭据不可用时返回 503；未知 Host 由 MCP 传输层拒绝。已验证本机真实 HTTP 客户端和受信任证书的 HTTPS 客户端，尚未在公网或不同自然人的共享部署中验证。
+在上述可信 HTTPS 命令中加入 `--mcp-http --mcp-allowed-host coordinator.example.org:8443`，成员 Agent 就可连接 `https://coordinator.example.org:8443/mcp` 并提供自己的 `Authorization: Bearer` 令牌。`--mcp-http` 必须与 `--auth-file` 一起使用；默认 Host 名单只含本机回环地址，远程实际 Host header（含非默认端口）须显式列出。该接口只注册八个成员工具，逐请求认证并绑定成员身份；管理员/审查者令牌返回 403，旧令牌轮换后返回 401。凭据不可用时返回 503；未知 Host 由 MCP 传输层拒绝。已验证本机真实 HTTP 客户端和受信任证书的 HTTPS 客户端，尚未在公网或不同自然人的共享部署中验证。
 
 成员客户端需支持 Streamable HTTP 和静态 bearer header。令牌是长期凭据，应通过客户端的私有配置或环境变量传入，不要把明文放入 Git、公开 URL 或共享日志。此接口未实现 OAuth 动态注册；如果客户端只接受 OAuth 授权发现，需另行提供兼容的身份服务。MCP 的角色权限不能替代协调仓库的操作系统文件权限。
 
@@ -101,14 +101,14 @@ git -C /alice-worktree switch -c feature/alice
 git -C /alice-worktree push origin HEAD:refs/heads/feature/alice
 ```
 
-协调端必须在收到 `submit_artifact` 前获取该功能分支；提交请求中的 `branch` 使用协调端可解析的 `origin/feature/alice`，`base_ref` 使用任务分派时的目标分支（例如 `main`）。未获取分支时，提交会失败且不产生 Backbone 审计提交。
+成员在推送后通过 `/mcp` 的 `fetch_artifact_branch` 提供 `task_id`、功能分支名 `feature/alice` 和本地 `git rev-parse HEAD` 得到的完整小写 SHA。协调端仅从已配置的 Git remote（默认 `origin`）获取该分支，核对远端当前 tip 与预期 SHA，并仅快进 `origin/feature/alice` 跟踪引用；SHA 不匹配或远端强推改写时拒绝，且不更新跟踪引用。也可由管理员执行下方 Git 命令作为手工恢复步骤。此操作不产生 Backbone 审计提交，也不切换协调端 HEAD。
 
 ```sh
 git -C /coordinator fetch origin \
   refs/heads/feature/alice:refs/remotes/origin/feature/alice
 ```
 
-成员通过 `/mcp` 的 `submit_artifact` 提供 `intent_id`、`branch`、`base_ref`、`summary`。协调端从 Git 解析真实提交和路径，检查范围与决策；请求中的自报 SHA 与检查结果不作为证据。收到 `accepted: true` 后，人工审阅代码及语义，再在协调端目标分支实际合并；审查者最后以自己的 bearer 凭据调用 `POST /tasks/{task_id}/merge`，提交 `{"author":"reviewer","rationale":"..."}`。未完成 Git 合并时该调用会被拒绝。合并和完成记录生成后再推送目标分支。成员功能分支若有新提交，必须重新进行检查和审阅。
+成员通过 `/mcp` 的 `submit_artifact` 提供 `intent_id`、`branch`（例如 `origin/feature/alice`）、`base_ref`（例如分派目标 `main`）、`summary` 和刚获取的 `commit_sha`。协调端从 Git 解析真实提交和路径，检查范围与决策；请求中的 SHA 只用于核对，不代替 Git 证据。收到 `accepted: true` 后，人工审阅代码及语义，再在协调端目标分支实际合并；审查者最后以自己的 bearer 凭据调用 `POST /tasks/{task_id}/merge`，提交 `{"author":"reviewer","rationale":"..."}`。未完成 Git 合并时该调用会被拒绝。合并和完成记录生成后再推送目标分支。成员功能分支若有新提交，必须重新进行检查和审阅。
 
 本流程已用两个独立 Git 克隆、一个裸远端、真实本机 MCP/HTTP 服务和审查者凭据完成端到端验证；客户端由测试进程模拟，尚不等于不同自然人的远程部署。
 

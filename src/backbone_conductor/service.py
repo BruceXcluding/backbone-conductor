@@ -505,11 +505,26 @@ class Conductor:
             raise ValueError(f"Unknown commit reference: {ref}")
         return result.stdout.strip()
 
+    def fetch_artifact_branch(
+        self, task_id: str, member_id: str, branch: str, expected_sha: str, remote: str = "origin"
+    ) -> dict:
+        """Fetch the assigned member's exact pushed branch into a remote-tracking ref."""
+        member_id = _actor(member_id)
+        task = self.store.read().tasks[task_id]
+        if task.member_id != member_id:
+            raise PermissionError("Task belongs to another member")
+        if task.status != TaskStatus.IN_PROGRESS:
+            raise ValueError("Start the assigned task before fetching its code branch")
+        if branch == task.base_ref:
+            raise ValueError("Artifact must name a feature branch separate from its base")
+        return self.code_store.fetch_code_branch(remote, branch, expected_sha)
+
     def submit_artifact(self, member_id: str, artifact: dict) -> dict:
         member_id = _actor(member_id)
         incoming = dict(artifact)
         if incoming.get("member_id", member_id) != member_id:
             raise PermissionError("Artifact member does not match caller")
+        expected_sha = incoming.get("commit_sha")
         incoming["member_id"] = member_id
         # Evidence comes from Git, never from the submitting agent's assertions.
         incoming.update(commit_sha=None, base_sha=None, checks={}, changed_paths=[])
@@ -535,6 +550,8 @@ class Conductor:
             if item.branch == item.base_ref:
                 raise ValueError("Artifact must name a feature branch separate from its base")
             item.commit_sha = self._commit(item.branch)
+            if expected_sha is not None and expected_sha != item.commit_sha:
+                raise ValueError("Artifact commit differs from the expected Git commit")
             item.base_sha = self._commit(item.base_ref)
             diff = self.code_store.check_diff(item.base_sha, item.commit_sha)
             paths = diff.get("changed_paths", [])

@@ -92,6 +92,19 @@ def create_server(
         return conductor.submit_artifact(member(member_id), artifact)
 
     @server.tool()
+    def fetch_artifact_branch(
+        task_id: str,
+        branch: str,
+        expected_sha: str,
+        member_id: str | None = None,
+        remote: str = "origin",
+    ) -> dict:
+        """Fetch an assigned member's exact pushed Git branch from a configured remote."""
+        return conductor.fetch_artifact_branch(
+            task_id, member(member_id), branch, expected_sha, remote
+        )
+
+    @server.tool()
     def check_backbone_sync(member_id: str | None = None, since_version: str | None = None) -> dict:
         """Report ledger changes and relevant accepted decisions since a known version."""
         selected = member(member_id) if bound_member or member_id is not None else None

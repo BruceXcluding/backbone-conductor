@@ -8,6 +8,7 @@
 | create_intent | intent_data | draft 意图 |
 | log_decision | decision_data | proposed 决策 |
 | start_task | task_id, member_id? | in_progress 任务 |
+| fetch_artifact_branch | task_id, branch, expected_sha, member_id?, remote? | 从已配置 Git 远端获取指定提交的成员代码分支 |
 | rebase_task | task_id, expected_version, member_id? | 刷新目标分支与决策上下文 |
 | submit_artifact | artifact, member_id? | Git 证据、检查、冲突 |
 | check_backbone_sync | member_id?, since_version? | 当前版本、新增/撤回决策、阻塞冲突 |
@@ -43,7 +44,7 @@ args = ["--repo", "/absolute/your-project", "mcp", "--member", "alice"]
 
 ## 远程成员接入
 
-`serve --auth-file /private/tokens.json --mcp-http` 在同一服务的 `/mcp` 开启无状态 Streamable HTTP。它只暴露上表七个成员工具；每个请求都用现有私有凭据文件核对 bearer 令牌，把 member_id 和 author 绑定到令牌 principal。管理员与审查者令牌不能进入该 MCP 端点，成员不能通过请求参数冒用其他成员。令牌原子轮换后立即生效，凭据文件损坏或权限不安全时端点返回 503。工具调用产生的 Git 审计提交记录已认证的 HTTP principal/role。
+`serve --auth-file /private/tokens.json --mcp-http` 在同一服务的 `/mcp` 开启无状态 Streamable HTTP。它只暴露上表八个成员工具；每个请求都用现有私有凭据文件核对 bearer 令牌，把 member_id 和 author 绑定到令牌 principal。管理员与审查者令牌不能进入该 MCP 端点，成员不能通过请求参数冒用其他成员。令牌原子轮换后立即生效，凭据文件损坏或权限不安全时端点返回 503。工具调用产生的 Git 审计提交记录已认证的 HTTP principal/role。
 
 远程客户端连接 `https://coordinator.example.org:8443/mcp`，发送 `Authorization: Bearer <成员令牌>`；启动时增加 `--mcp-allowed-host coordinator.example.org:8443`，使传输层接受该实际 Host header。该参数接受 Host 值，不接受 URL 或通配符。默认只接受本机回环地址。部署时应使用可信 HTTPS 或可信代理并隔离协调仓库的 OS 写权限；静态 bearer 令牌不是 OAuth 授权服务器，也不能证明令牌背后的自然人身份。此入口不主动向 Agent 会话推送任务，仍由客户端调用 `get_my_task` 拉取。
 
@@ -53,7 +54,7 @@ ASGI 挂载与会话管理遵循 [官方 MCP Python SDK 的部署说明](https:/
 
 1. 获取任务，阅读约束与决策，调用 start_task。
 2. 在独立代码分支/worktree 实现，期间调用 check_backbone_sync。
-3. 提交代码，确保协调仓库可访问 feature ref，再 submit_artifact。
+3. 提交并推送代码，调用 fetch_artifact_branch 传入功能分支和完整提交 SHA，再以返回的 tracking_ref 和相同 commit_sha 调用 submit_artifact。
 4. 阻塞冲突交给管理员裁决；通过后仍需人工审查和真正的 Git 合并。
 
 协调端保持在目标分支。get_my_task 是拉取接口；首版不主动向 Agent 会话推送消息。

@@ -74,6 +74,7 @@ def test_http_mcp_requires_member_token_and_binds_each_request(remote_repo) -> N
         names = {tool["name"] for tool in listing.json()["result"]["tools"]}
         assert names == {
             "get_my_task",
+            "fetch_artifact_branch",
             "submit_artifact",
             "check_backbone_sync",
             "create_intent",

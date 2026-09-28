@@ -106,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
     start = tasks.add_parser("start")
     start.add_argument("task_id")
     start.add_argument("--member", required=True)
+    fetch = tasks.add_parser("fetch", help="Fetch an assigned member's pushed code branch")
+    fetch.add_argument("task_id")
+    fetch.add_argument("--member", required=True)
+    fetch.add_argument("--branch", required=True)
+    fetch.add_argument("--expected-sha", required=True)
+    fetch.add_argument("--remote", default="origin")
     submit = tasks.add_parser("submit")
     submit.add_argument("--member", required=True)
     submit.add_argument("--file", required=True, help="Artifact JSON object, or - for stdin")
@@ -386,6 +392,10 @@ def _run(args: argparse.Namespace) -> Any:
             return conductor.get_my_task(args.member)
         if args.action == "start":
             return conductor.start_task(args.task_id, args.member)
+        if args.action == "fetch":
+            return conductor.fetch_artifact_branch(
+                args.task_id, args.member, args.branch, args.expected_sha, args.remote
+            )
         if args.action == "submit":
             return conductor.submit_artifact(args.member, _json_file(args.file))
         if args.action == "cancel":
