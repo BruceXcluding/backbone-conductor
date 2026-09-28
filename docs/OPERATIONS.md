@@ -22,17 +22,30 @@ backbone --repo /repo serve \
 
 ## Docker Compose
 
+为 Compose 创建专用凭据目录，只放 `backbone-http-tokens.json`。**挂载目录而非单个文件**，这样宿主执行 `auth rotate` 的原子替换能被运行中的 Linux 容器看到。
+
 ```sh
 export BACKBONE_REPO=/absolute/path/to/git-repo
-export BACKBONE_AUTH_FILE=/private/path/backbone-http-tokens.json
+export BACKBONE_AUTH_DIR=/private/path/backbone-auth
+mkdir -m 700 "$BACKBONE_AUTH_DIR"
+backbone --repo "$BACKBONE_REPO" auth create \
+  --file "$BACKBONE_AUTH_DIR/backbone-http-tokens.json" --admin owner
 docker compose build
 docker compose run --rm conductor --repo /workspace init
 docker compose up -d
 ```
 
-先用上述命令生成 `BACKBONE_AUTH_FILE`，再启动 Compose。端口绑定宿主 loopback，容器内也强制启用令牌认证。容器会写入挂载仓库，适合专用协调 checkout；仓库本地 Git identity 优先于镜像默认值。按宿主权限配置非 root UID 后用于长期运行，需确保该 UID 能读取私有令牌文件。容器不自动配置 Git 远端凭据。
+目录须预先创建并仅允许受信任用户访问；`auth create` 只输出一次明文令牌。已有凭据文件无需再运行 `auth create`。默认端口为宿主 `127.0.0.1:8000`，可用 `BACKBONE_PORT` 改变宿主端口；容器内强制令牌认证。容器会写入挂载仓库，适合专用协调 checkout；仓库本地 Git identity 优先于镜像默认值。按宿主权限配置非 root UID 后用于长期运行，需确保该 UID 能读取私有令牌文件。容器不自动配置 Git 远端凭据。
 
-本次 Docker 验证在基础镜像拉取阶段被镜像代理 401 和 Docker Hub 网络超时阻断，容器启动尚未验证。Dockerfile 的 PYTHON_IMAGE 构建参数可显式选择可访问的同等 Python 3.12 基础镜像，无需修改 daemon 全局配置。
+独立元数据分支须在**固定的容器路径 `/workspace`** 内创建或附加，再用 override 启动；不要直接复用宿主创建的隐藏 worktree：
+
+```sh
+docker compose -f compose.yaml -f compose.ledger.yaml run --rm \
+  conductor --repo /workspace ledger create
+docker compose -f compose.yaml -f compose.ledger.yaml up -d
+```
+
+若 `backbone` 分支已存在但此容器 checkout 尚无 worktree，改用 `ledger attach`；已有内联快照需先按迁移前置条件运行 `ledger migrate`。两种模式均已在本机临时仓库容器中验证；独立模式的代码分支 HEAD 未随元数据写入变化，容器重启后仍能读取快照。真实远程服务器、TLS 和不同宿主平台仍待验证。Dockerfile 的 `PYTHON_IMAGE` 构建参数可选择可访问的同等 Python 3.12 基础镜像。
 
 ## 独立元数据分支
 
@@ -40,7 +53,7 @@ docker compose up -d
 
 现有内联仓库可在协作者暂停写入时运行 `backbone --repo /repo ledger migrate`。迁移要求当前代码分支有提交、工作树和索引干净、所有任务已完成或取消，且不存在本地或远端跟踪的 `backbone` 分支。它创建以旧代码 HEAD 为父提交的元数据专用分支，再在代码分支提交删除旧 `.backbone/`；旧审计提交仍在新分支祖先中。迁移成功后使用 `--ledger-branch backbone`，分别推送代码分支及元数据分支，再让其他克隆拉取代码并 `ledger attach`。若提交已经完成但 worktree 附加失败，运行 `ledger attach` 修复；不要重新迁移或强推历史。迁移不会自动推送。
 
-隐藏 worktree 的 `.git` 指针与本机绝对路径绑定。当前 Compose 把宿主仓库挂载到不同容器路径，**不能直接复用宿主创建的隐藏 worktree**；Compose 默认继续采用内联模式。若要在容器部署独立模式，需在容器内使用固定持久路径创建或附加 worktree，并单独验证，不要仅加 `--ledger-branch` 标志。`ledger create` 不会自动迁移现有内联审计历史。
+隐藏 worktree 的 `.git` 指针与创建时的绝对路径绑定。Compose 的独立模式已在固定 `/workspace` 路径下验证；同一挂载仓库在另一宿主路径直接使用该隐藏 worktree 仍可能失败。为协调端使用专用 checkout，并在容器内创建或附加 worktree。`ledger create` 不会自动迁移现有内联审计历史。
 
 ## 审计与恢复
 

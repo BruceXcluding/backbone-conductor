@@ -31,7 +31,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 
 样本 n=10，p95 用 nearest-rank 等于最大值。没有时间阈值断言；这不是持续负载测试，也未证明每次 MCP 响应都小于 2 秒。
 
-## 尚未验证
+## v0.1 时尚未验证
 
 - Docker 镜像构建：本机镜像代理返回 401；绕过代理后 Docker Hub 认证端点超时。失败发生在拉取基础镜像阶段，尚未验证镜像构建和容器启动。
 - 真实 DSH 模型调用、语义审查质量和费用。
@@ -82,3 +82,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## v0.10 增量
 
 日期：2026-09-28。经 bearer 验证的 HTTP 元数据写入，在 Git 提交消息中追加 principal 与角色 trailer；`backbone log`/时间线接口从提交中展示 `http_principal`、`http_role`。请求上下文在响应后清理，未认证本地调用没有 HTTP 归属。针对性测试覆盖普通领域写入、两个独立客户端进程并发写入、HTTP `reconcile` 双父提交、正确的成员/管理员对应关系、无明文令牌及请求结束后的本地写入。完整套件在强制执行真实 HTTP 测试时 **264 passed，1 个可选 DSH 测试 skipped，覆盖率 90.81%**；Ruff 检查与格式检查、合成评测 24/24、Git 示例、0.10.0 wheel/source distribution 构建通过。Git trailer 可由有仓库写权限者伪造，不是密码学签名；TLS、外部 Git 权限控制与真实多人部署仍未验证。
+
+## v0.11 容器验证
+
+日期：2026-09-29。Docker Desktop 29.1.5、macOS arm64，成功拉取官方 `python:3.12-slim`、构建项目镜像。用一次性 Git 仓库实际启动容器：默认内联模式的 `/health` 为 200，未认证 `/state` 为 401，测试令牌访问为 200，创建意图后宿主仓库有生成视图和带 HTTP principal trailer 的干净 Git 审计提交。独立模式在容器固定 `/workspace` 路径执行 `ledger create`，新容器可重开 worktree；HTTP 写入只推进 `backbone` 分支，代码分支 HEAD 不变，Compose 容器重启后可恢复快照。Compose 改挂载专用凭据目录，实测宿主原子替换凭据后，运行中服务拒绝旧令牌 401、接受新令牌 200。`compose.yaml` 与 `compose.ledger.yaml` 均通过 `docker compose config`，两种配置均实际启动；最终 0.11.0 镜像亦通过文档所列初始化与启动命令。完整套件在强制执行真实 HTTP 测试时 **264 passed，1 个可选 DSH 测试 skipped，覆盖率 90.81%**；Ruff 检查与格式检查、合成评测 24/24、Git 示例及 wheel/source distribution 构建通过。尚未在原生 Linux、TLS 代理或远程多人服务器上验证。
