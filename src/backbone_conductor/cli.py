@@ -192,6 +192,15 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--auth-file", help="Private JSON file of bearer-token digests")
+    serve.add_argument(
+        "--mcp-http", action="store_true", help="Expose bearer-authenticated member MCP at /mcp"
+    )
+    serve.add_argument(
+        "--mcp-allowed-host",
+        action="append",
+        default=[],
+        help="Additional public Host header accepted by MCP (repeatable)",
+    )
     serve.add_argument("--tls-certfile", help="PEM certificate for direct HTTPS")
     serve.add_argument("--tls-keyfile", help="PEM private key for direct HTTPS")
     auth = commands.add_parser("auth", help="Create a private HTTP token-digest file")
@@ -237,12 +246,31 @@ def _run(args: argparse.Namespace) -> Any:
 
         if args.host not in {"127.0.0.1", "::1", "localhost"} and not args.auth_file:
             raise ValueError("Non-loopback HTTP binding requires --auth-file")
+        if args.mcp_http and not args.auth_file:
+            raise ValueError("Streamable HTTP MCP requires --auth-file")
+        if args.mcp_allowed_host and not args.mcp_http:
+            raise ValueError("--mcp-allowed-host requires --mcp-http")
+        if any(
+            not host.strip()
+            or "/" in host
+            or "@" in host
+            or "*" in host
+            or any(char.isspace() for char in host)
+            for host in args.mcp_allowed_host
+        ):
+            raise ValueError("MCP allowed hosts must be Host header values, not URLs")
         if bool(args.tls_certfile) != bool(args.tls_keyfile):
             raise ValueError("Direct HTTPS requires both --tls-certfile and --tls-keyfile")
         if args.tls_keyfile:
             _validate_tls_key(args.tls_keyfile, args.repo)
         uvicorn.run(
-            create_app(args.repo, auth_file=args.auth_file, ledger_branch=args.ledger_branch),
+            create_app(
+                args.repo,
+                auth_file=args.auth_file,
+                ledger_branch=args.ledger_branch,
+                mcp_http=args.mcp_http,
+                mcp_allowed_hosts=tuple(args.mcp_allowed_host),
+            ),
             host=args.host,
             port=args.port,
             ssl_certfile=args.tls_certfile,

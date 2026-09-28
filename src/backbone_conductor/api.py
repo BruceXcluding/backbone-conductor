@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -135,10 +136,34 @@ def create_app(
     *,
     auth_file: str | Path | None = None,
     ledger_branch: str | None = None,
+    mcp_http: bool = False,
+    mcp_allowed_hosts: tuple[str, ...] = (),
 ) -> FastAPI:
     """Create a local admin API or an authenticated admin/member/reviewer API."""
+    if mcp_http and auth_file is None:
+        raise ValueError("Streamable HTTP MCP requires --auth-file")
+    if mcp_allowed_hosts and not mcp_http:
+        raise ValueError("MCP allowed hosts require Streamable HTTP MCP")
     conductor = Conductor(repo, ledger_branch=ledger_branch)
     auth = TokenAuth(auth_file, conductor.code_store.root) if auth_file is not None else None
+    member_mcp = None
+    member_mcp_app = None
+    if mcp_http:
+        from .mcp_http import create_member_http_app
+
+        assert auth is not None
+        member_mcp, member_mcp_app = create_member_http_app(
+            repo, auth, ledger_branch=ledger_branch, allowed_hosts=mcp_allowed_hosts
+        )
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if member_mcp is None:
+            yield
+        else:
+            async with member_mcp.session_manager.run():
+                yield
+
     app = FastAPI(
         title="Backbone Conductor",
         version=__version__,
@@ -148,11 +173,16 @@ def create_app(
             "Use TLS at a trusted reverse proxy or configure direct HTTPS for remote access. "
             "Merge approval records require an actual Git merge and human semantic review."
         ),
+        lifespan=lifespan,
     )
     app.state.conductor = conductor
+    app.state.member_mcp = member_mcp
 
     @app.middleware("http")
     async def authenticate(request: Request, call_next):
+        if mcp_http and request.url.path == "/mcp":
+            # The mounted MCP app authenticates every request, including initialize.
+            return await call_next(request)
         if auth is None:
             request.state.principal = Principal("local", "admin")
         elif request.url.path == "/health":
@@ -437,4 +467,6 @@ def create_app(
     def verify_audit(limit: int = Query(default=50, ge=1, le=1000)) -> dict:
         return conductor.verify_audit_signatures(limit)
 
+    if member_mcp_app is not None:
+        app.mount("/", member_mcp_app)
     return app

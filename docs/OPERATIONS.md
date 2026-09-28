@@ -2,7 +2,7 @@
 
 先初始化代码仓库、配置 Git identity，再运行 `backbone --repo /repo init`。Git identity 为提交身份；本地 CLI/MCP 的领域 author 由调用方声明。启用 HTTP 认证后，HTTP 请求的 author 和 member_id 与令牌 principal 绑定。
 
-HTTP 默认 127.0.0.1:8000，`/docs` 为交互 API、`/health` 检查进程、`/state` 验证快照读取。无认证时拒绝非 loopback 绑定。MCP 是客户端管理的 stdio 子进程，目前无远程 MCP HTTP 入口。
+HTTP 默认 127.0.0.1:8000，`/docs` 为交互 API、`/health` 检查进程、`/state` 验证快照读取。无认证时拒绝非 loopback 绑定。MCP 默认是客户端管理的 stdio 子进程；带私有令牌文件时可显式启用 `/mcp` 的成员专用 Streamable HTTP。
 
 ## HTTP 令牌
 
@@ -32,6 +32,12 @@ backbone --repo /repo serve --host 0.0.0.0 --port 8443 \
 ```
 
 证书须覆盖客户端连接的主机名并受客户端信任；私钥必须是仓库外、仅所有者可访问的普通文件，不接受符号链接。`--tls-certfile` 与 `--tls-keyfile` 必须一起提供，bearer 认证仍必需。证书续期及服务重启由部署者管理；当前不提供 ACME 自动签发或热加载证书。也可继续使用可信反向代理终止 TLS。此处只验证了本机自签证书下的真实 HTTPS 流程，尚未验证远程服务器或公网部署。
+
+## 成员 Streamable HTTP MCP（可选）
+
+在上述可信 HTTPS 命令中加入 `--mcp-http --mcp-allowed-host coordinator.example.org:8443`，成员 Agent 就可连接 `https://coordinator.example.org:8443/mcp` 并提供自己的 `Authorization: Bearer` 令牌。`--mcp-http` 必须与 `--auth-file` 一起使用；默认 Host 名单只含本机回环地址，远程实际 Host header（含非默认端口）须显式列出。该接口只注册七个成员工具，逐请求认证并绑定成员身份；管理员/审查者令牌返回 403，旧令牌轮换后返回 401。凭据不可用时返回 503；未知 Host 由 MCP 传输层拒绝。已验证本机真实 HTTP 客户端和受信任证书的 HTTPS 客户端，尚未在公网或不同自然人的共享部署中验证。
+
+成员客户端需支持 Streamable HTTP 和静态 bearer header。令牌是长期凭据，应通过客户端的私有配置或环境变量传入，不要把明文放入 Git、公开 URL 或共享日志。此接口未实现 OAuth 动态注册；如果客户端只接受 OAuth 授权发现，需另行提供兼容的身份服务。MCP 的角色权限不能替代协调仓库的操作系统文件权限。
 
 ## Docker Compose
 

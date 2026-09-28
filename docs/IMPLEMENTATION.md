@@ -1,4 +1,4 @@
-# v0.24 实现说明
+# v0.25 实现说明
 
 | 范围 | 已实现行为 |
 | --- | --- |
@@ -9,7 +9,7 @@
 | 制品 | 固定提交 SHA、真实 Git 路径、目标分支绑定、修改范围检查 |
 | 冲突 | 四类确定性规则、稳定证据 ID、分级、仲裁包、人工裁决 |
 | 存储 | Git 快照、生成视图、跨进程锁、异常回滚、并发版本检查；跨克隆快进、分叉差异报告、审查后独立元数据合并；独立元数据分支与现有内联快照迁移；可选签名的元数据提交与只读签名验证 |
-| 接入 | argparse CLI、FastAPI/OpenAPI、官方 MCP SDK stdio；可选 HTTP bearer 认证、直接 HTTPS、令牌不停机轮换与管理员/成员/审查者权限 |
+| 接入 | argparse CLI、FastAPI/OpenAPI、官方 MCP SDK stdio；显式启用的成员专用 Streamable HTTP MCP；可选 HTTP bearer 认证、直接 HTTPS、令牌不停机轮换与管理员/成员/审查者权限 |
 | 运行时 | 可选真实 DSH SDK 审查适配及成员代理入口；审查记录耗时、会话 ID 和完成状态，成员代理通过独立工作区与绑定成员的 MCP 客户端访问 Backbone |
 | 验证 | 单元测试、真实 Git 流程、MCP stdio 通信、合成评测、CI |
 
@@ -65,6 +65,7 @@ Git 是唯一权威存储；进程重启直接恢复快照，当前不需要 SQL
 - [x] Linux CI 对两种 Compose 模式、非 root 宿主 UID/GID、凭据轮换及重启恢复的实际验证。
 - [x] 十个独立 MCP stdio 会话在同一 Git 账本同时创建意图；验证无丢失、成员身份绑定、审计提交数量与干净工作树，并在 CI 中运行。单次耗时只作观测，不构成延迟 SLA。
 - [x] `serve` 可使用证书与私钥提供直接 HTTPS，本机真实连接验证证书信任与 bearer 认证。
+- [x] `serve --mcp-http` 可用同一私有令牌文件提供成员专用的无状态 Streamable HTTP MCP；本机真实客户端在 HTTP/可信 HTTPS 下验证握手、工具范围、身份绑定、Git 归属、轮换及 Host 拒绝。真实公网与不同自然人部署仍待验证。
 - [x] Compose 的内联/独立元数据分支均可叠加直接 HTTPS，Linux CI 实际运行并验证。
 - [ ] 真实多人并发演练。
 - [x] DSH `sdk-minimal` 使用正式 MCP 客户端插件连接成员绑定的 Backbone stdio 服务；运行前真实握手检查工具范围与成员身份，独立工作区使用 `workspace-write` 策略；无模型 SDK 启动在 CI 验证。

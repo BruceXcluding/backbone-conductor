@@ -154,3 +154,9 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 日期：2026-09-29。语义审查不再通过默认持久 shell 读取临时 `context.json` 和 `artifact.diff`；任务上下文与真实 diff 作为标明不可信数据的 JSON 随请求提供。一次性 DSH 补丁禁用默认 bash/PowerShell 工具，将文件策略设为 `read-only`。已安装 SDK 的有效配置输出确认两个 shell 行均禁用，真实 SDK 以该配置无模型启动；成员 MCP 启动用例也再次通过。此举不限制 Harness 进程权限、provider 数据传输或专用 DSH home 中可能存在的自定义工具插件。
 
 完整隔离环境强制执行真实 HTTP/HTTPS 测试后 **293 passed，3 个可选 SDK 用例 skipped，覆盖率 90.80%**；安装 SDK 的两个无模型启动用例另 **2 passed**。Ruff 检查与格式检查、24/24 合成评测、四例历史 Git 合并试验、Git 示例、锁文件检查、0.24.0 wheel/source distribution 构建及隔离 wheel 导入通过。未进行真实模型调用，费用和审查质量仍未验证。
+
+## v0.25 成员专用 Streamable HTTP MCP
+
+日期：2026-09-29。`serve --mcp-http --auth-file` 显式装载官方 MCP SDK 的无状态 HTTP 端点 `/mcp`。现有私有令牌文件逐请求认证，只允许成员角色；成员身份和 author 由令牌绑定，管理员工具根本不出现在工具列表。ASGI 测试覆盖无令牌/错误角色、冒名请求拒绝、审计提交中的 principal/role、令牌原子轮换与凭据权限失效关闭、未列入允许名单的 Host 拒绝，以及独立元数据分支写入不改变代码 HEAD。真实 Uvicorn 进程和官方 MCP 客户端完成 HTTP 握手、工具调用、两个成员并发写入及轮换；受信任的自签证书下，同一客户端完成 HTTPS 调用并留下成员审计记录。测试客户端和令牌由本机进程模拟，尚未证明不同自然人或公网部署。
+
+完整隔离环境强制执行真实 HTTP/HTTPS 测试后 **297 passed，3 个可选 SDK 用例 skipped，覆盖率 90.86%**；全套启动之后补充的并发 HTTP MCP 调用在定向回归中通过，最终 Linux CI 对提交状态重新执行全套。Ruff 检查与格式检查、24/24 合成评测、四例历史 Git 合并试验、Git 示例、锁文件检查、0.25.0 wheel/source distribution 构建及隔离 wheel 导入通过。静态 bearer 凭据不是 OAuth，远程访问需自行配置可信 TLS、准确的 Host 名单和仓库 OS 权限。

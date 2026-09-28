@@ -41,6 +41,14 @@ args = ["--repo", "/absolute/your-project", "mcp", "--member", "alice"]
 
 可选 DeepSeek Harness 成员代理可直接通过 `backbone dsh --member ... --workspace ... --dsh-home ... --model ... --prompt ...` 连接同一成员绑定服务；完整命令及运行边界见 [DSH_PLUGIN_PLAN.md](DSH_PLUGIN_PLAN.md)。
 
+## 远程成员接入
+
+`serve --auth-file /private/tokens.json --mcp-http` 在同一服务的 `/mcp` 开启无状态 Streamable HTTP。它只暴露上表七个成员工具；每个请求都用现有私有凭据文件核对 bearer 令牌，把 member_id 和 author 绑定到令牌 principal。管理员与审查者令牌不能进入该 MCP 端点，成员不能通过请求参数冒用其他成员。令牌原子轮换后立即生效，凭据文件损坏或权限不安全时端点返回 503。工具调用产生的 Git 审计提交记录已认证的 HTTP principal/role。
+
+远程客户端连接 `https://coordinator.example.org:8443/mcp`，发送 `Authorization: Bearer <成员令牌>`；启动时增加 `--mcp-allowed-host coordinator.example.org:8443`，使传输层接受该实际 Host header。该参数接受 Host 值，不接受 URL 或通配符。默认只接受本机回环地址。部署时应使用可信 HTTPS 或可信代理并隔离协调仓库的 OS 写权限；静态 bearer 令牌不是 OAuth 授权服务器，也不能证明令牌背后的自然人身份。此入口不主动向 Agent 会话推送任务，仍由客户端调用 `get_my_task` 拉取。
+
+ASGI 挂载与会话管理遵循 [官方 MCP Python SDK 的部署说明](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/run/asgi.md)；当前仅验证锁定的 MCP 1.x 版本。
+
 ## 成员流程
 
 1. 获取任务，阅读约束与决策，调用 start_task。

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import socket
 import ssl
@@ -12,6 +14,8 @@ from pathlib import Path
 
 import httpx
 import pytest
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 
 from backbone_conductor.auth import create_token_file
 from backbone_conductor.service import Conductor
@@ -35,7 +39,9 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(tmp_path: Pa
     git(repo, "config", "user.email", "tls@example.invalid")
     Conductor(repo).initialize()
     credentials = tmp_path / "credentials.json"
-    token = create_token_file(credentials, repo, "owner", [])[0]["token"]
+    issued = create_token_file(credentials, repo, "owner", ["alice"])
+    token = next(item["token"] for item in issued if item["name"] == "owner")
+    member_token = next(item["token"] for item in issued if item["name"] == "alice")
     certificate = tmp_path / "server.crt"
     key = tmp_path / "server.key"
     subprocess.run(
@@ -83,6 +89,7 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(tmp_path: Pa
             str(port),
             "--auth-file",
             str(credentials),
+            "--mcp-http",
             "--tls-certfile",
             str(certificate),
             "--tls-keyfile",
@@ -118,12 +125,42 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(tmp_path: Pa
                 json={"id": "tls-intent", "problem": "Verify HTTPS", "proposed_outcome": "Pass"},
             )
             assert response.status_code == 201, response.text
+
+        async def member_mcp() -> dict:
+            async with httpx.AsyncClient(
+                verify=context,
+                trust_env=False,
+                headers={"Authorization": f"Bearer {member_token}"},
+            ) as http_client:
+                async with streamable_http_client(f"{url}/mcp", http_client=http_client) as (
+                    read,
+                    write,
+                    _session_id,
+                ):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        result = await session.call_tool(
+                            "create_intent",
+                            {
+                                "intent_data": {
+                                    "id": "tls-mcp-intent",
+                                    "problem": "Verify remote MCP with HTTPS",
+                                    "proposed_outcome": "Persist through trusted TLS",
+                                }
+                            },
+                        )
+                        assert not result.isError
+                        return json.loads(result.content[0].text)
+
+        assert asyncio.run(member_mcp())["author"] == "alice"
         with httpx.Client(trust_env=False, timeout=2) as untrusted:
             with pytest.raises(httpx.RequestError):
                 untrusted.get(f"{url}/health")
             with pytest.raises(httpx.RequestError):
                 untrusted.get(f"http://127.0.0.1:{port}/health")
-        assert "Backbone-HTTP-Principal: owner" in git(repo, "log", "-1", "--format=%B")
+        history = git(repo, "log", "--format=%B", "--", ".backbone")
+        assert "Backbone-HTTP-Principal: owner" in history
+        assert "Backbone-HTTP-Principal: alice" in history
     finally:
         if server.poll() is None:
             server.terminate()

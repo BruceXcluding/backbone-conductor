@@ -2,48 +2,83 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .service import Conductor
 
 
 def create_server(
-    repo: str | Path, member_id: str | None = None, *, ledger_branch: str | None = None
+    repo: str | Path,
+    member_id: str | None = None,
+    *,
+    ledger_branch: str | None = None,
+    member_resolver: Callable[[], str] | None = None,
+    http_allowed_hosts: tuple[str, ...] | None = None,
 ) -> FastMCP:
-    """Create the MCP server; member binding is a local guard, not remote authentication."""
+    """Create stdio tools or request-bound member tools for authenticated HTTP."""
+    if member_id is not None and member_resolver is not None:
+        raise ValueError("Use either a fixed member or a request-bound member resolver")
+    if http_allowed_hosts is not None and member_resolver is None:
+        raise ValueError("HTTP MCP requires a request-bound member resolver")
     if member_id is not None and not member_id.strip():
         raise ValueError("member_id must not be blank")
-    bound_member = member_id
+    bound_member = member_id is not None or member_resolver is not None
     conductor = Conductor(repo, ledger_branch=ledger_branch)
+    http_options = {}
+    if http_allowed_hosts is not None:
+        http_options = {
+            "stateless_http": True,
+            "json_response": True,
+            "transport_security": TransportSecuritySettings(
+                enable_dns_rebinding_protection=True,
+                allowed_hosts=list(http_allowed_hosts),
+                allowed_origins=[
+                    "http://127.0.0.1:*",
+                    "http://localhost:*",
+                    "http://[::1]:*",
+                ],
+            ),
+        }
     server = FastMCP(
         "Backbone Conductor",
         instructions=(
-            "Git-native coordination for a trusted local repository. "
+            "Git-native coordination for the configured repository. "
             "Member-bound servers cannot arbitrate, dispatch, approve, or transition objects. "
             "Artifact checks are deterministic; semantic review requires a human."
         ),
+        **http_options,
     )
 
+    def current_member() -> str:
+        selected = member_resolver() if member_resolver is not None else member_id
+        if selected is None:
+            raise PermissionError("No authenticated member is bound to this request")
+        return selected
+
     def member(requested: str | None) -> str:
-        if bound_member is not None:
-            if requested is not None and requested != bound_member:
+        if bound_member:
+            selected = current_member()
+            if requested is not None and requested != selected:
                 raise PermissionError("member_id does not match this server's bound member")
-            return bound_member
+            return selected
         if requested is None or not requested.strip():
             raise ValueError("member_id is required on an unbound server")
         return requested
 
     def authored(data: dict[str, Any], initial_status: str) -> dict[str, Any]:
         result = dict(data)
-        if bound_member is not None:
-            if result.get("author", bound_member) != bound_member:
+        if bound_member:
+            selected = current_member()
+            if result.get("author", selected) != selected:
                 raise PermissionError("author does not match this server's bound member")
             if result.get("status", initial_status) != initial_status:
                 raise PermissionError(f"Members may only create objects in {initial_status} status")
-            result["author"] = bound_member
+            result["author"] = selected
         return result
 
     @server.tool()
@@ -59,7 +94,7 @@ def create_server(
     @server.tool()
     def check_backbone_sync(member_id: str | None = None, since_version: str | None = None) -> dict:
         """Report ledger changes and relevant accepted decisions since a known version."""
-        selected = member(member_id) if bound_member is not None or member_id is not None else None
+        selected = member(member_id) if bound_member or member_id is not None else None
         return conductor.check_backbone_sync(selected, since_version)
 
     @server.tool()
@@ -82,7 +117,7 @@ def create_server(
         """Refresh an assigned task's decisions and target branch; resubmission is required."""
         return conductor.rebase_task(task_id, member(member_id), expected_version)
 
-    if bound_member is None:
+    if not bound_member:
 
         @server.tool()
         def revise_intent(
