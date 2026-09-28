@@ -82,13 +82,20 @@ class Sync(Action):
     branch: str | None = None
 
 
+class Reconciliation(Sync):
+    local_head: str = Field(min_length=1)
+    remote_head: str = Field(min_length=1)
+    author: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+
+
 def create_app(repo: str | Path, *, auth_file: str | Path | None = None) -> FastAPI:
     """Create a local admin API or an authenticated admin/member API."""
     conductor = Conductor(repo)
     auth = TokenAuth(auth_file, conductor.store.root) if auth_file is not None else None
     app = FastAPI(
         title="Backbone Conductor",
-        version="0.4.0",
+        version="0.5.0",
         description=(
             "Without --auth-file, bind to loopback for trusted local administrators. "
             "With --auth-file, bearer tokens authorize admin and bound member operations. "
@@ -295,6 +302,17 @@ def create_app(repo: str | Path, *, auth_file: str | Path | None = None) -> Fast
     @app.post("/refresh")
     def refresh(data: Sync) -> dict:
         return conductor.refresh(data.remote, data.branch)
+
+    @app.post("/reconcile")
+    def reconcile(data: Reconciliation, request: Request) -> dict:
+        return conductor.reconcile(
+            data.local_head,
+            data.remote_head,
+            actor(request, data.author),
+            data.rationale,
+            data.remote,
+            data.branch,
+        )
 
     @app.get("/timeline")
     def timeline(limit: int = Query(default=50, ge=1, le=1000)) -> list[dict]:

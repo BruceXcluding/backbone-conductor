@@ -266,3 +266,27 @@ def detect_conflicts(state: BackboneState) -> list[Conflict]:
     return sorted(
         {finding.id: finding for finding in findings}.values(), key=lambda finding: finding.id
     )
+
+
+def refresh_conflicts(state: BackboneState) -> list[Conflict]:
+    """Recompute generated findings while retaining exact human resolutions."""
+    detected = detect_conflicts(state)
+    active = {conflict.id for conflict in detected}
+    for conflict in detected:
+        existing = state.conflicts.get(conflict.id)
+        if (
+            existing
+            and existing.resolved
+            and (existing.resolution or {}).get("action") != "no_longer_applicable"
+        ):
+            conflict = existing
+        state.conflicts[conflict.id] = conflict
+    for conflict in state.conflicts.values():
+        if conflict.id not in active and not conflict.resolved:
+            conflict.resolved = True
+            conflict.resolution = {
+                "action": "no_longer_applicable",
+                "author": "conductor",
+                "rationale": "The rule no longer detects this evidence in active work.",
+            }
+    return [state.conflicts[conflict.id] for conflict in detected]

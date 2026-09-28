@@ -200,6 +200,7 @@ class BackboneState(ProtocolModel):
     sessions: dict[str, dict[str, Any]] = Field(default_factory=dict)
     version: str | None = None
     parent_version: str | None = None
+    merged_parent_version: str | None = None
 
     @model_validator(mode="after")
     def validate_mapping_ids(self) -> BackboneState:

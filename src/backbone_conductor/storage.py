@@ -21,7 +21,8 @@ from typing import Any, TypeVar
 
 from filelock import FileLock, Timeout
 
-from backbone_conductor.models import BackboneState
+from backbone_conductor.conflicts import refresh_conflicts
+from backbone_conductor.models import BackboneState, IntentStatus, TaskStatus
 
 T = TypeVar("T")
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,199}\Z")
@@ -150,6 +151,7 @@ class GitStore:
                 # Validate after callbacks too: dict assignment can bypass model validators.
                 state = BackboneState.model_validate(state.model_dump(mode="json"))
                 state.parent_version = previous_version
+                state.merged_parent_version = None
                 state.version = None
                 self._commit(state, message, expected_version=previous_version)
                 return result
@@ -390,8 +392,208 @@ class GitStore:
         }
 
     def _changed_paths(self, before: str, after: str) -> list[str]:
-        output = self._git("diff", "--name-only", "-z", before, after, "--").stdout
+        output = self._git("diff", "--no-renames", "--name-only", "-z", before, after, "--").stdout
         return sorted(path for path in output.split("\x00") if path)
+
+    @staticmethod
+    def _merge_objects(
+        base: BackboneState, local: BackboneState, remote: BackboneState
+    ) -> tuple[BackboneState | None, dict[str, list[str]]]:
+        """Three-way merge of whole domain objects; never choose competing edits."""
+        missing = object()
+        combined = local.model_dump(mode="json")
+        collisions: dict[str, list[str]] = {}
+        for collection in ("intents", "decisions", "conflicts", "tasks", "sessions"):
+            before = getattr(base, collection)
+            ours = getattr(local, collection)
+            theirs = getattr(remote, collection)
+            merged = {}
+            conflicts = []
+            for key in sorted(set(before) | set(ours) | set(theirs)):
+                old = before.get(key, missing)
+                left = ours.get(key, missing)
+                right = theirs.get(key, missing)
+                if left == right:
+                    chosen = left
+                elif left == old:
+                    chosen = right
+                elif right == old:
+                    chosen = left
+                else:
+                    conflicts.append(key)
+                    continue
+                if chosen is not missing:
+                    merged[key] = (
+                        chosen.model_dump(mode="json") if hasattr(chosen, "model_dump") else chosen
+                    )
+            combined[collection] = merged
+            collisions[collection] = conflicts
+        if any(collisions.values()):
+            return None, collisions
+        combined["version"] = None
+        combined["parent_version"] = local.version
+        combined["merged_parent_version"] = remote.version
+        state = BackboneState.model_validate(combined)
+        GitStore._validate_reconciled_state(state)
+        refresh_conflicts(state)
+        return BackboneState.model_validate(state.model_dump(mode="json")), collisions
+
+    @staticmethod
+    def _validate_reconciled_state(state: BackboneState) -> None:
+        """Reject object-level merges that break cross-object lifecycle invariants."""
+        for intent in state.intents.values():
+            if intent.parent_intent and intent.parent_intent not in state.intents:
+                raise StorageError(f"Merged intent has missing parent: {intent.id}")
+            visited = {intent.id}
+            ancestor = intent.parent_intent
+            while ancestor:
+                if ancestor in visited:
+                    raise StorageError(f"Merged intent parent cycle: {intent.id}")
+                visited.add(ancestor)
+                ancestor = state.intents[ancestor].parent_intent
+        for decision in state.decisions.values():
+            if decision.supersedes and decision.supersedes not in state.decisions:
+                raise StorageError(f"Merged decision has missing predecessor: {decision.id}")
+            if any(intent_id not in state.intents for intent_id in decision.related_intents):
+                raise StorageError(f"Merged decision has missing related intent: {decision.id}")
+        active_by_intent: dict[str, int] = {}
+        for task in state.tasks.values():
+            intent = state.intents.get(task.intent_id)
+            if intent is None:
+                raise StorageError(f"Merged task has missing intent: {task.id}")
+            if task.status not in {TaskStatus.MERGED, TaskStatus.CANCELLED}:
+                active_by_intent[task.intent_id] = active_by_intent.get(task.intent_id, 0) + 1
+                if intent.status != IntentStatus.IN_PROGRESS:
+                    raise StorageError(f"Merged active task has inconsistent intent: {task.id}")
+        duplicate = [key for key, count in active_by_intent.items() if count > 1]
+        if duplicate:
+            raise StorageError(
+                "Merged state has multiple active tasks for: " + ", ".join(duplicate)
+            )
+
+    def reconcile(
+        self,
+        remote: str,
+        branch: str | None,
+        expected_local_head: str,
+        expected_remote_head: str,
+        author: str,
+        rationale: str,
+    ) -> dict[str, Any]:
+        """Merge disjoint metadata-only histories with an audited two-parent commit."""
+        if not author.strip() or any(ord(char) < 32 for char in author):
+            raise StorageError("A valid reconciliation author is required")
+        if not rationale.strip() or "\x00" in rationale:
+            raise StorageError("A reconciliation rationale is required")
+        with self._lock:
+            local_state = self._read()
+            current_branch, branch = self._remote_branch(remote, branch)
+            if branch != current_branch:
+                raise StorageError("Reconciliation requires the checked-out branch")
+            local_head = self._head()
+            if local_head != expected_local_head:
+                raise StorageError("Local HEAD changed since inspection; run refresh again")
+            if self._git("status", "--porcelain=v1", "--untracked-files=all").stdout:
+                raise StorageError("Reconciliation requires a clean worktree and index")
+            temporary_ref = f"refs/backbone/fetch/{uuid.uuid4().hex}"
+            try:
+                self._git(
+                    "fetch",
+                    "--no-tags",
+                    remote,
+                    f"refs/heads/{branch}:{temporary_ref}",
+                    timeout=120,
+                )
+                remote_head = self._resolve_revision(temporary_ref)
+                if remote_head != expected_remote_head:
+                    raise StorageError("Remote HEAD changed since inspection; run refresh again")
+                if self._head() != local_head:
+                    raise StorageError("Local HEAD changed during reconciliation; retry")
+                base = self._git("merge-base", local_head, remote_head, check=False)
+                if base.returncode or base.stdout.strip() in {local_head, remote_head}:
+                    raise StorageError("Reconciliation requires two divergent histories")
+                base_head = base.stdout.strip()
+                local_paths = self._changed_paths(base_head, local_head)
+                remote_paths = self._changed_paths(base_head, remote_head)
+                code_paths = sorted(
+                    path
+                    for path in set(local_paths + remote_paths)
+                    if not path.startswith(".backbone/")
+                )
+                if code_paths:
+                    return {
+                        "status": "requires_review",
+                        "updated": False,
+                        "reason": "code_changes",
+                        "code_paths": code_paths,
+                    }
+                base_state = self._state_at(base_head)
+                remote_state = self._state_at(remote_head)
+                remote_state.version = (
+                    self._git(
+                        "log", "-1", "--format=%H", remote_head, "--", ".backbone"
+                    ).stdout.strip()
+                    or None
+                )
+                merged, collisions = self._merge_objects(base_state, local_state, remote_state)
+                if merged is None:
+                    return {
+                        "status": "requires_review",
+                        "updated": False,
+                        "reason": "object_conflicts",
+                        "objects": collisions,
+                    }
+                with tempfile.TemporaryDirectory(
+                    prefix="backbone-reconcile-", dir=self.git_dir
+                ) as temp:
+                    index_env = {"GIT_INDEX_FILE": str(Path(temp) / "index")}
+                    self._git("read-tree", local_head, env=index_env)
+                    views = {
+                        f".backbone/{path}": value for path, value in self._render(merged).items()
+                    }
+                    existing = self._git("ls-files", "-z", "--", ".backbone", env=index_env).stdout
+                    for path in existing.split("\x00"):
+                        if path and path not in views:
+                            self._git("update-index", "--force-remove", "--", path, env=index_env)
+                    for path, content in views.items():
+                        blob = self._git(
+                            "hash-object", "-w", "--stdin", input=content
+                        ).stdout.strip()
+                        self._git(
+                            "update-index",
+                            "--add",
+                            "--cacheinfo",
+                            f"100644,{blob},{path}",
+                            env=index_env,
+                        )
+                    tree = self._git("write-tree", env=index_env).stdout.strip()
+                message = (
+                    f"backbone: reconcile {branch} by {author.strip()}\n\n{rationale.strip()}\n"
+                )
+                commit = self._git(
+                    "commit-tree", tree, "-p", local_head, "-p", remote_head, input=message
+                ).stdout.strip()
+                if (
+                    self._head() != local_head
+                    or self._git("status", "--porcelain=v1", "--untracked-files=all").stdout
+                ):
+                    raise StorageError("Local checkout changed during reconciliation; retry")
+                self._git("merge", "--ff-only", "--no-edit", commit)
+                updated = self._read()
+                return {
+                    "status": "reconciled",
+                    "updated": True,
+                    "commit": commit,
+                    "parents": [local_head, remote_head],
+                    "version": updated.version,
+                    "conflicts": [
+                        conflict.id
+                        for conflict in updated.conflicts.values()
+                        if not conflict.resolved
+                    ],
+                }
+            finally:
+                self._git("update-ref", "-d", temporary_ref, check=False)
 
     def refresh(self, remote: str = "origin", branch: str | None = None) -> dict[str, Any]:
         """Fetch a peer branch and fast-forward only; describe divergence for review."""

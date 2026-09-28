@@ -14,7 +14,7 @@
 
 绑定成员时可省略 member_id；冒用其他成员或 author 会报错。artifact 至少含 intent_id、branch、summary，base_ref 默认为 main，且必须匹配任务目标分支。
 
-省略 `--member` 为本地管理员进程，额外暴露 dispatch_task、transition_intent、transition_decision、revise_intent、cancel_task、detect_conflicts、resolve_conflict、merge_task、refresh_backbone。不得将其当作远程认证服务。
+省略 `--member` 为本地管理员进程，额外暴露 dispatch_task、transition_intent、transition_decision、revise_intent、cancel_task、detect_conflicts、resolve_conflict、merge_task、refresh_backbone、reconcile_backbone。不得将其当作远程认证服务。
 
 工具 Schema 由 MCP tools/list 提供；领域 Schema 可由 `backbone schema` 或 HTTP `/schema` 获取。
 

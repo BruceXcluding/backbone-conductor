@@ -134,4 +134,16 @@ def create_server(repo: str | Path, member_id: str | None = None) -> FastMCP:
             """Administrator: fetch peer history and fast-forward, or report divergence."""
             return conductor.refresh(remote, branch)
 
+        @server.tool()
+        def reconcile_backbone(
+            local_head: str,
+            remote_head: str,
+            author: str,
+            rationale: str,
+            remote: str = "origin",
+            branch: str | None = None,
+        ) -> dict:
+            """Administrator: merge reviewed disjoint metadata histories with two Git parents."""
+            return conductor.reconcile(local_head, remote_head, author, rationale, remote, branch)
+
     return server

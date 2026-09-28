@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.4 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用令牌认证；多个克隆可显式获取远端并安全快进，多人共享部署仍需独立验证。
+这是独立个人兴趣项目。v0.5 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用令牌认证；多个克隆可显式获取远端、安全快进，并对经复核的独立元数据变更进行结构化合并。多人共享部署仍需独立验证。
 
 ## 快速开始
 
@@ -80,6 +80,17 @@ backbone --repo /path/to/project sync
 ```
 
 `task merge` 验证提交已进入目标分支并记录人工审查，不执行代码合并。`sync` 显式推送当前分支，包括代码和元数据提交，不拉取或强推。另一个克隆在同名分支可运行 `backbone --repo /path/to/project refresh`：远端领先且本地工作树干净时快进；本地领先或双方分叉时只报告状态和差异，不自动合并。`refresh` 返回 `diverged` 时须人工检查和合并 Git 历史。已成功提交的任务在分支更新后，需 `task start` 再重新提交；检查失败的任务仍为 in_progress，可直接修复后重交。
+
+若分叉只涉及 `.backbone/`，且两侧修改的是不同领域对象，管理员审查 `refresh` 返回的 `local_head`、`remote_head` 和差异后，可记录理由并合并：
+
+```sh
+backbone --repo /path/to/project reconcile \
+  --local-head OBSERVED_LOCAL_HEAD --remote-head OBSERVED_REMOTE_HEAD \
+  --author owner --rationale '已审查两侧独立意图及新产生的冲突'
+backbone --repo /path/to/project sync
+```
+
+`reconcile` 会重新获取远端，任何一侧 SHA 变化即拒绝；工作树必须干净。它生成保留两个 Git 父提交的合并提交并重算冲突，**不执行代码合并或语义审批**。若代码路径有变化或同一对象两侧均被不同方式修改，返回 `requires_review`，不改变仓库。新阻塞冲突需按正常流程人工裁决。
 若分派后有新的已接受决策或旧决策撤回，提交检查会要求先执行 `task rebase`，再重新提交产物。若决策是在提交通过之后才改变，而且代码已经合入目标分支，管理员需在 `task merge` 上提供 `--rationale`，说明如何审查了变更的决策。
 
 需求变化时，可在分派前修订意图。先从 `backbone status` 读取 `version`，再提交 JSON 字段补丁；已接受的意图会回到 draft，须重新接受：

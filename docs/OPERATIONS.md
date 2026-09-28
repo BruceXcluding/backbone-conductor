@@ -38,8 +38,8 @@ docker compose up -d
 - `backbone decision transition DECISION_ID reverted` 撤销接受过的决策并重算冲突。
 - 整体回退需先停服务和备份，查看差异后 `git revert <metadata-commit>`；再确认 backbone status。首选领域命令，整提交回退可能改变多个对象。
 - state.json 是权威快照，其他文件是生成视图。未提交的手工修改会被拒绝；修复时先停服务、检查并提交一致快照。
-- `sync` 仅 push；`refresh` 显式 fetch。若本地落后、同名分支且工作树/索引干净，`refresh` 会快进并验证新快照；本地领先则不变更。双方分叉时返回共同祖先、两侧对象与路径差异及重叠项，不改写本地或远端历史。维护者必须人工审查并合并，再运行 `refresh` 或 `sync`；不得强推审计历史。
-- 成员分支不得改写 `.backbone/`。协调操作集中在目标分支；分叉后的元数据自动合并尚未实现。
+- `sync` 仅 push；`refresh` 显式 fetch。若本地落后、同名分支且工作树/索引干净，`refresh` 会快进并验证新快照；本地领先则不变更。双方分叉时返回共同祖先、两侧对象与路径差异及重叠项，不改写历史。维护者审查两个 HEAD 后，对仅元数据、没有竞争对象的分叉可执行 `backbone reconcile --local-head ... --remote-head ... --author ... --rationale ...`。该命令生成双父合并提交、重算冲突，随后显式 `sync` 推送；SHA 已变化、代码路径改动、同一对象竞争修改或跨对象生命周期不一致时拒绝自动合并。代码与竞争元数据需人工处理，不得强推审计历史。
+- 成员分支不得改写 `.backbone/`。协调操作集中在目标分支；独立 Backbone 分支尚未实现。
 - 锁被占用时先确认活跃 Git/协调进程，不盲目删除锁。
 
 已验证 macOS/Linux 风格工作树与 linked worktree。Windows、网络文件系统和突然断电恢复未专门验证。进程内异常可回滚；异常断电后的差异需借助 Git 历史人工恢复。

@@ -68,6 +68,22 @@ def test_http_authenticates_and_limits_member_to_own_tasks(auth_repo: tuple[Path
         assert client.get("/state", headers=auth_header(ADMIN_TOKEN)).status_code == 200
         assert client.get("/state", headers=auth_header(ALICE_TOKEN)).status_code == 403
         assert client.post("/refresh", headers=auth_header(ALICE_TOKEN), json={}).status_code == 403
+        assert (
+            client.post("/reconcile", headers=auth_header(ALICE_TOKEN), json={}).status_code == 403
+        )
+        assert (
+            client.post(
+                "/reconcile",
+                headers=auth_header(ADMIN_TOKEN),
+                json={
+                    "local_head": "local",
+                    "remote_head": "remote",
+                    "author": "alice",
+                    "rationale": "Reviewed",
+                },
+            ).status_code
+            == 403
+        )
         assert client.post("/refresh", headers=auth_header(ADMIN_TOKEN), json={}).status_code == 409
         assert client.get("/docs", headers=auth_header(ALICE_TOKEN)).status_code == 403
         assert client.get("/schema", headers=auth_header(ALICE_TOKEN)).status_code == 200

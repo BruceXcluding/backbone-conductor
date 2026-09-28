@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from .conflicts import detect_conflicts
+from .conflicts import refresh_conflicts
 from .models import (
     Artifact,
     BackboneState,
@@ -61,27 +61,7 @@ class Conductor:
 
     @staticmethod
     def _refresh(state: BackboneState) -> list:
-        detected = detect_conflicts(state)
-        active = {c.id for c in detected}
-        for conflict in detected:
-            existing = state.conflicts.get(conflict.id)
-            if (
-                existing
-                and existing.resolved
-                and (existing.resolution or {}).get("action") != "no_longer_applicable"
-            ):
-                # Explicit human resolutions apply only to this exact evidence signature.
-                conflict = existing
-            state.conflicts[conflict.id] = conflict
-        for conflict in state.conflicts.values():
-            if conflict.id not in active and not conflict.resolved:
-                conflict.resolved = True
-                conflict.resolution = {
-                    "action": "no_longer_applicable",
-                    "author": "conductor",
-                    "rationale": "The rule no longer detects this evidence in active work.",
-                }
-        return [state.conflicts[c.id] for c in detected]
+        return refresh_conflicts(state)
 
     @staticmethod
     def _blockers(state: BackboneState, intent_id: str, task_id: str | None = None) -> list:
@@ -704,3 +684,16 @@ class Conductor:
 
     def refresh(self, remote: str = "origin", branch: str | None = None) -> dict:
         return self.store.refresh(remote, branch)
+
+    def reconcile(
+        self,
+        expected_local_head: str,
+        expected_remote_head: str,
+        author: str,
+        rationale: str,
+        remote: str = "origin",
+        branch: str | None = None,
+    ) -> dict:
+        return self.store.reconcile(
+            remote, branch, expected_local_head, expected_remote_head, author, rationale
+        )

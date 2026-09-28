@@ -429,6 +429,166 @@ def test_refresh_requires_current_branch(repo: Path, tmp_path: Path):
         second.refresh(branch="other")
 
 
+def test_reconcile_disjoint_metadata_keeps_both_parents_and_regenerates_conflicts(
+    repo: Path, tmp_path: Path
+):
+    first, second, remote = clone_pair(repo, tmp_path)
+    left = Conductor(first.root).create_intent(
+        {
+            "id": "intent-left",
+            "author": "alice",
+            "problem": "Left plan",
+            "proposed_outcome": "Left work",
+            "affected_paths": ["shared.py"],
+        }
+    )
+    right = Conductor(second.root).create_intent(
+        {
+            "id": "intent-right",
+            "author": "bob",
+            "problem": "Right plan",
+            "proposed_outcome": "Right work",
+            "affected_paths": ["shared.py"],
+        }
+    )
+    first.sync()
+    inspection = second.refresh()
+    assert inspection["status"] == "diverged"
+    result = Conductor(second.root).reconcile(
+        inspection["local_head"],
+        inspection["remote_head"],
+        "owner",
+        "Reviewed independent intents; coordinate the shared path",
+    )
+    assert result["status"] == "reconciled"
+    assert result["parents"] == [inspection["local_head"], inspection["remote_head"]]
+    assert git(second.root, "show", "-s", "--format=%P", "HEAD") == " ".join(result["parents"])
+    merged = second.read()
+    assert set(merged.intents) == {left["id"], right["id"]}
+    assert merged.parent_version == inspection["local_version"]
+    assert merged.merged_parent_version == inspection["remote_version"]
+    assert result["version"] == result["commit"] == merged.version
+    assert any(not conflict.resolved for conflict in merged.conflicts.values())
+    assert git(second.root, "status", "--porcelain") == ""
+    assert git(second.root, "for-each-ref", "--format=%(refname)", "refs/backbone/fetch") == ""
+    second.sync()
+    assert git(remote, "rev-parse", "main") == result["commit"]
+    assert first.refresh()["status"] == "fast_forwarded"
+    assert set(first.read().intents) == {left["id"], right["id"]}
+    Conductor(first.root).create_intent(
+        {"id": "intent-later", "author": "owner", "problem": "Later", "proposed_outcome": "Later"}
+    )
+    assert first.read().merged_parent_version is None
+
+
+def test_reconcile_same_object_changes_require_review(repo: Path, tmp_path: Path):
+    first, second, _ = clone_pair(repo, tmp_path)
+    intent = Conductor(first.root).create_intent(
+        {"id": "intent-shared", "author": "owner", "problem": "Initial", "proposed_outcome": "Work"}
+    )
+    first.sync()
+    second.refresh()
+    first_version = first.read().version
+    second_version = second.read().version
+    Conductor(first.root).revise_intent(
+        intent["id"], {"problem": "First edit"}, "alice", first_version
+    )
+    Conductor(second.root).revise_intent(
+        intent["id"], {"problem": "Second edit"}, "bob", second_version
+    )
+    first.sync()
+    inspection = second.refresh()
+    result = second.reconcile(
+        "origin", None, inspection["local_head"], inspection["remote_head"], "owner", "Review"
+    )
+    assert result["status"] == "requires_review"
+    assert result["reason"] == "object_conflicts"
+    assert result["objects"]["intents"] == [intent["id"]]
+    assert git(second.root, "rev-parse", "HEAD") == inspection["local_head"]
+
+
+def test_reconcile_rejects_code_changes_and_stale_heads(repo: Path, tmp_path: Path):
+    first, second, _ = clone_pair(repo, tmp_path)
+    (first.root / "app.py").write_text("print('from first')\n")
+    git(first.root, "add", "app.py")
+    git(first.root, "commit", "-m", "first code")
+    second.mutate(lambda state: state.sessions.update({"bob": {}}), "second metadata")
+    first.sync()
+    inspection = second.refresh()
+    with pytest.raises(StorageError, match="Remote HEAD changed"):
+        second.reconcile("origin", None, inspection["local_head"], "0" * 40, "owner", "Review")
+    result = second.reconcile(
+        "origin", None, inspection["local_head"], inspection["remote_head"], "owner", "Review"
+    )
+    assert result["status"] == "requires_review"
+    assert result["reason"] == "code_changes"
+    assert result["code_paths"] == ["app.py"]
+    assert git(second.root, "rev-parse", "HEAD") == inspection["local_head"]
+
+
+def test_reconcile_detects_code_source_of_rename_into_backbone(repo: Path, tmp_path: Path):
+    first, second, _ = clone_pair(repo, tmp_path)
+    (first.root / "app.py").write_text("print('baseline')\n")
+    git(first.root, "add", "app.py")
+    git(first.root, "commit", "-m", "baseline code")
+    first.sync()
+    second.refresh()
+    git(first.root, "mv", "app.py", ".backbone/extra.md")
+    git(first.root, "commit", "-m", "move code into metadata directory")
+    second.mutate(lambda state: state.sessions.update({"bob": {}}), "second metadata")
+    first.sync()
+    inspection = second.refresh()
+    result = second.reconcile(
+        "origin", None, inspection["local_head"], inspection["remote_head"], "owner", "Review"
+    )
+    assert result["status"] == "requires_review"
+    assert result["reason"] == "code_changes"
+    assert result["code_paths"] == ["app.py"]
+
+
+def test_reconcile_rejects_two_active_tasks_for_one_intent(repo: Path, tmp_path: Path):
+    first, second, _ = clone_pair(repo, tmp_path)
+    intent = Conductor(first.root).create_intent(
+        {"id": "intent-work", "author": "owner", "problem": "Work", "proposed_outcome": "Done"}
+    )
+    Conductor(first.root).transition_intent(intent["id"], "accepted")
+    first.sync()
+    second.refresh()
+    Conductor(first.root).dispatch_task(intent["id"], "alice")
+    Conductor(second.root).dispatch_task(intent["id"], "bob")
+    first.sync()
+    inspection = second.refresh()
+    with pytest.raises(StorageError, match="multiple active tasks"):
+        second.reconcile(
+            "origin", None, inspection["local_head"], inspection["remote_head"], "owner", "Review"
+        )
+    assert git(second.root, "rev-parse", "HEAD") == inspection["local_head"]
+
+
+def test_reconcile_rejects_parent_cycle_across_independent_edits(repo: Path, tmp_path: Path):
+    first, second, _ = clone_pair(repo, tmp_path)
+    conductor = Conductor(first.root)
+    for intent_id in ("intent-a", "intent-b"):
+        conductor.create_intent(
+            {"id": intent_id, "author": "owner", "problem": intent_id, "proposed_outcome": "Work"}
+        )
+    first.sync()
+    second.refresh()
+    Conductor(first.root).revise_intent(
+        "intent-a", {"parent_intent": "intent-b"}, "alice", first.read().version
+    )
+    Conductor(second.root).revise_intent(
+        "intent-b", {"parent_intent": "intent-a"}, "bob", second.read().version
+    )
+    first.sync()
+    inspection = second.refresh()
+    with pytest.raises(StorageError, match="parent cycle"):
+        second.reconcile(
+            "origin", None, inspection["local_head"], inspection["remote_head"], "owner", "Review"
+        )
+    assert git(second.root, "rev-parse", "HEAD") == inspection["local_head"]
+
+
 def test_diff_includes_rename_source_and_destination_for_scope_checks(repo: Path):
     store = GitStore(repo)
     store.init()
