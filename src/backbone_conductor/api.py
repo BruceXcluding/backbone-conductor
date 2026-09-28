@@ -119,7 +119,13 @@ def create_app(
         elif request.url.path == "/health":
             request.state.principal = None
         else:
-            principal = auth.authenticate(request.headers.get("authorization"))
+            try:
+                principal = auth.authenticate(request.headers.get("authorization"))
+            except ValueError:
+                return JSONResponse(
+                    status_code=503,
+                    content={"detail": "HTTP credentials are unavailable or invalid"},
+                )
             if principal is None:
                 return JSONResponse(
                     status_code=401,
@@ -175,7 +181,12 @@ def create_app(
         app.add_exception_handler(error, domain_error)
 
     @app.get("/health")
-    def health() -> dict[str, str]:
+    def health() -> Any:
+        if auth is not None:
+            try:
+                auth.check_available()
+            except ValueError:
+                return JSONResponse(status_code=503, content={"status": "unavailable"})
         return {"status": "ok"}
 
     @app.post("/initialize")

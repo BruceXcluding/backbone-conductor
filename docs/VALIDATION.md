@@ -70,3 +70,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## v0.8 增量
 
 日期：2026-09-28。`reconcile` 新增可选逐对象 `resolutions`，管理员可对每个竞争对象选择本地、远端或提供完整合并值；遗漏、多余或无效决议拒绝提交。审查理由和选择摘要写入双父 Git 提交，合并后仍验证对象关系和任务生命周期并重算确定性冲突。CLI `--resolutions-file`、HTTP 和 MCP 已接入。真实 Git 测试覆盖无决议时保持 `requires_review`、选择远端、完整字段合并、错误 ID/额外决议不改变 HEAD，以及独立元数据分支双克隆合并与快进。完整基础套件 **261 passed，1 skipped，覆盖率 90.45%**；Ruff 检查与格式检查、`uv lock --check --offline`、合成评测 24/24、Git 示例、0.8.0 wheel/source distribution 构建通过。未进行真实多人服务器部署或人类语义审查。
+
+## v0.9 增量
+
+日期：2026-09-28。HTTP bearer 凭据改为逐请求重新读取和严格校验，`auth rotate` 在同一目录先写入并验证新 0600 摘要文件，再原子替换旧文件。运行中服务无需重启即可撤销旧令牌、接纳新令牌；凭据缺失、权限变宽、损坏或被换成符号链接/FIFO 时，受保护请求及 `/health` 返回 503。测试覆盖同一运行中的 HTTP 应用轮换、成员撤销、错误轮换保留原文件，以及上述失败关闭行为。完整基础套件 **262 passed，1 skipped，覆盖率 90.70%**；Ruff 检查与格式检查、`uv lock --check --offline`、合成评测 24/24、Git 示例、0.9.0 wheel/source distribution 构建通过。TLS、远程服务器和真实多人审计演练仍未验证。

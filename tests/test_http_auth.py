@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -319,3 +320,78 @@ def test_token_file_creation_is_private_and_does_not_store_plaintext(
     capsys.readouterr()
     with pytest.raises(ValueError, match="unique"):
         create_token_file(tmp_path / "duplicate.json", repo, "alice", ["alice"])
+
+
+def test_http_tokens_rotate_without_restart_and_fail_closed(
+    auth_repo: tuple[Path, Path], capsys
+) -> None:
+    repo, auth_file = auth_repo
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        assert client.get("/state", headers=auth_header(ADMIN_TOKEN)).status_code == 200
+        assert (
+            main(
+                [
+                    "--repo",
+                    str(repo),
+                    "auth",
+                    "rotate",
+                    "--file",
+                    str(auth_file),
+                    "--admin",
+                    "owner",
+                    "--member",
+                    "alice",
+                ]
+            )
+            == 0
+        )
+        issued = json.loads(capsys.readouterr().out)["credentials"]
+        assert len(issued) == 2
+        assert auth_file.stat().st_mode & 0o777 == 0o600
+        assert all(item["token"] not in auth_file.read_text() for item in issued)
+        assert client.get("/state", headers=auth_header(ADMIN_TOKEN)).status_code == 401
+        assert client.get("/tasks", headers=auth_header(BOB_TOKEN)).status_code == 401
+        new_admin = auth_header(issued[0]["token"])
+        assert client.get("/state", headers=new_admin).status_code == 200
+        assert client.get("/tasks", headers=auth_header(issued[1]["token"])).status_code == 200
+        auth_file.chmod(0o644)
+        assert client.get("/state", headers=new_admin).status_code == 503
+        assert client.get("/health").status_code == 503
+        auth_file.chmod(0o600)
+        assert client.get("/state", headers=new_admin).status_code == 200
+        valid_content = auth_file.read_text()
+        auth_file.write_text("{invalid json", encoding="utf-8")
+        assert client.get("/state", headers=new_admin).status_code == 503
+        auth_file.write_text(valid_content, encoding="utf-8")
+        assert client.get("/state", headers=new_admin).status_code == 200
+        assert (
+            main(
+                [
+                    "--repo",
+                    str(repo),
+                    "auth",
+                    "rotate",
+                    "--file",
+                    str(auth_file),
+                    "--admin",
+                    "owner",
+                    "--member",
+                    "owner",
+                ]
+            )
+            == 1
+        )
+        capsys.readouterr()
+        assert client.get("/state", headers=new_admin).status_code == 200
+        replacement = auth_file.with_name("replacement.json")
+        replacement.write_text(valid_content, encoding="utf-8")
+        replacement.chmod(0o600)
+        auth_file.unlink()
+        auth_file.symlink_to(replacement)
+        assert client.get("/state", headers=new_admin).status_code == 503
+        auth_file.unlink()
+        os.mkfifo(auth_file, mode=0o600)
+        assert client.get("/state", headers=new_admin).status_code == 503
+        auth_file.unlink()
+        assert client.get("/state", headers=new_admin).status_code == 503
+        assert client.get("/health").status_code == 503

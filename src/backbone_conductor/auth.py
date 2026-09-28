@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,25 +30,46 @@ class TokenAuth:
     """Verify tokens against a private, strictly validated credential file."""
 
     def __init__(self, path: str | Path, repo: str | Path) -> None:
-        location = Path(path).expanduser().resolve(strict=True)
-        repository = Path(repo).expanduser().resolve()
-        if location.is_relative_to(repository):
-            raise ValueError("HTTP credential file must be outside the repository")
-        if not location.is_file():
-            raise ValueError("HTTP credential file must be a regular file")
-        mode = location.stat().st_mode
-        if mode & (stat.S_IRWXG | stat.S_IRWXO):
-            raise ValueError("HTTP credential file must be accessible only to its owner (0600)")
+        self.location = Path(path).expanduser().absolute()
+        self.repository = Path(repo).expanduser().resolve()
+        self.check_available()
+
+    def _load(self) -> tuple[tuple[str, Principal], ...]:
         try:
-            config = json.loads(location.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+            if self.location.is_symlink():
+                raise ValueError("HTTP credential file must be a regular file")
+            resolved = self.location.resolve(strict=True)
+            if resolved.is_relative_to(self.repository):
+                raise ValueError("HTTP credential file must be outside the repository")
+            descriptor = os.open(
+                self.location,
+                os.O_RDONLY
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+                metadata = os.fstat(stream.fileno())
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ValueError("HTTP credential file must be a regular file")
+                if metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+                    raise ValueError(
+                        "HTTP credential file must be accessible only to its owner (0600)"
+                    )
+                if metadata.st_size > 1_048_576:
+                    raise ValueError("HTTP credential file is too large")
+                content = stream.read(1_048_577)
+                if len(content) > 1_048_576:
+                    raise ValueError("HTTP credential file is too large")
+            config = json.loads(content)
+        except (OSError, UnicodeError) as exc:
             raise ValueError(f"Invalid HTTP credential file: {exc}") from exc
         if not isinstance(config, dict) or set(config) != {"tokens"}:
             raise ValueError("HTTP credential file must contain only a tokens array")
         entries = config["tokens"]
         if not isinstance(entries, list) or not entries:
             raise ValueError("HTTP credential file needs at least one token")
-        self._tokens: list[tuple[str, Principal]] = []
+        tokens: list[tuple[str, Principal]] = []
         seen: set[str] = set()
         for entry in entries:
             if not isinstance(entry, dict) or set(entry) != {"name", "role", "sha256"}:
@@ -60,11 +82,17 @@ class TokenAuth:
             if not isinstance(digest, str) or not _DIGEST.fullmatch(digest) or digest in seen:
                 raise ValueError("HTTP token sha256 must be unique lowercase hex")
             seen.add(digest)
-            self._tokens.append((digest, Principal(name, role)))
-        if not any(principal.role == "admin" for _, principal in self._tokens):
+            tokens.append((digest, Principal(name, role)))
+        if not any(principal.role == "admin" for _, principal in tokens):
             raise ValueError("HTTP credential file needs an admin token")
+        return tuple(tokens)
+
+    def check_available(self) -> None:
+        """Validate the current file without retaining a stale token generation."""
+        self._load()
 
     def authenticate(self, authorization: str | None) -> Principal | None:
+        tokens = self._load()
         if not authorization or not authorization.startswith("Bearer "):
             return None
         token = authorization[7:]
@@ -72,24 +100,17 @@ class TokenAuth:
             return None
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
         matched = None
-        for expected, principal in self._tokens:
+        for expected, principal in tokens:
             if secrets.compare_digest(expected, digest):
                 matched = principal
         return matched
 
 
-def create_token_file(
-    path: str | Path, repo: str | Path, admin: str, members: list[str]
-) -> list[dict[str, str]]:
-    """Create a private digest file and return one-time plaintext credentials."""
-    repository = Path(repo).expanduser().resolve()
-    location = Path(path).expanduser().resolve()
+def _issue(admin: str, members: list[str]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     principals = [(admin, "admin"), *((member, "member") for member in members)]
     names = [name for name, _ in principals]
     if any(not _NAME.fullmatch(name) for name in names) or len(set(names)) != len(names):
         raise ValueError("Token principal names must be unique and use safe characters")
-    if location.is_relative_to(repository):
-        raise ValueError("HTTP credential file must be outside the repository")
     issued = [
         {"name": name, "role": role, "token": secrets.token_urlsafe(48)}
         for name, role in principals
@@ -102,15 +123,60 @@ def create_token_file(
         }
         for item in issued
     ]
+    return issued, digests
+
+
+def _write_digests(descriptor: int, digests: list[dict[str, str]]) -> None:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump({"tokens": digests}, stream, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def create_token_file(
+    path: str | Path, repo: str | Path, admin: str, members: list[str]
+) -> list[dict[str, str]]:
+    """Create a private digest file and return one-time plaintext credentials."""
+    repository = Path(repo).expanduser().resolve()
+    location = Path(path).expanduser().resolve()
+    if location.is_relative_to(repository):
+        raise ValueError("HTTP credential file must be outside the repository")
+    issued, digests = _issue(admin, members)
     descriptor = os.open(location, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump({"tokens": digests}, stream, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
+        _write_digests(descriptor, digests)
         TokenAuth(location, repository)
     except BaseException:
         location.unlink(missing_ok=True)
         raise
+    return issued
+
+
+def rotate_token_file(
+    path: str | Path, repo: str | Path, admin: str, members: list[str]
+) -> list[dict[str, str]]:
+    """Atomically replace a valid credential file, revoking its old tokens."""
+    repository = Path(repo).expanduser().resolve()
+    location = Path(path).expanduser().absolute()
+    TokenAuth(location, repository)
+    previous = location.stat(follow_symlinks=False)
+    issued, digests = _issue(admin, members)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{location.name}.rotate-", dir=location.parent
+    )
+    try:
+        _write_digests(descriptor, digests)
+        TokenAuth(temporary, repository)
+        current = location.stat(follow_symlinks=False)
+        if (current.st_dev, current.st_ino, current.st_mtime_ns, current.st_size) != (
+            previous.st_dev,
+            previous.st_ino,
+            previous.st_mtime_ns,
+            previous.st_size,
+        ):
+            raise ValueError("HTTP credential file changed during rotation; retry")
+        os.replace(temporary, location)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
     return issued
