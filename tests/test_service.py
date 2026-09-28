@@ -1,3 +1,4 @@
+import json
 import subprocess
 
 import pytest
@@ -233,6 +234,66 @@ def test_advisory_semantic_review_and_stale_review_rejected(project, monkeypatch
     monkeypatch.setattr(DSHReviewer, "review", stale)
     with pytest.raises(ValueError, match="changed during"):
         service.review_task(task["id"], str(repo / "dsh-home"), "test-model")
+
+
+def test_failed_semantic_review_has_redacted_private_attempt_log(project, monkeypatch, tmp_path):
+    from backbone_conductor.runtime import DSHReviewer
+
+    service, repo = project
+    intent, task = assigned(service)
+    feature(repo)
+    submission(service, intent)
+    before = service.state()["version"]
+    private_dir = tmp_path.parent / f"{tmp_path.name}-review-attempts"
+    private_dir.mkdir(mode=0o700)
+    attempt_log = private_dir / "attempts.jsonl"
+
+    def failed(*_args):
+        raise ValueError("provider-secret-should-not-appear")
+
+    monkeypatch.setattr(DSHReviewer, "review", failed)
+    for _ in range(2):
+        with pytest.raises(ValueError, match="provider-secret"):
+            service.review_task(
+                task["id"], str(repo / "dsh-home"), "test-model", attempt_log=attempt_log
+            )
+    assert service.state()["version"] == before
+    assert attempt_log.stat().st_mode & 0o777 == 0o600
+    contents = attempt_log.read_text()
+    assert "provider-secret" not in contents
+    assert "diff --git" not in contents
+    events = [json.loads(line) for line in contents.splitlines()]
+    assert len(events) == 2
+    assert all(event["status"] == "failed" and event["phase"] == "runtime" for event in events)
+    assert all(event["task_id"] == task["id"] for event in events)
+    assert all(event["observed_version"] == before for event in events)
+    assert all(event["elapsed_ms"] >= 0 for event in events)
+    assert all(event["error_type"] == "ValueError" for event in events)
+
+
+def test_stale_semantic_review_logs_commit_phase_without_approval(project, monkeypatch, tmp_path):
+    from backbone_conductor.runtime import DSHReviewer
+
+    service, repo = project
+    intent, task = assigned(service)
+    feature(repo)
+    submission(service, intent)
+    private_dir = tmp_path.parent / f"{tmp_path.name}-review-attempts"
+    private_dir.mkdir(mode=0o700)
+    attempt_log = private_dir / "attempts.jsonl"
+
+    def stale(*_args):
+        service.detect_conflicts()
+        return {"verdict": "aligned", "rationale": "Looks aligned", "concerns": []}
+
+    monkeypatch.setattr(DSHReviewer, "review", stale)
+    with pytest.raises(ValueError, match="changed during"):
+        service.review_task(
+            task["id"], str(repo / "dsh-home"), "test-model", attempt_log=attempt_log
+        )
+    event = json.loads(attempt_log.read_text())
+    assert event["phase"] == "commit"
+    assert "semantic_review" not in service.state()["tasks"][task["id"]]["artifact"]["checks"]
 
 
 def test_intent_revision_requires_current_version_and_reapproval(project):

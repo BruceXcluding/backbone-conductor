@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from time import monotonic_ns
 from typing import Any
 
 from .conflicts import refresh_conflicts
@@ -767,7 +768,10 @@ class Conductor:
         dsh_home: str,
         model: str,
         provider: str = "deepseek-official",
+        *,
+        attempt_log: str | Path | None = None,
     ) -> dict:
+        from .review_attempts import ReviewAttemptLog
         from .runtime import DSHReviewer
 
         snapshot = self.store.read()
@@ -789,7 +793,45 @@ class Conductor:
                 _dump(d) for d in snapshot.decisions.values() if d.status == DecisionStatus.ACCEPTED
             ],
         }
-        review = DSHReviewer(dsh_home, model, provider).review(context, diff.stdout)
+        log = (
+            ReviewAttemptLog(
+                attempt_log,
+                (
+                    self.code_store.root,
+                    self.code_store.git_dir,
+                    self.store.root,
+                    self.store.git_dir,
+                ),
+            )
+            if attempt_log is not None
+            else None
+        )
+        started_ns = monotonic_ns()
+
+        def record_failure(phase: str, error: Exception) -> None:
+            if log is None:
+                return
+            try:
+                log.record(
+                    task_id=task_id,
+                    model=model,
+                    provider=provider,
+                    observed_version=snapshot.version or "",
+                    artifact_sha=artifact.commit_sha or "",
+                    phase=phase,
+                    elapsed_ms=round((monotonic_ns() - started_ns) / 1_000_000, 3),
+                    error_type=type(error).__name__,
+                )
+            except Exception as log_error:
+                raise RuntimeError(
+                    f"Review failed and attempt logging failed ({type(log_error).__name__})"
+                ) from error
+
+        try:
+            review = DSHReviewer(dsh_home, model, provider).review(context, diff.stdout)
+        except Exception as exc:
+            record_failure("runtime", exc)
+            raise
 
         def change(state: BackboneState):
             if state.version != snapshot.version:
@@ -806,9 +848,13 @@ class Conductor:
             }
             return current.checks["semantic_review"]
 
-        return self.store.mutate(
-            change, f"backbone: task {task_id} reviewed with {provider}/{model}"
-        )
+        try:
+            return self.store.mutate(
+                change, f"backbone: task {task_id} reviewed with {provider}/{model}"
+            )
+        except Exception as exc:
+            record_failure("commit", exc)
+            raise
 
     def sync(self, remote: str = "origin", branch: str | None = None) -> dict:
         return self.store.sync(remote, branch)
