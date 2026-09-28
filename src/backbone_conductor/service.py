@@ -418,13 +418,7 @@ class Conductor:
             task = state.tasks[task_id]
             if task.status in _TERMINAL_TASKS:
                 raise ValueError("A completed or cancelled task cannot be cancelled")
-            if (
-                task.artifact
-                and task.artifact.commit_sha
-                and not self._git(
-                    "merge-base", "--is-ancestor", task.artifact.commit_sha, task.base_ref
-                ).returncode
-            ):
+            if task.artifact and self._artifact_has_integrated_code(task.artifact, task.base_ref):
                 raise ValueError("Revert integrated artifact code before cancelling the task")
             intent = state.intents[task.intent_id]
             if intent.status != IntentStatus.IN_PROGRESS:
@@ -457,13 +451,7 @@ class Conductor:
                 raise PermissionError("Task belongs to another member")
             if task.status in _TERMINAL_TASKS:
                 raise ValueError("A completed or cancelled task cannot be rebased")
-            if (
-                task.artifact
-                and task.artifact.commit_sha
-                and not self._git(
-                    "merge-base", "--is-ancestor", task.artifact.commit_sha, task.base_ref
-                ).returncode
-            ):
+            if task.artifact and self._artifact_has_integrated_code(task.artifact, task.base_ref):
                 raise ValueError("Artifact is already integrated; record merge review or revert it")
             current_branch = self._git("symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
             if current_branch != task.base_ref:
@@ -505,6 +493,41 @@ class Conductor:
         if result.returncode:
             raise ValueError(f"Unknown commit reference: {ref}")
         return result.stdout.strip()
+
+    def _integration_paths(
+        self, artifact: Artifact, target_sha: str
+    ) -> tuple[list[str], list[str]]:
+        """Compare declared artifact paths with the original base and target tree."""
+        if not artifact.base_sha or not artifact.commit_sha or not artifact.changed_paths:
+            raise ValueError("Submitted artifact lacks pinned Git evidence")
+
+        def changed_from(source_sha: str) -> list[str]:
+            result = self._git(
+                "--literal-pathspecs",
+                "diff",
+                "--no-renames",
+                "--name-only",
+                "-z",
+                source_sha,
+                target_sha,
+                "--",
+                *artifact.changed_paths,
+            )
+            if result.returncode:
+                raise ValueError("Could not compare artifact paths with target tree")
+            return sorted(path for path in result.stdout.split("\x00") if path)
+
+        return changed_from(artifact.base_sha), changed_from(artifact.commit_sha)
+
+    def _artifact_has_integrated_code(self, artifact: Artifact, base_ref: str) -> bool:
+        """A retained ancestor alone does not imply the artifact changed the target tree."""
+        if (
+            not artifact.commit_sha
+            or self._git("merge-base", "--is-ancestor", artifact.commit_sha, base_ref).returncode
+        ):
+            return False
+        net_paths, _ = self._integration_paths(artifact, self._commit(base_ref))
+        return bool(net_paths)
 
     def fetch_artifact_branch(
         self, task_id: str, member_id: str, branch: str, expected_sha: str, remote: str = "origin"
@@ -690,6 +713,13 @@ class Conductor:
         except ValueError:
             branch_sha = None
         target_sha = self._commit(task.base_ref)
+        integrated = (
+            self._git("merge-base", "--is-ancestor", artifact.commit_sha, target_sha).returncode
+            == 0
+        )
+        net_paths, divergent_paths = (
+            self._integration_paths(artifact, target_sha) if integrated else ([], [])
+        )
         blockers = self._blockers(state, task.intent_id, task_id)
         return {
             "version": state.version,
@@ -709,10 +739,9 @@ class Conductor:
                 "branch_sha": branch_sha,
                 "target_sha": target_sha,
                 "branch_unchanged": branch_sha == artifact.commit_sha,
-                "integrated_into_target": self._git(
-                    "merge-base", "--is-ancestor", artifact.commit_sha, target_sha
-                ).returncode
-                == 0,
+                "integrated_into_target": integrated,
+                "net_changed_paths": net_paths,
+                "divergent_paths": divergent_paths,
             },
             "diff": {
                 "patch": preview,
@@ -777,6 +806,16 @@ class Conductor:
                 "merge-base", "--is-ancestor", artifact.commit_sha, artifact.base_ref
             ).returncode:
                 raise ValueError("Artifact must be merged into its declared base branch first")
+            target_sha = self._commit("HEAD")
+            net_paths, divergent_paths = self._integration_paths(artifact, target_sha)
+            if not net_paths:
+                raise ValueError(
+                    "Merged ancestry discarded all declared artifact changes; restore them or resubmit"
+                )
+            if divergent_paths and not (rationale and rationale.strip()):
+                raise ValueError(
+                    "Integrated paths differ from the reviewed artifact; give an explicit review rationale"
+                )
             self._refresh(state)
             blockers = self._blockers(state, task.intent_id, task_id)
             if blockers:
@@ -797,6 +836,10 @@ class Conductor:
                 else rationale.strip()
                 if rationale and rationale.strip()
                 else "Human records intent, constraints and decision review after Git integration."
+            )
+            review_rationale = (
+                f"Artifact {artifact.commit_sha} integrated into {task.base_ref} at {target_sha}; "
+                f"net paths {net_paths}; divergent paths {divergent_paths}. {review_rationale}"
             )
             review = Decision(
                 author=author,

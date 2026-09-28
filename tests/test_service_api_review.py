@@ -72,6 +72,63 @@ def test_merge_approval_must_be_recorded_on_assigned_base_branch(audit_project):
     assert service.merge_task(task["id"], "reviewer")["task"]["status"] == "merged"
 
 
+@pytest.mark.parametrize("recovery", ["cancel", "rebase"])
+def test_ancestry_only_ours_merge_cannot_complete_task(audit_project, recovery):
+    service, repo = audit_project
+    intent, task, artifact = prepare_artifact(service, repo)
+    assert service.submit_artifact("alice", artifact)["accepted"]
+    git(repo, "merge", "-s", "ours", "--no-edit", "feature/database")
+    assert "database.py" not in git(repo, "ls-tree", "-r", "--name-only", "HEAD").splitlines()
+    with pytest.raises(ValueError, match="discarded all declared artifact changes"):
+        service.merge_task(task["id"], "reviewer", "Approved")
+    assert service.state()["tasks"][task["id"]]["status"] == "submitted"
+    assert service.state()["intents"][intent["id"]]["status"] == "in_progress"
+    if recovery == "cancel":
+        cancelled = service.cancel_task(task["id"], "owner", "Merge omitted the implementation")
+        assert cancelled["task"]["status"] == "cancelled"
+    else:
+        rebased = service.rebase_task(task["id"], "alice", service.state()["version"])
+        assert rebased["requires_resubmission"] is True
+        assert rebased["task"]["status"] == "in_progress"
+
+
+def test_divergent_integrated_content_requires_review_reason(audit_project):
+    service, repo = audit_project
+    _intent, task, artifact = prepare_artifact(service, repo)
+    submitted = service.submit_artifact("alice", artifact)
+    assert submitted["accepted"]
+    git(repo, "merge", "--no-edit", "feature/database")
+    (repo / "database.py").write_text("DATABASE = {'reviewed': True}\n")
+    git(repo, "add", "database.py")
+    git(repo, "commit", "-m", "Adapt database integration")
+    target_sha = git(repo, "rev-parse", "HEAD")
+    packet = service.inspect_task(task["id"])
+    assert packet["git"]["integrated_into_target"] is True
+    assert packet["git"]["net_changed_paths"] == ["database.py"]
+    assert packet["git"]["divergent_paths"] == ["database.py"]
+    with pytest.raises(ValueError, match="explicit review rationale"):
+        service.merge_task(task["id"], "reviewer")
+    merged = service.merge_task(
+        task["id"], "reviewer", "Reviewed the adapted database implementation"
+    )
+    rationale = merged["review_decision"]["rationale"]
+    assert target_sha in rationale
+    assert submitted["artifact"]["commit_sha"] in rationale
+    assert "database.py" in rationale
+
+
+def test_reverted_integration_can_be_cancelled(audit_project):
+    service, repo = audit_project
+    _intent, task, artifact = prepare_artifact(service, repo)
+    assert service.submit_artifact("alice", artifact)["accepted"]
+    git(repo, "merge", "--no-ff", "--no-edit", "feature/database")
+    with pytest.raises(ValueError, match="Revert integrated artifact code"):
+        service.cancel_task(task["id"], "owner", "Plan changed")
+    git(repo, "revert", "-m", "1", "--no-edit", "HEAD")
+    cancelled = service.cancel_task(task["id"], "owner", "Merged implementation was reverted")
+    assert cancelled["task"]["status"] == "cancelled"
+
+
 def test_review_packet_is_pinned_to_submitted_diff_and_read_only(audit_project):
     service, repo = audit_project
     _intent, task, artifact = prepare_artifact(service, repo)
