@@ -23,3 +23,13 @@ jobs:
       - run: uv run --no-sync python scripts/evaluate.py
       - run: uv run --no-sync python examples/demo.py
       - run: uv build
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.1'
+          python-version: '3.12'
+      - run: uv sync --locked --group dev
+      - run: uv run --no-sync python scripts/verify_compose.py
