@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "backbone-conductor"
-version = "0.27.0"
+version = "0.28.0"
 description = "Git-native intent and decision coordination for coding agents"
 readme = "README.md"
 requires-python = ">=3.12"
