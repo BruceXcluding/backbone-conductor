@@ -60,7 +60,17 @@ docker compose -f compose.yaml -f compose.ledger.yaml run --rm \
 docker compose -f compose.yaml -f compose.ledger.yaml up -d
 ```
 
-若 `backbone` 分支已存在但此容器 checkout 尚无 worktree，改用 `ledger attach`；已有内联快照需先按迁移前置条件运行 `ledger migrate`。两种模式均已在本机及 Linux CI 的临时仓库容器中验证；独立模式的代码分支 HEAD 未随元数据写入变化，容器重启后仍能读取快照。真实远程服务器、TLS 和多人共享部署仍待验证。Dockerfile 的 `PYTHON_IMAGE` 构建参数可选择可访问的同等 Python 3.12 基础镜像。
+若 `backbone` 分支已存在但此容器 checkout 尚无 worktree，改用 `ledger attach`；已有内联快照需先按迁移前置条件运行 `ledger migrate`。两种模式均已在本机及 Linux CI 的临时仓库容器中验证；独立模式的代码分支 HEAD 未随元数据写入变化，容器重启后仍能读取快照。真实远程服务器和多人共享部署仍待验证。Dockerfile 的 `PYTHON_IMAGE` 构建参数可选择可访问的同等 Python 3.12 基础镜像。
+
+已有证书和私钥时，在相同的仓库、凭据与 UID/GID 配置上叠加 HTTPS。证书目录只放 `server.crt` 和 `server.key`，私钥须由容器 UID 持有且权限为 0600：
+
+```sh
+export BACKBONE_TLS_DIR=/private/path/backbone-tls
+export BACKBONE_TLS_PORT=8443
+docker compose -f compose.yaml -f compose.tls.yaml up -d
+```
+
+独立元数据分支使用 `docker compose -f compose.yaml -f compose.tls.yaml -f compose.ledger-tls.yaml up -d`；首次创建分支仍按上文的 `ledger create` 步骤执行。TLS override 默认也只绑定宿主 loopback；确需让远程客户端连接时显式设置 `BACKBONE_TLS_BIND=0.0.0.0`，并配置主机防火墙。基础配置的 `BACKBONE_PORT` 回环映射仍保留，但在 TLS 模式下它同样提供 **HTTPS**，不提供明文 HTTP；`BACKBONE_TLS_PORT` 是额外的 HTTPS 映射。两个组合均已在本机与 Linux CI 验证证书信任、bearer 认证、审计写入、重启恢复及明文拒绝。真实远程服务器与多人共享部署仍待验证。
 
 ## 独立元数据分支
 

@@ -94,3 +94,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## v0.13 直接 HTTPS
 
 日期：2026-09-29。`serve` 新增成对的 `--tls-certfile` / `--tls-keyfile`，私钥须位于仓库外、为非符号链接的普通文件且仅所有者可访问。真实 Uvicorn 子进程使用临时自签证书接受已信任证书且持有 bearer 令牌的 HTTPS 请求；无令牌返回 401，不信任证书或用明文 HTTP 访问 HTTPS 端口时连接失败。HTTPS 写入仍留下已认证 principal 的 Git 审计 trailer。完整套件强制执行真实 HTTP/HTTPS 测试后 **268 passed，1 个可选 DSH 测试 skipped，覆盖率 90.84%**；Ruff 检查与格式检查、合成评测 24/24、Git 示例、0.13.0 wheel/source distribution 构建通过。证书自动签发/续期、远程服务器、可信反向代理及真实多人部署仍未验证。
+
+## v0.14 Compose HTTPS
+
+日期：2026-09-29。新增 `compose.tls.yaml` 与 `compose.ledger-tls.yaml`，扩展 `scripts/verify_compose.py` 在内联及独立元数据分支模式下实际运行 HTTPS 容器。一次性自签证书与私钥以只读目录挂载，测试验证被信任证书下的 `/health`、无令牌 401、有令牌读取与写入、HTTP principal Git trailer、重启恢复，以及不信任证书和明文 HTTP 访问失败。独立模式的代码分支 HEAD 保持不变。macOS Docker Desktop 和 Linux CI 均通过；[Linux CI 运行 36454451825](https://github.com/BruceXcluding/backbone-conductor/actions/runs/36454451825) 的 Python 3.12/3.13 及 Compose job 全部通过。最终 0.14.0 镜像的本机四模式验证、完整套件 **268 passed，1 个可选 DSH 测试 skipped，覆盖率 90.84%**、Ruff、合成评测 24/24、Git 示例及 wheel/source distribution 构建通过。TLS override 同时保留基础配置的宿主回环端口，该端口也使用 HTTPS。真实远程服务器、证书自动续期及多人共享部署仍未验证。
