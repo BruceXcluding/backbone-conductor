@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.25 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合已在本机及 Linux CI 验证。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。可选 Git 提交签名与审计签名验证；时间线支持按作者、HTTP principal、事件类型和时间筛选。新增四例公开历史 Git 合并回放试验，仍未验证真实意图冲突检测率。多人共享部署仍需独立验证。
+这是独立个人兴趣项目。v0.26 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合及可选成员 MCP 已在容器中验证。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。可选 Git 提交签名与审计签名验证；时间线支持按作者、HTTP principal、事件类型和时间筛选。新增四例公开历史 Git 合并回放试验，仍未验证真实意图冲突检测率。多人共享部署仍需独立验证。
 
 ## 快速开始
 
@@ -165,6 +165,8 @@ uv run backbone --repo /path/to/project serve --host 0.0.0.0 --port 8443 \
 ```
 
 成员客户端连接 `https://coordinator.example.org:8443/mcp`，以 `Authorization: Bearer` 提供自己的成员令牌。该端点只公布成员工具，并逐请求绑定身份；管理员和审查者令牌不能访问。令牌轮换无需重启，远程 Host 必须列入允许名单。详见 [MCP_API.md](MCP_API.md) 和 [部署与恢复](docs/OPERATIONS.md)。
+
+容器部署可在原有 Compose 文件组合后追加 `-f compose.mcp.yaml`，启用同一 `/mcp` 接口；远程域名通过 `BACKBONE_MCP_ALLOWED_HOSTS` 指定。四种部署组合与命令见 [部署与恢复](docs/OPERATIONS.md)。
 
 ## 可选 DSH 审查
 

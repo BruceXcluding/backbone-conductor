@@ -78,6 +78,16 @@ docker compose -f compose.yaml -f compose.tls.yaml up -d
 
 独立元数据分支使用 `docker compose -f compose.yaml -f compose.tls.yaml -f compose.ledger-tls.yaml up -d`；首次创建分支仍按上文的 `ledger create` 步骤执行。TLS override 默认也只绑定宿主 loopback；确需让远程客户端连接时显式设置 `BACKBONE_TLS_BIND=0.0.0.0`，并配置主机防火墙。基础配置的 `BACKBONE_PORT` 回环映射仍保留，但在 TLS 模式下它同样提供 **HTTPS**，不提供明文 HTTP；`BACKBONE_TLS_PORT` 是额外的 HTTPS 映射。两个组合均已在本机与 Linux CI 验证证书信任、bearer 认证、审计写入、重启恢复及明文拒绝。真实远程服务器与多人共享部署仍待验证。
 
+成员需要通过 Compose 连接 MCP 时，先在凭据文件中为每个成员创建令牌（`auth create --member alice`，已有文件使用 `auth rotate --member alice`），再把 `compose.mcp.yaml` 放在所选组合的**最后一个** `-f` 参数。它只设置 `BACKBONE_MCP_HTTP=1`，不覆盖 HTTP/HTTPS 或内联/独立分支的启动命令。例如 HTTPS 独立分支：
+
+```sh
+export BACKBONE_MCP_ALLOWED_HOSTS=coordinator.example.org:8443
+docker compose -f compose.yaml -f compose.tls.yaml \
+  -f compose.ledger-tls.yaml -f compose.mcp.yaml up -d
+```
+
+成员客户端使用 `https://coordinator.example.org:8443/mcp` 与自己的 bearer 令牌。`BACKBONE_MCP_ALLOWED_HOSTS` 是以逗号分隔的**精确 Host header** 列表，含非默认端口；仅本机回环访问时可不设置。直接执行 `backbone serve` 也可用 `BACKBONE_MCP_HTTP=1` 和此环境变量，或使用同等 CLI 标志。服务会拒绝无令牌、非成员和未知 Host 的请求；轮换令牌无需重启。Compose 四种组合已用真实成员 MCP 客户端验证认证、写入、Git 审计和重启恢复。远程公网及不同自然人的共享部署仍待验证。
+
 ## 独立元数据分支
 
 新仓库至少要有一个代码提交，且不能已经有内联 `.backbone/state.json`。执行 `backbone --repo /repo ledger create` 后，元数据保存在 Git 管理目录的隐藏 `backbone-ledger` worktree 中，当前代码工作树不切分支。所有协调命令都要显式使用 `--ledger-branch backbone`；例如 `backbone --repo /repo --ledger-branch backbone sync` 只推送元数据分支。其他克隆在已有远端 `backbone` 分支时运行 `backbone --repo /clone ledger attach`。成员提交的代码分支必须可被协调端的代码工作树解析；代码推送仍走 Git 常规流程。

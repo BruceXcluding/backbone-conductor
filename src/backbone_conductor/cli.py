@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import stat
 import sys
 from pathlib import Path
@@ -244,19 +245,27 @@ def _run(args: argparse.Namespace) -> Any:
 
         from .api import create_app
 
+        mcp_setting = os.environ.get("BACKBONE_MCP_HTTP", "0")
+        if mcp_setting not in {"0", "1"}:
+            raise ValueError("BACKBONE_MCP_HTTP must be 0 or 1")
+        mcp_http = args.mcp_http or mcp_setting == "1"
+        env_hosts = os.environ.get("BACKBONE_MCP_ALLOWED_HOSTS", "")
+        mcp_allowed_hosts = [*args.mcp_allowed_host]
+        if env_hosts:
+            mcp_allowed_hosts.extend(host.strip() for host in env_hosts.split(","))
         if args.host not in {"127.0.0.1", "::1", "localhost"} and not args.auth_file:
             raise ValueError("Non-loopback HTTP binding requires --auth-file")
-        if args.mcp_http and not args.auth_file:
+        if mcp_http and not args.auth_file:
             raise ValueError("Streamable HTTP MCP requires --auth-file")
-        if args.mcp_allowed_host and not args.mcp_http:
-            raise ValueError("--mcp-allowed-host requires --mcp-http")
+        if mcp_allowed_hosts and not mcp_http:
+            raise ValueError("MCP allowed hosts require --mcp-http or BACKBONE_MCP_HTTP=1")
         if any(
             not host.strip()
             or "/" in host
             or "@" in host
             or "*" in host
             or any(char.isspace() for char in host)
-            for host in args.mcp_allowed_host
+            for host in mcp_allowed_hosts
         ):
             raise ValueError("MCP allowed hosts must be Host header values, not URLs")
         if bool(args.tls_certfile) != bool(args.tls_keyfile):
@@ -268,8 +277,8 @@ def _run(args: argparse.Namespace) -> Any:
                 args.repo,
                 auth_file=args.auth_file,
                 ledger_branch=args.ledger_branch,
-                mcp_http=args.mcp_http,
-                mcp_allowed_hosts=tuple(args.mcp_allowed_host),
+                mcp_http=mcp_http,
+                mcp_allowed_hosts=tuple(mcp_allowed_hosts),
             ),
             host=args.host,
             port=args.port,

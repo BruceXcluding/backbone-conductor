@@ -163,6 +163,24 @@ def test_http_mcp_is_explicit_and_requires_credentials(remote_repo) -> None:
     assert main(["--repo", str(repo), "serve", "--mcp-allowed-host", "example.org"]) == 1
 
 
+def test_cli_can_enable_member_mcp_with_compose_environment(remote_repo, monkeypatch) -> None:
+    repo, credentials, tokens = remote_repo
+    captured = {}
+    monkeypatch.setenv("BACKBONE_MCP_HTTP", "1")
+    monkeypatch.setenv("BACKBONE_MCP_ALLOWED_HOSTS", "testserver, coordinator.example.org:8443")
+    monkeypatch.setattr("uvicorn.run", lambda app, **_options: captured.setdefault("app", app))
+    assert main(["--repo", str(repo), "serve", "--auth-file", str(credentials)]) == 0
+    with TestClient(captured["app"]) as client:
+        assert _request(client, "tools/list", tokens["alice"]).status_code == 200
+        assert _request(client, "tools/list", tokens["owner"]).status_code == 403
+
+    monkeypatch.setenv("BACKBONE_MCP_HTTP", "true")
+    assert main(["--repo", str(repo), "serve", "--auth-file", str(credentials)]) == 1
+    monkeypatch.setenv("BACKBONE_MCP_HTTP", "1")
+    monkeypatch.setenv("BACKBONE_MCP_ALLOWED_HOSTS", "testserver,,example.org")
+    assert main(["--repo", str(repo), "serve", "--auth-file", str(credentials)]) == 1
+
+
 def test_http_mcp_writes_only_separate_ledger_branch(tmp_path: Path) -> None:
     repo = tmp_path / "source"
     repo.mkdir()

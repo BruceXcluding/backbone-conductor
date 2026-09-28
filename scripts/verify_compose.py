@@ -1,7 +1,8 @@
-"""Exercise both Compose modes against real Docker, Git, and HTTP on a host."""
+"""Exercise Compose HTTP, HTTPS, ledger, and member MCP against real Docker."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
@@ -14,6 +15,10 @@ from http.client import HTTPException
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
+
+import httpx
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 
 from backbone_conductor.auth import create_token_file, rotate_token_file
 
@@ -44,7 +49,12 @@ def git(repo: Path, *args: str) -> str:
 
 
 def compose(
-    project: str, env: dict[str, str], *args: str, separate: bool = False, tls: bool = False
+    project: str,
+    env: dict[str, str],
+    *args: str,
+    separate: bool = False,
+    tls: bool = False,
+    mcp: bool = False,
 ) -> str:
     files = ["-f", str(PROJECT_ROOT / "compose.yaml")]
     if tls:
@@ -53,6 +63,8 @@ def compose(
             files += ["-f", str(PROJECT_ROOT / "compose.ledger-tls.yaml")]
     elif separate:
         files += ["-f", str(PROJECT_ROOT / "compose.ledger.yaml")]
+    if mcp:
+        files += ["-f", str(PROJECT_ROOT / "compose.mcp.yaml")]
     return command("docker", "compose", "-p", project, *files, *args, env=env)
 
 
@@ -135,14 +147,69 @@ def review_intent(
     assert reviewed["reviews"][-1]["reviewer"] == "carol"
 
 
+def verify_member_mcp(
+    port: int, token: str, intent_id: str, certificate: Path | None = None
+) -> None:
+    async def call() -> dict:
+        context = ssl.create_default_context(cafile=str(certificate)) if certificate else True
+        scheme = "https" if certificate else "http"
+        async with httpx.AsyncClient(
+            verify=context,
+            trust_env=False,
+            headers={"Authorization": f"Bearer {token}"},
+        ) as http_client:
+            async with streamable_http_client(
+                f"{scheme}://127.0.0.1:{port}/mcp", http_client=http_client
+            ) as (read, write, _session_id):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    tools = {item.name for item in (await session.list_tools()).tools}
+                    assert len(tools) == 7 and "dispatch_task" not in tools
+                    result = await session.call_tool(
+                        "create_intent",
+                        {
+                            "intent_data": {
+                                "id": intent_id,
+                                "problem": "Verify Compose member MCP",
+                                "proposed_outcome": "Persist authenticated member work",
+                            }
+                        },
+                    )
+                    assert not result.isError, result
+                    return json.loads(result.content[0].text)
+
+    created = asyncio.run(call())
+    assert created["id"] == intent_id and created["author"] == "alice", created
+
+
+def mcp_status(port: int, token: str | None, certificate: Path | None = None) -> int:
+    context = ssl.create_default_context(cafile=str(certificate)) if certificate else True
+    scheme = "https" if certificate else "http"
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "Mcp-Protocol-Version": "2025-06-18",
+    }
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    with httpx.Client(verify=context, trust_env=False, timeout=5) as client:
+        response = client.post(
+            f"{scheme}://127.0.0.1:{port}/mcp",
+            headers=headers,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+        )
+        return response.status_code
+
+
 def verify_inline(
     project: str,
     repo: Path,
     auth_dir: Path,
     old_token: str,
     reviewer_token: str,
+    member_token: str,
     port: int,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     env = {**os.environ, "BACKBONE_REPO": str(repo), "BACKBONE_AUTH_DIR": str(auth_dir)}
     env["BACKBONE_PORT"] = str(port)
     env["BACKBONE_UID"] = str(os.getuid())
@@ -150,8 +217,10 @@ def verify_inline(
     compose(project, env, "build")
     try:
         compose(project, env, "run", "--rm", "conductor", "--repo", "/workspace", "init")
-        compose(project, env, "up", "-d")
+        compose(project, env, "up", "-d", mcp=True)
         wait_healthy(port)
+        assert mcp_status(port, None) == 401
+        assert mcp_status(port, old_token) == 403
         assert request(port, "/state")[0] == 401
         assert request(port, "/state", old_token)[0] == 200
         status, intent = request(
@@ -162,19 +231,23 @@ def verify_inline(
         )
         assert status == 201 and intent["id"] == "inline-intent", (status, intent)
         review_intent(port, intent["id"], old_token, reviewer_token)
+        verify_member_mcp(port, member_token, "inline-mcp-intent")
         assert git(repo, "status", "--porcelain") == ""
-        assert "Backbone-HTTP-Principal: carol" in git(repo, "log", "-1", "--format=%B")
+        assert "Backbone-HTTP-Principal: alice" in git(repo, "log", "-1", "--format=%B")
         rotated = rotate_token_file(
-            auth_dir / "backbone-http-tokens.json", repo, "owner", [], ["carol"]
+            auth_dir / "backbone-http-tokens.json", repo, "owner", ["alice"], ["carol"]
         )
         new_tokens = {entry["name"]: entry["token"] for entry in rotated}
         assert request(port, "/state", old_token)[0] == 401
         assert request(port, "/state", reviewer_token)[0] == 401
+        assert mcp_status(port, member_token) == 401
+        assert mcp_status(port, new_tokens["alice"]) == 200
         assert request(port, "/state", new_tokens["owner"])[0] == 200
         assert request(port, "/state", new_tokens["carol"])[0] == 200
-        return new_tokens["owner"], new_tokens["carol"]
+        verify_member_mcp(port, new_tokens["alice"], "inline-rotated-mcp-intent")
+        return new_tokens["owner"], new_tokens["carol"], new_tokens["alice"]
     finally:
-        compose(project, env, "down")
+        compose(project, env, "down", mcp=True)
 
 
 def verify_separate(
@@ -183,6 +256,7 @@ def verify_separate(
     auth_dir: Path,
     token: str,
     reviewer_token: str,
+    member_token: str,
     port: int,
 ) -> None:
     env = {**os.environ, "BACKBONE_REPO": str(repo), "BACKBONE_AUTH_DIR": str(auth_dir)}
@@ -204,8 +278,10 @@ def verify_separate(
             separate=True,
         )
         old_ledger_head = git(repo, "rev-parse", "backbone")
-        compose(project, env, "up", "-d", separate=True)
+        compose(project, env, "up", "-d", separate=True, mcp=True)
         wait_healthy(port)
+        assert mcp_status(port, token) == 403
+        assert mcp_status(port, member_token) == 200
         status, intent = request(
             port,
             "/intents",
@@ -218,16 +294,18 @@ def verify_separate(
         )
         assert status == 201 and intent["id"] == "separate-intent", (status, intent)
         review_intent(port, intent["id"], token, reviewer_token)
+        verify_member_mcp(port, member_token, "separate-mcp-intent")
         assert git(repo, "rev-parse", "HEAD") == initial_head
         assert git(repo, "rev-parse", "backbone") != old_ledger_head
         assert git(repo, "status", "--porcelain") == ""
-        assert "Backbone-HTTP-Principal: carol" in git(repo, "log", "-1", "backbone", "--format=%B")
-        compose(project, env, "restart", separate=True)
+        assert "Backbone-HTTP-Principal: alice" in git(repo, "log", "-1", "backbone", "--format=%B")
+        compose(project, env, "restart", separate=True, mcp=True)
         wait_healthy(port)
         status, state = request(port, "/state", token)
         assert status == 200 and state["intents"]["separate-intent"]["status"] == "accepted"
+        assert state["intents"]["separate-mcp-intent"]["author"] == "alice"
     finally:
-        compose(project, env, "down", separate=True)
+        compose(project, env, "down", separate=True, mcp=True)
 
 
 def create_test_certificate(directory: Path) -> Path:
@@ -264,6 +342,7 @@ def verify_tls(
     tls_dir: Path,
     token: str,
     reviewer_token: str,
+    member_token: str,
     *,
     separate: bool,
 ) -> None:
@@ -286,9 +365,11 @@ def verify_tls(
     code_head = git(repo, "rev-parse", "HEAD")
     ledger_head = git(repo, "rev-parse", branch)
     try:
-        compose(project, env, "config", "--quiet", separate=separate, tls=True)
-        compose(project, env, "up", "-d", separate=separate, tls=True)
+        compose(project, env, "config", "--quiet", separate=separate, tls=True, mcp=True)
+        compose(project, env, "up", "-d", separate=separate, tls=True, mcp=True)
         wait_healthy(port, certificate)
+        assert mcp_status(port, token, certificate) == 403
+        assert mcp_status(port, member_token, certificate) == 200
         assert request(port, "/state", certificate=certificate)[0] == 401
         assert request(port, "/state", token, certificate=certificate)[0] == 200
         intent_id = "tls-separate-intent" if separate else "tls-inline-intent"
@@ -301,8 +382,10 @@ def verify_tls(
         )
         assert status == 201 and intent["id"] == intent_id, (status, intent)
         review_intent(port, intent_id, token, reviewer_token, certificate)
+        mcp_intent_id = "tls-separate-mcp-intent" if separate else "tls-inline-mcp-intent"
+        verify_member_mcp(port, member_token, mcp_intent_id, certificate)
         assert git(repo, "rev-parse", branch) != ledger_head
-        assert "Backbone-HTTP-Principal: carol" in git(repo, "log", "-1", branch, "--format=%B")
+        assert "Backbone-HTTP-Principal: alice" in git(repo, "log", "-1", branch, "--format=%B")
         assert git(repo, "status", "--porcelain") == ""
         if separate:
             assert git(repo, "rev-parse", "HEAD") == code_head
@@ -319,18 +402,21 @@ def verify_tls(
                     assert response.status != 200
             except (OSError, HTTPException):
                 pass
-        compose(project, env, "restart", separate=separate, tls=True)
+        compose(project, env, "restart", separate=separate, tls=True, mcp=True)
         wait_healthy(port, certificate)
         status, state = request(port, "/state", token, certificate=certificate)
         assert status == 200 and state["intents"][intent_id]["status"] == "accepted"
+        assert state["intents"][mcp_intent_id]["author"] == "alice"
     except BaseException:
         try:
-            print(compose(project, env, "logs", "--no-color", separate=separate, tls=True))
+            print(
+                compose(project, env, "logs", "--no-color", separate=separate, tls=True, mcp=True)
+            )
         except Exception:
             pass
         raise
     finally:
-        compose(project, env, "down", separate=separate, tls=True)
+        compose(project, env, "down", separate=separate, tls=True, mcp=True)
 
 
 def main() -> None:
@@ -344,30 +430,51 @@ def main() -> None:
         auth_dir = root / "auth"
         auth_dir.mkdir(mode=0o700)
         issued = create_token_file(
-            auth_dir / "backbone-http-tokens.json", inline_repo, "owner", [], ["carol"]
+            auth_dir / "backbone-http-tokens.json", inline_repo, "owner", ["alice"], ["carol"]
         )
         old_tokens = {entry["name"]: entry["token"] for entry in issued}
         project = f"backbone-compose-{os.getpid()}"
-        new_token, reviewer_token = verify_inline(
+        new_token, reviewer_token, member_token = verify_inline(
             project,
             inline_repo,
             auth_dir,
             old_tokens["owner"],
             old_tokens["carol"],
+            old_tokens["alice"],
             port_available(),
         )
         verify_separate(
-            project, separate_repo, auth_dir, new_token, reviewer_token, port_available()
+            project,
+            separate_repo,
+            auth_dir,
+            new_token,
+            reviewer_token,
+            member_token,
+            port_available(),
         )
         tls_dir = root / "tls"
         create_test_certificate(tls_dir)
         verify_tls(
-            project, inline_repo, auth_dir, tls_dir, new_token, reviewer_token, separate=False
+            project,
+            inline_repo,
+            auth_dir,
+            tls_dir,
+            new_token,
+            reviewer_token,
+            member_token,
+            separate=False,
         )
         verify_tls(
-            project, separate_repo, auth_dir, tls_dir, new_token, reviewer_token, separate=True
+            project,
+            separate_repo,
+            auth_dir,
+            tls_dir,
+            new_token,
+            reviewer_token,
+            member_token,
+            separate=True,
         )
-    print("Compose HTTP and HTTPS inline and separate-ledger verification passed")
+    print("Compose HTTP and HTTPS inline and separate-ledger member MCP verification passed")
 
 
 if __name__ == "__main__":
