@@ -109,7 +109,40 @@ def setup_repo(repo: Path) -> None:
     git(repo, "commit", "--allow-empty", "-m", "Seed code branch")
 
 
-def verify_inline(project: str, repo: Path, auth_dir: Path, old_token: str, port: int) -> str:
+def review_intent(
+    port: int,
+    intent_id: str,
+    owner_token: str,
+    reviewer_token: str,
+    certificate: Path | None = None,
+) -> None:
+    status, state = request(port, "/state", owner_token, certificate=certificate)
+    assert status == 200, (status, state)
+    status, reviewed = request(
+        port,
+        f"/intents/{intent_id}/review",
+        reviewer_token,
+        {
+            "author": "carol",
+            "outcome": "accepted",
+            "rationale": "Reviewed the deployment intent",
+            "expected_version": state["version"],
+        },
+        certificate,
+    )
+    assert status == 200 and reviewed["status"] == "accepted", (status, reviewed)
+    assert reviewed["reviews"][-1]["reviewed_version"] == state["version"]
+    assert reviewed["reviews"][-1]["reviewer"] == "carol"
+
+
+def verify_inline(
+    project: str,
+    repo: Path,
+    auth_dir: Path,
+    old_token: str,
+    reviewer_token: str,
+    port: int,
+) -> tuple[str, str]:
     env = {**os.environ, "BACKBONE_REPO": str(repo), "BACKBONE_AUTH_DIR": str(auth_dir)}
     env["BACKBONE_PORT"] = str(port)
     env["BACKBONE_UID"] = str(os.getuid())
@@ -128,19 +161,30 @@ def verify_inline(project: str, repo: Path, auth_dir: Path, old_token: str, port
             {"id": "inline-intent", "problem": "Verify inline Compose", "proposed_outcome": "Pass"},
         )
         assert status == 201 and intent["id"] == "inline-intent", (status, intent)
+        review_intent(port, intent["id"], old_token, reviewer_token)
         assert git(repo, "status", "--porcelain") == ""
-        assert "Backbone-HTTP-Principal: owner" in git(repo, "log", "-1", "--format=%B")
-        new_token = rotate_token_file(auth_dir / "backbone-http-tokens.json", repo, "owner", [])[0][
-            "token"
-        ]
+        assert "Backbone-HTTP-Principal: carol" in git(repo, "log", "-1", "--format=%B")
+        rotated = rotate_token_file(
+            auth_dir / "backbone-http-tokens.json", repo, "owner", [], ["carol"]
+        )
+        new_tokens = {entry["name"]: entry["token"] for entry in rotated}
         assert request(port, "/state", old_token)[0] == 401
-        assert request(port, "/state", new_token)[0] == 200
-        return new_token
+        assert request(port, "/state", reviewer_token)[0] == 401
+        assert request(port, "/state", new_tokens["owner"])[0] == 200
+        assert request(port, "/state", new_tokens["carol"])[0] == 200
+        return new_tokens["owner"], new_tokens["carol"]
     finally:
         compose(project, env, "down")
 
 
-def verify_separate(project: str, repo: Path, auth_dir: Path, token: str, port: int) -> None:
+def verify_separate(
+    project: str,
+    repo: Path,
+    auth_dir: Path,
+    token: str,
+    reviewer_token: str,
+    port: int,
+) -> None:
     env = {**os.environ, "BACKBONE_REPO": str(repo), "BACKBONE_AUTH_DIR": str(auth_dir)}
     env["BACKBONE_PORT"] = str(port)
     env["BACKBONE_UID"] = str(os.getuid())
@@ -173,14 +217,15 @@ def verify_separate(project: str, repo: Path, auth_dir: Path, token: str, port: 
             },
         )
         assert status == 201 and intent["id"] == "separate-intent", (status, intent)
+        review_intent(port, intent["id"], token, reviewer_token)
         assert git(repo, "rev-parse", "HEAD") == initial_head
         assert git(repo, "rev-parse", "backbone") != old_ledger_head
         assert git(repo, "status", "--porcelain") == ""
-        assert "Backbone-HTTP-Principal: owner" in git(repo, "log", "-1", "backbone", "--format=%B")
+        assert "Backbone-HTTP-Principal: carol" in git(repo, "log", "-1", "backbone", "--format=%B")
         compose(project, env, "restart", separate=True)
         wait_healthy(port)
         status, state = request(port, "/state", token)
-        assert status == 200 and "separate-intent" in state["intents"], (status, state)
+        assert status == 200 and state["intents"]["separate-intent"]["status"] == "accepted"
     finally:
         compose(project, env, "down", separate=True)
 
@@ -218,6 +263,7 @@ def verify_tls(
     auth_dir: Path,
     tls_dir: Path,
     token: str,
+    reviewer_token: str,
     *,
     separate: bool,
 ) -> None:
@@ -254,8 +300,9 @@ def verify_tls(
             certificate,
         )
         assert status == 201 and intent["id"] == intent_id, (status, intent)
+        review_intent(port, intent_id, token, reviewer_token, certificate)
         assert git(repo, "rev-parse", branch) != ledger_head
-        assert "Backbone-HTTP-Principal: owner" in git(repo, "log", "-1", branch, "--format=%B")
+        assert "Backbone-HTTP-Principal: carol" in git(repo, "log", "-1", branch, "--format=%B")
         assert git(repo, "status", "--porcelain") == ""
         if separate:
             assert git(repo, "rev-parse", "HEAD") == code_head
@@ -275,7 +322,7 @@ def verify_tls(
         compose(project, env, "restart", separate=separate, tls=True)
         wait_healthy(port, certificate)
         status, state = request(port, "/state", token, certificate=certificate)
-        assert status == 200 and intent_id in state["intents"], (status, state)
+        assert status == 200 and state["intents"][intent_id]["status"] == "accepted"
     except BaseException:
         try:
             print(compose(project, env, "logs", "--no-color", separate=separate, tls=True))
@@ -296,16 +343,30 @@ def main() -> None:
         setup_repo(separate_repo)
         auth_dir = root / "auth"
         auth_dir.mkdir(mode=0o700)
-        old_token = create_token_file(
-            auth_dir / "backbone-http-tokens.json", inline_repo, "owner", []
-        )[0]["token"]
+        issued = create_token_file(
+            auth_dir / "backbone-http-tokens.json", inline_repo, "owner", [], ["carol"]
+        )
+        old_tokens = {entry["name"]: entry["token"] for entry in issued}
         project = f"backbone-compose-{os.getpid()}"
-        new_token = verify_inline(project, inline_repo, auth_dir, old_token, port_available())
-        verify_separate(project, separate_repo, auth_dir, new_token, port_available())
+        new_token, reviewer_token = verify_inline(
+            project,
+            inline_repo,
+            auth_dir,
+            old_tokens["owner"],
+            old_tokens["carol"],
+            port_available(),
+        )
+        verify_separate(
+            project, separate_repo, auth_dir, new_token, reviewer_token, port_available()
+        )
         tls_dir = root / "tls"
         create_test_certificate(tls_dir)
-        verify_tls(project, inline_repo, auth_dir, tls_dir, new_token, separate=False)
-        verify_tls(project, separate_repo, auth_dir, tls_dir, new_token, separate=True)
+        verify_tls(
+            project, inline_repo, auth_dir, tls_dir, new_token, reviewer_token, separate=False
+        )
+        verify_tls(
+            project, separate_repo, auth_dir, tls_dir, new_token, reviewer_token, separate=True
+        )
     print("Compose HTTP and HTTPS inline and separate-ledger verification passed")
 
 

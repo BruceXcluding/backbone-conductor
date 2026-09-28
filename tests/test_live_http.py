@@ -72,6 +72,59 @@ def _member_start(
         results.put({"member": name, "error": f"{type(exc).__name__}: {exc}"})
 
 
+def _review_intent(url: str, token: str, intent_id: str, version: str, barrier, results) -> None:
+    try:
+        barrier.wait(timeout=20)
+        with httpx.Client(base_url=url, timeout=15, trust_env=False) as client:
+            response = client.post(
+                f"/intents/{intent_id}/review",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "author": "carol",
+                    "outcome": "accepted",
+                    "rationale": "Scope and constraints are clear",
+                    "expected_version": version,
+                },
+            )
+            results.put({"status": response.status_code, "body": response.json()})
+    except Exception as exc:
+        results.put({"error": f"{type(exc).__name__}: {exc}"})
+
+
+def _member_submit(url: str, token: str, task_id: str, barrier, results) -> None:
+    try:
+        barrier.wait(timeout=20)
+        with httpx.Client(base_url=url, timeout=15, trust_env=False) as client:
+            response = client.post(
+                f"/tasks/{task_id}/submit",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "member_id": "alice",
+                    "artifact": {
+                        "branch": "feature/alice",
+                        "summary": "Implement Alice's request",
+                    },
+                },
+            )
+            results.put({"status": response.status_code, "body": response.json()})
+    except Exception as exc:
+        results.put({"error": f"{type(exc).__name__}: {exc}"})
+
+
+def _review_merge(url: str, token: str, task_id: str, barrier, results) -> None:
+    try:
+        barrier.wait(timeout=20)
+        with httpx.Client(base_url=url, timeout=15, trust_env=False) as client:
+            response = client.post(
+                f"/tasks/{task_id}/merge",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"author": "carol", "rationale": "Reviewed the merged implementation"},
+            )
+            results.put({"status": response.status_code, "body": response.json()})
+    except Exception as exc:
+        results.put({"error": f"{type(exc).__name__}: {exc}"})
+
+
 def _run_members(context, worker, assignments: list[tuple]) -> list[dict]:
     barrier = context.Barrier(len(assignments))
     results = context.Queue()
@@ -106,7 +159,7 @@ def test_authenticated_live_server_coordinates_two_member_processes(tmp_path: Pa
     _git(repo, "config", "commit.gpgsign", "false")
     Conductor(repo).initialize()
     credentials = tmp_path / "credentials.json"
-    issued = create_token_file(credentials, repo, "owner", ["alice", "bob"])
+    issued = create_token_file(credentials, repo, "owner", ["alice", "bob"], ["carol"])
     tokens = {entry["name"]: entry["token"] for entry in issued}
     with socket.socket() as listener:
         try:
@@ -177,14 +230,26 @@ def test_authenticated_live_server_coordinates_two_member_processes(tmp_path: Pa
             state = admin.get("/state", headers=headers)
             assert state.status_code == 200
             assert set(state.json()["intents"]) == {f"intent-{name}" for name in names}
+            observed_version = state.json()["version"]
             for name in names:
                 intent_id = f"intent-{name}"
-                accepted = admin.post(
-                    f"/intents/{intent_id}/transition",
-                    headers=headers,
-                    json={"status": "accepted"},
-                )
-                assert accepted.status_code == 200, accepted.text
+                reviewed = _run_members(
+                    context,
+                    _review_intent,
+                    [(url, tokens["carol"], intent_id, observed_version)],
+                )[0]
+                if name == "bob":
+                    assert reviewed["status"] == 422, reviewed
+                    assert "changed" in reviewed["body"]["detail"]
+                    observed_version = admin.get("/state", headers=headers).json()["version"]
+                    reviewed = _run_members(
+                        context,
+                        _review_intent,
+                        [(url, tokens["carol"], intent_id, observed_version)],
+                    )[0]
+                assert reviewed["status"] == 200, reviewed
+                assert reviewed["body"]["status"] == "accepted"
+                assert reviewed["body"]["reviews"][-1]["reviewed_version"] == observed_version
                 dispatched = admin.post(
                     "/tasks",
                     headers=headers,
@@ -221,6 +286,8 @@ def test_authenticated_live_server_coordinates_two_member_processes(tmp_path: Pa
         assert "Backbone-HTTP-Principal: alice" in history
         assert "Backbone-HTTP-Principal: bob" in history
         assert "Backbone-HTTP-Principal: owner" in history
+        assert "Backbone-HTTP-Principal: carol" in history
+        assert "Backbone-HTTP-Role: reviewer" in history
         assert all(token not in history for token in tokens.values())
         for name in names:
             creation = _git(
@@ -238,7 +305,33 @@ def test_authenticated_live_server_coordinates_two_member_processes(tmp_path: Pa
         assert "Backbone-HTTP-Role: admin" in dispatched
         initial = _git(repo, "rev-list", "--max-parents=0", "HEAD")
         assert "Backbone-HTTP-" not in _git(repo, "show", "-s", "--format=%B", initial)
-        rotated = rotate_token_file(credentials, repo, "owner", ["alice", "bob"])
+        _git(repo, "switch", "-c", "feature/alice")
+        (repo / "alice.py").write_text("def alice():\n    return 'ready'\n", encoding="utf-8")
+        _git(repo, "add", "alice.py")
+        _git(repo, "commit", "-m", "Implement Alice request")
+        artifact_commit = _git(repo, "rev-parse", "HEAD")
+        _git(repo, "switch", "main")
+        submitted = _run_members(
+            context, _member_submit, [(url, tokens["alice"], task_ids["alice"])]
+        )[0]
+        assert submitted["status"] == 200 and submitted["body"]["accepted"], submitted
+        assert submitted["body"]["artifact"]["commit_sha"] == artifact_commit
+        premature = _run_members(
+            context, _review_merge, [(url, tokens["carol"], task_ids["alice"])]
+        )[0]
+        assert premature["status"] == 422, premature
+        assert "Merge the reviewed" in premature["body"]["detail"]
+        _git(repo, "merge", "--no-ff", "--no-edit", "feature/alice")
+        approved = _run_members(
+            context, _review_merge, [(url, tokens["carol"], task_ids["alice"])]
+        )[0]
+        assert approved["status"] == 200, approved
+        assert approved["body"]["task"]["status"] == "merged"
+        assert Conductor(repo).state()["intents"]["intent-alice"]["status"] == "completed"
+        review_commit = _git(repo, "log", "-1", "--format=%B")
+        assert "Backbone-HTTP-Principal: carol" in review_commit
+        assert "Backbone-HTTP-Role: reviewer" in review_commit
+        rotated = rotate_token_file(credentials, repo, "owner", ["alice", "bob"], ["carol"])
         new_owner_token = next(item["token"] for item in rotated if item["name"] == "owner")
         with httpx.Client(base_url=url, timeout=15, trust_env=False) as client:
             assert client.get("/state", headers=headers).status_code == 401
