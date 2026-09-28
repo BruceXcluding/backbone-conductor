@@ -47,7 +47,7 @@ docker compose -f compose.yaml -f compose.ledger.yaml run --rm \
 docker compose -f compose.yaml -f compose.ledger.yaml up -d
 ```
 
-若 `backbone` 分支已存在但此容器 checkout 尚无 worktree，改用 `ledger attach`；已有内联快照需先按迁移前置条件运行 `ledger migrate`。两种模式均已在本机临时仓库容器中验证；独立模式的代码分支 HEAD 未随元数据写入变化，容器重启后仍能读取快照。真实远程服务器、TLS 和不同宿主平台仍待验证。Dockerfile 的 `PYTHON_IMAGE` 构建参数可选择可访问的同等 Python 3.12 基础镜像。
+若 `backbone` 分支已存在但此容器 checkout 尚无 worktree，改用 `ledger attach`；已有内联快照需先按迁移前置条件运行 `ledger migrate`。两种模式均已在本机及 Linux CI 的临时仓库容器中验证；独立模式的代码分支 HEAD 未随元数据写入变化，容器重启后仍能读取快照。真实远程服务器、TLS 和多人共享部署仍待验证。Dockerfile 的 `PYTHON_IMAGE` 构建参数可选择可访问的同等 Python 3.12 基础镜像。
 
 ## 独立元数据分支
 

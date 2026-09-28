@@ -86,3 +86,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## v0.11 容器验证
 
 日期：2026-09-29。Docker Desktop 29.1.5、macOS arm64，成功拉取官方 `python:3.12-slim`、构建项目镜像。用一次性 Git 仓库实际启动容器：默认内联模式的 `/health` 为 200，未认证 `/state` 为 401，测试令牌访问为 200，创建意图后宿主仓库有生成视图和带 HTTP principal trailer 的干净 Git 审计提交。独立模式在容器固定 `/workspace` 路径执行 `ledger create`，新容器可重开 worktree；HTTP 写入只推进 `backbone` 分支，代码分支 HEAD 不变，Compose 容器重启后可恢复快照。Compose 改挂载专用凭据目录，实测宿主原子替换凭据后，运行中服务拒绝旧令牌 401、接受新令牌 200。`compose.yaml` 与 `compose.ledger.yaml` 均通过 `docker compose config`，两种配置均实际启动；最终 0.11.0 镜像亦通过文档所列初始化与启动命令。完整套件在强制执行真实 HTTP 测试时 **264 passed，1 个可选 DSH 测试 skipped，覆盖率 90.81%**；Ruff 检查与格式检查、合成评测 24/24、Git 示例及 wheel/source distribution 构建通过。尚未在原生 Linux、TLS 代理或远程多人服务器上验证。
+
+## v0.12 Linux Compose CI
+
+日期：2026-09-29。新增 `scripts/verify_compose.py`，在 GitHub Actions `ubuntu-latest` runner 上构建镜像，并以宿主 UID/GID 运行一次性仓库。内联模式验证健康检查、认证与未认证访问、HTTP 意图写入、干净 Git 审计提交和运行中令牌原子轮换；独立分支模式验证代码 HEAD 不变、`backbone` 分支推进、审计归属和容器重启后读取。脚本在 macOS Docker Desktop 和 Linux CI 均通过；Linux CI 运行 [36451069545](https://github.com/BruceXcluding/backbone-conductor/actions/runs/36451069545) 的 Compose job 与 Python 3.12/3.13 常规 job 全部通过。此前的 v0.11 “原生 Linux 未验证”限制已收窄为远程服务器、TLS 代理与真实多人共享部署未验证。
