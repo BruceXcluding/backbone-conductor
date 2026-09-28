@@ -106,3 +106,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## v0.16 替代意图流程
 
 日期：2026-09-29。已接受且没有活跃任务的意图可通过 `intent replace` 或对应 HTTP/MCP 入口原子创建替代草稿。新意图记录 `supersedes` 与非空 `change_reason`，旧意图进入 `superseded`，已取消任务的历史保留；新草稿须重新接受才能分派。服务测试覆盖活跃任务拒绝、过期版本拒绝、非法字段与空理由拒绝、替代后重新分派；CLI、HTTP 和 MCP 测试覆盖入口与角色权限。完整套件强制执行真实 HTTP/HTTPS 用例后 **275 passed，1 个可选 DSH 用例 skipped，覆盖率 90.52%**；Ruff 检查与格式检查、合成评测 24/24、Git 示例、0.16.0 wheel/source distribution 构建及从 wheel 路径实际导入通过。离线 `uv sync` 因缓存缺少 `editables` 未完成，在线 `uv sync --locked --group dev` 后成功。本环境隐藏了 editable `.pth`，所以测试使用 `PYTHONPATH=src`，另独立验证 wheel 导入。合成评测不代表真实冲突检测率；本轮未运行付费模型语义审查或真实多人审查。
+
+## v0.17 意图审查记录
+
+日期：2026-09-29。`review_intent` 对 draft 意图记录 accepted/rejected 结果、审查者、非空理由和所审阅的 Backbone 版本；拒绝自我审查、过期版本及已非草稿的意图。修订会使已接受意图回到 draft，历史审查仍在新快照中，后续需再次审查。CLI、管理员 MCP 和 HTTP 管理员/审查者接入；HTTP 令牌绑定身份，成员无法访问审查端点。生成的意图 Markdown 视图显示结构化审查记录。完整套件强制执行真实 HTTP/HTTPS 用例后 **280 passed，1 个可选 DSH 用例 skipped，覆盖率 90.69%**；Ruff 检查与格式检查、合成评测 24/24、Git 示例、0.17.0 wheel/source distribution 构建、锁定开发环境离线同步及 wheel 独立导入通过。当前管理员直接 `transition_intent` 仍可接受意图而不产生审查记录；该操作不能声称已完成独立人工审查。未进行真实多人审查或付费模型语义验证。

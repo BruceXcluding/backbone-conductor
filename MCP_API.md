@@ -16,7 +16,7 @@
 
 新仓库采用独立元数据分支时，在启动 MCP 服务的 `mcp` 子命令前加全局选项 `--ledger-branch backbone`；`--repo` 仍指向代码仓库。
 
-省略 `--member` 为本地管理员进程，额外暴露 dispatch_task、transition_intent、transition_decision、revise_intent、replace_intent、cancel_task、detect_conflicts、resolve_conflict、merge_task、refresh_backbone、reconcile_backbone。`replace_intent` 接受 intent_id、字段 patch、author、reason 和 expected_version；旧意图须已接受且没有活跃任务。不得将其当作远程认证服务。
+省略 `--member` 为本地管理员进程，额外暴露 dispatch_task、transition_intent、transition_decision、revise_intent、replace_intent、review_intent、cancel_task、detect_conflicts、resolve_conflict、merge_task、refresh_backbone、reconcile_backbone。`replace_intent` 接受 intent_id、字段 patch、author、reason 和 expected_version；旧意图须已接受且没有活跃任务。`review_intent` 接受 intent_id、accepted/rejected outcome、reviewer、rationale 和 expected_version；仅能审查他人草稿。不得将其当作远程认证服务。
 
 工具 Schema 由 MCP tools/list 提供；领域 Schema 可由 `backbone schema` 或 HTTP `/schema` 获取。
 

@@ -172,7 +172,10 @@ class GitStore:
                 continue
             lines.extend([f"## {key.replace('_', ' ').capitalize()}", ""])
             if isinstance(value, list):
-                lines.extend(f"- {entry}" for entry in value)
+                if all(isinstance(entry, dict) for entry in value):
+                    lines.extend(["```json", GitStore._json(value).rstrip(), "```"])
+                else:
+                    lines.extend(f"- {entry}" for entry in value)
             elif isinstance(value, dict):
                 lines.extend(["```json", GitStore._json(value).rstrip(), "```"])
             else:

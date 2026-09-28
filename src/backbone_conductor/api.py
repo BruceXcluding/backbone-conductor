@@ -52,7 +52,8 @@ def _reviewer_route(method: str, path: str) -> bool:
         return re.fullmatch(r"/(intents|decisions|tasks)/[^/]+", path) is not None
     if method == "POST":
         return (
-            re.fullmatch(r"/tasks/[^/]+/merge", path) is not None
+            re.fullmatch(r"/intents/[^/]+/review", path) is not None
+            or re.fullmatch(r"/tasks/[^/]+/merge", path) is not None
             or re.fullmatch(r"/conflicts/[^/]+/resolve", path) is not None
         )
     return False
@@ -93,6 +94,12 @@ class IntentRevision(Approval):
 
 class IntentReplacement(IntentRevision):
     reason: str = Field(min_length=1)
+
+
+class IntentReviewAction(Approval):
+    outcome: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    expected_version: str = Field(min_length=1)
 
 
 class Cancellation(Approval):
@@ -260,6 +267,16 @@ def create_app(
     @app.post("/intents/{intent_id}/transition")
     def transition_intent(intent_id: str, data: Transition) -> dict:
         return conductor.transition_intent(intent_id, data.status)
+
+    @app.post("/intents/{intent_id}/review")
+    def review_intent(intent_id: str, data: IntentReviewAction, request: Request) -> dict:
+        return conductor.review_intent(
+            intent_id,
+            data.outcome,
+            actor(request, data.author),
+            data.rationale,
+            data.expected_version,
+        )
 
     @app.post("/intents/{intent_id}/revise")
     def revise_intent(intent_id: str, data: IntentRevision, request: Request) -> dict:

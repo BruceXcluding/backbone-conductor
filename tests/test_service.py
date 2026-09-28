@@ -343,6 +343,66 @@ def test_direct_supersession_and_forged_replacement_are_rejected(project):
         service.transition_intent(original["id"], "superseded")
 
 
+def test_intent_review_records_reason_version_and_requires_fresh_draft(project):
+    service, repo = project
+    intent = service.create_intent(
+        {"author": "alice", "problem": "Need export", "proposed_outcome": "Export records"}
+    )
+    version = service.state()["version"]
+    with pytest.raises(PermissionError, match="own intent"):
+        service.review_intent(intent["id"], "accepted", "alice", "Looks good", version)
+    with pytest.raises(ValueError, match="rationale"):
+        service.review_intent(intent["id"], "accepted", "carol", " ", version)
+    with pytest.raises(ValueError, match="outcome"):
+        service.review_intent(intent["id"], "completed", "carol", "Looks good", version)
+    assert service.state()["version"] == version
+    accepted = service.review_intent(
+        intent["id"], "accepted", "carol", "Scope and constraints are clear", version
+    )
+    assert accepted["status"] == "accepted"
+    assert accepted["reviews"][-1]["reviewer"] == "carol"
+    assert accepted["reviews"][-1]["reviewed_version"] == version
+    assert accepted["reviews"][-1]["rationale"] == "Scope and constraints are clear"
+    assert git(repo, "log", "-1", "--format=%s").endswith("accepted by carol")
+    view = (repo / ".backbone" / "intents" / f"{intent['id']}.md").read_text()
+    assert '"rationale": "Scope and constraints are clear"' in view
+    with pytest.raises(ValueError, match="changed"):
+        service.review_intent(intent["id"], "rejected", "bob", "No", version)
+    revised = service.revise_intent(
+        intent["id"], {"problem": "Need export with schema"}, "alice", service.state()["version"]
+    )
+    assert revised["status"] == "draft"
+    rejected = service.review_intent(
+        intent["id"], "rejected", "carol", "Schema remains undefined", service.state()["version"]
+    )
+    assert rejected["status"] == "rejected"
+    assert [review["outcome"] for review in rejected["reviews"]] == ["accepted", "rejected"]
+    with pytest.raises(ValueError, match="Only draft"):
+        service.review_intent(
+            intent["id"], "accepted", "carol", "Again", service.state()["version"]
+        )
+
+
+def test_intent_creation_cannot_forge_review(project):
+    service, _ = project
+    with pytest.raises(ValueError, match="lifecycle"):
+        service.create_intent(
+            {
+                "author": "alice",
+                "problem": "Need export",
+                "proposed_outcome": "Export records",
+                "reviews": [
+                    {
+                        "reviewer": "carol",
+                        "outcome": "accepted",
+                        "rationale": "Looks good",
+                        "reviewed_version": "fake",
+                    }
+                ],
+            }
+        )
+
+
 def test_task_rebase_refreshes_decisions_and_invalidates_submitted_artifact(project):
     service, repo = project
     intent, task = assigned(service)

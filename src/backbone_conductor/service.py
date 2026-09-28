@@ -13,6 +13,7 @@ from .models import (
     Decision,
     DecisionStatus,
     Intent,
+    IntentReview,
     IntentStatus,
     Severity,
     Task,
@@ -104,6 +105,7 @@ class Conductor:
             or intent.artifacts
             or intent.supersedes
             or intent.change_reason
+            or intent.reviews
         ):
             raise ValueError("New intents must be draft with no artifacts; use lifecycle actions")
 
@@ -144,6 +146,46 @@ class Conductor:
             return _dump(updated)
 
         return self.store.mutate(change, f"backbone: intent {intent_id} {target.value}")
+
+    def review_intent(
+        self,
+        intent_id: str,
+        outcome: str,
+        reviewer: str,
+        rationale: str,
+        expected_version: str,
+    ) -> dict:
+        """Record a version-bound human decision on a draft intent."""
+        reviewer = _actor(reviewer)
+        if outcome not in {"accepted", "rejected"}:
+            raise ValueError("Intent review outcome must be accepted or rejected")
+        if not rationale.strip():
+            raise ValueError("Intent review requires a rationale")
+        if not expected_version:
+            raise ValueError("expected_version is required for safe review")
+
+        def change(state: BackboneState):
+            if state.version != expected_version:
+                raise ValueError("Backbone changed; refresh the intent and retry")
+            intent = state.intents[intent_id]
+            if intent.status != IntentStatus.DRAFT:
+                raise ValueError("Only draft intents can be reviewed")
+            if intent.author == reviewer:
+                raise PermissionError("Reviewers cannot approve or reject their own intent")
+            updated = transition_intent(intent, IntentStatus(outcome))
+            updated.reviews.append(
+                IntentReview(
+                    reviewer=reviewer,
+                    outcome=outcome,
+                    rationale=rationale,
+                    reviewed_version=state.version,
+                )
+            )
+            state.intents[intent_id] = updated
+            self._refresh(state)
+            return _dump(updated)
+
+        return self.store.mutate(change, f"backbone: intent {intent_id} {outcome} by {reviewer}")
 
     def revise_intent(
         self,

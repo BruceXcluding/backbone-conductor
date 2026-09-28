@@ -80,6 +80,14 @@ def build_parser() -> argparse.ArgumentParser:
             replace.add_argument(
                 "--version", required=True, help="Backbone version observed before editing"
             )
+            review = group.add_parser("review", help="Accept or reject a draft with a rationale")
+            review.add_argument("id")
+            review.add_argument("--outcome", required=True, choices=["accepted", "rejected"])
+            review.add_argument("--author", required=True)
+            review.add_argument("--rationale", required=True)
+            review.add_argument(
+                "--version", required=True, help="Backbone version observed before review"
+            )
 
     tasks = commands.add_parser("task").add_subparsers(dest="action", required=True)
     dispatch = tasks.add_parser("dispatch", help="Assign an accepted intent to a member")
@@ -257,6 +265,10 @@ def _run(args: argparse.Namespace) -> Any:
         if args.command == "intent" and args.action == "replace":
             return conductor.replace_intent(
                 args.id, _json_file(args.file), args.author, args.reason, args.version
+            )
+        if args.command == "intent" and args.action == "review":
+            return conductor.review_intent(
+                args.id, args.outcome, args.author, args.rationale, args.version
             )
         method = (
             conductor.transition_intent

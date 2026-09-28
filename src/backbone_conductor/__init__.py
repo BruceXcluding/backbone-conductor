@@ -1,3 +1,3 @@
 """Backbone Conductor: auditable coordination, independent of agent runtime."""
 
-__version__ = "0.16.0"
+__version__ = "0.17.0"

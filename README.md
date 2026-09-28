@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.16 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合已在本机及 Linux CI 验证。取消已分派任务后可创建有审计理由的替代意图草稿，并在重新接受后分派。多人共享部署仍需独立验证。
+这是独立个人兴趣项目。v0.17 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合已在本机及 Linux CI 验证。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。多人共享部署仍需独立验证。
 
 ## 快速开始
 
@@ -36,7 +36,7 @@ backbone --repo /path/to/project serve \
   --auth-file /private/path/backbone-http-tokens.json
 ```
 
-请求使用 `Authorization: Bearer TOKEN`。管理员可执行全部 HTTP 操作；成员令牌绑定自己的 author 和 member_id，仅能创建草稿意图与提议决策、查看和提交自己的任务，以及检查自己的更新。审查者可读取审查上下文、记录实际 Git 合并后的审批并裁决冲突，但不能分派任务或同步仓库；审批自己的任务会被拒绝。远程访问需使用可信反向代理终止 TLS，或为 `serve` 同时提供 `--tls-certfile` 和 `--tls-keyfile`；没有 `--auth-file` 时命令拒绝绑定非本机地址。使用 `auth rotate` 可不停机更换令牌。详见 [部署与恢复](docs/OPERATIONS.md)。
+请求使用 `Authorization: Bearer TOKEN`。管理员可执行全部 HTTP 操作；成员令牌绑定自己的 author 和 member_id，仅能创建草稿意图与提议决策、查看和提交自己的任务，以及检查自己的更新。审查者可读取审查上下文、接受或拒绝他人的草稿意图、记录实际 Git 合并后的审批并裁决冲突，但不能分派任务或同步仓库；自我审查与审批自己的任务会被拒绝。远程访问需使用可信反向代理终止 TLS，或为 `serve` 同时提供 `--tls-certfile` 和 `--tls-keyfile`；没有 `--auth-file` 时命令拒绝绑定非本机地址。使用 `auth rotate` 可不停机更换令牌。详见 [部署与恢复](docs/OPERATIONS.md)。
 
 ## 完整工作流
 
@@ -51,6 +51,14 @@ backbone --repo /path/to/project intent transition intent-greeting accepted
 backbone --repo /path/to/project task dispatch intent-greeting --member alice
 backbone --repo /path/to/project task list --member alice
 backbone --repo /path/to/project task start TASK_ID --member alice
+```
+
+若由审查者决定是否接受草稿，先从 `backbone status` 读取当前 `version`，以 `intent review` 替代上例的 `intent transition ... accepted`。审查者必须不同于意图作者，结果可为 `accepted` 或 `rejected`；审查记录保留理由和所审阅的版本。管理员旧式 `transition` 仍可用，但不会生成审查记录。
+
+```sh
+backbone --repo /path/to/project intent review intent-greeting \
+  --outcome accepted --author carol --rationale '目标和约束明确' \
+  --version OBSERVED_VERSION
 ```
 
 用返回的任务 ID 替换 `TASK_ID`。成员在 `feature/greeting` 分支实现并提交 `greeting.py`，协调端在目标分支 `main` 检查：
@@ -131,7 +139,7 @@ backbone --repo /path/to/project intent replace INTENT_ID \
   --reason '需求调整' --version OBSERVED_VERSION
 ```
 
-`intent revise`、`intent replace` 和 `task rebase` 都要求先读取当前 `version`，防止使用过期上下文覆盖新决策；命令记录后版本会变化，下次需重新读取。已合入目标分支的产物不能通过取消或刷新任务来撤销，需先处理代码回退。
+`intent review`、`intent revise`、`intent replace` 和 `task rebase` 都要求先读取当前 `version`，防止使用过期上下文覆盖新决策；命令记录后版本会变化，下次需重新读取。已合入目标分支的产物不能通过取消或刷新任务来撤销，需先处理代码回退。
 
 ## Agent 接入
 

@@ -108,6 +108,36 @@ def test_cli_replaces_accepted_intent_with_audited_draft(interface_repo: Path, c
     assert result["replacement"]["supersedes"] == original["id"]
 
 
+def test_cli_reviews_draft_with_rationale(interface_repo: Path, capsys) -> None:
+    prefix = ["--repo", str(interface_repo)]
+    assert main([*prefix, "init"]) == 0
+    capsys.readouterr()
+    original = Conductor(interface_repo).create_intent(intent_data())
+    version = Conductor(interface_repo).state()["version"]
+    assert (
+        main(
+            [
+                *prefix,
+                "intent",
+                "review",
+                original["id"],
+                "--outcome",
+                "accepted",
+                "--author",
+                "carol",
+                "--rationale",
+                "Clear scope",
+                "--version",
+                version,
+            ]
+        )
+        == 0
+    )
+    reviewed = json.loads(capsys.readouterr().out)
+    assert reviewed["status"] == "accepted"
+    assert reviewed["reviews"][-1]["reviewed_version"] == version
+
+
 def test_cli_rejects_non_object_json_and_exports_schema(interface_repo: Path, capsys) -> None:
     payload = interface_repo.parent / "invalid.json"
     payload.write_text("[]", encoding="utf-8")
@@ -196,6 +226,26 @@ def test_http_replacement_requires_current_version_and_returns_linked_draft(
         assert client.post(f"/intents/{original['id']}/replace", json=payload).status_code == 422
 
 
+def test_http_intent_review_records_decision(interface_repo: Path) -> None:
+    conductor = Conductor(interface_repo)
+    conductor.initialize()
+    with TestClient(create_app(interface_repo)) as client:
+        original = client.post("/intents", json=intent_data()).json()
+        version = conductor.state()["version"]
+        response = client.post(
+            f"/intents/{original['id']}/review",
+            json={
+                "author": "carol",
+                "outcome": "rejected",
+                "rationale": "Scope is unclear",
+                "expected_version": version,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "rejected"
+        assert response.json()["reviews"][-1]["reviewed_version"] == version
+
+
 def test_http_task_submission_binds_path_and_requires_real_merge(interface_repo: Path) -> None:
     conductor = Conductor(interface_repo)
     conductor.initialize()
@@ -251,6 +301,7 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
                 "merge_task",
                 "revise_intent",
                 "replace_intent",
+                "review_intent",
                 "cancel_task",
                 "refresh_backbone",
                 "reconcile_backbone",
@@ -280,6 +331,7 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             "merge_task",
             "revise_intent",
             "replace_intent",
+            "review_intent",
             "cancel_task",
             "refresh_backbone",
             "reconcile_backbone",
@@ -302,6 +354,20 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             if item["supersedes"] == intent_id
         ]
         assert len(successors) == 1
+        await create_server(interface_repo).call_tool(
+            "review_intent",
+            {
+                "intent_id": successors[0]["id"],
+                "outcome": "accepted",
+                "reviewer": "carol",
+                "rationale": "Replacement scope is clear",
+                "expected_version": Conductor(interface_repo).state()["version"],
+            },
+        )
+        assert (
+            Conductor(interface_repo).state()["intents"][successors[0]["id"]]["status"]
+            == "accepted"
+        )
 
     asyncio.run(check())
 

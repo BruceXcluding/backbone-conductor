@@ -264,6 +264,57 @@ def test_only_admin_can_replace_intent_with_bound_author(auth_repo: tuple[Path, 
         assert result.json()["replacement"]["author"] == "owner"
 
 
+def test_reviewer_can_review_others_intent_with_bound_identity(
+    auth_repo: tuple[Path, Path],
+) -> None:
+    repo, auth_file = auth_repo
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        original = client.post(
+            "/intents",
+            headers=auth_header(ALICE_TOKEN),
+            json={"problem": "Need export", "proposed_outcome": "Export records"},
+        ).json()
+        path = f"/intents/{original['id']}/review"
+        payload = {
+            "author": "carol",
+            "outcome": "accepted",
+            "rationale": "The scope is clear",
+            "expected_version": Conductor(repo).state()["version"],
+        }
+        assert client.post(path, headers=auth_header(ALICE_TOKEN), json=payload).status_code == 403
+        assert (
+            client.post(
+                path, headers=auth_header(CAROL_TOKEN), json={**payload, "author": "alice"}
+            ).status_code
+            == 403
+        )
+        accepted = client.post(path, headers=auth_header(CAROL_TOKEN), json=payload)
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["reviews"][-1]["reviewer"] == "carol"
+        assert accepted.json()["reviews"][-1]["reviewed_version"] == payload["expected_version"]
+        assert client.post(path, headers=auth_header(CAROL_TOKEN), json=payload).status_code == 422
+        own = Conductor(repo).create_intent(
+            {"author": "carol", "problem": "Own scope", "proposed_outcome": "Deliver"}
+        )
+        own_payload = {**payload, "expected_version": Conductor(repo).state()["version"]}
+        assert (
+            client.post(
+                f"/intents/{own['id']}/review",
+                headers=auth_header(CAROL_TOKEN),
+                json=own_payload,
+            ).status_code
+            == 403
+        )
+    history = subprocess.run(
+        ["git", "-C", str(repo), "log", "--format=%B", "--", ".backbone"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "Backbone-HTTP-Principal: carol" in history
+    assert "Backbone-HTTP-Role: reviewer" in history
+
+
 def test_reviewer_can_approve_integrated_work_but_not_manage_tasks(
     auth_repo: tuple[Path, Path],
 ) -> None:

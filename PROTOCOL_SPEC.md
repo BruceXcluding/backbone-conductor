@@ -3,6 +3,7 @@
 > **实现状态**：本文保留原始对象设计。v0.1 可执行协议以 `src/backbone_conductor/models.py` 和 `backbone schema` 输出为准；新增 Task、Artifact、操作/路径声明、Git 提交锚点和检查结果。MCP 参数见 [MCP_API.md](MCP_API.md)。
 > v0.2 新增 Task `cancelled` 终态，以及取消后 Intent `in_progress → accepted`、分派前修订后重置为 draft、任务上下文 rebase。实际状态机仍以代码和 Schema 为准。
 > v0.16 新增带 `supersedes` 与 `change_reason` 的原子替代意图操作：已接受且无活跃任务的旧意图进入 `superseded`，新草稿须重新接受；有任务历史时不能原地修订。实际模型和状态机仍以代码和 Schema 为准。
+> v0.17 新增 `Intent.reviews`：审查者对草稿接受或拒绝时，记录身份、理由、审阅前的 Backbone 版本与时间；修订后回到 draft，必须再次审查。管理员旧式直接状态切换仍可用，不能把它视为已有人类审查记录。
 > v0.5 在状态快照中增加可选 `merged_parent_version`，记录结构化元数据合并的另一侧审计版本；Git 双父提交仍是完整历史的权威证据。普通变更清空此字段。
 
 > **版本**：v1.0
@@ -121,12 +122,14 @@ class BackboneState:
 ### 2.1 Intent 状态流转
 
 ```
-draft ──accept──▶ accepted ──start──▶ in_progress ──complete──▶ completed
-  │                   │                    │
-  │                   │                    └──supersede──▶ superseded
-  │                   └──reject──▶ rejected（隐含）
-  └──discard──▶ （删除，不进入 backbone）
+draft ──accept/review accept──▶ accepted ──start task──▶ in_progress ──merge task──▶ completed
+draft ──review reject────────▶ rejected
+accepted ──reject───────────▶ rejected
+accepted ──replace──────────▶ superseded + new draft
+in_progress ──cancel task───▶ accepted
 ```
+
+`replace` 需无活跃任务；`merge` 需验证实际 Git 合并。审查者用 `review_intent` 对 draft 接受或拒绝并留下理由；管理员仍可使用不附带审查记录的旧式 `transition_intent`。
 
 ### 2.2 Decision 状态流转
 

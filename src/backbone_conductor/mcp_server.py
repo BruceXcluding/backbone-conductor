@@ -99,6 +99,15 @@ def create_server(
             return conductor.replace_intent(intent_id, patch, author, reason, expected_version)
 
         @server.tool()
+        def review_intent(
+            intent_id: str, outcome: str, reviewer: str, rationale: str, expected_version: str
+        ) -> dict:
+            """Administrator: record a version-bound human acceptance or rejection of a draft."""
+            return conductor.review_intent(
+                intent_id, outcome, reviewer, rationale, expected_version
+            )
+
+        @server.tool()
         def cancel_task(task_id: str, author: str, reason: str) -> dict:
             """Administrator: cancel active work, recording the reason and reopening its intent."""
             return conductor.cancel_task(task_id, author, reason)

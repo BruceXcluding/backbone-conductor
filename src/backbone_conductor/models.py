@@ -100,6 +100,14 @@ class Severity(StrEnum):
     CRITICAL = "critical"
 
 
+class IntentReview(ProtocolModel):
+    reviewer: Text
+    outcome: Literal["accepted", "rejected"]
+    rationale: Text
+    reviewed_version: Text
+    created_at: AwareDatetime = Field(default_factory=utc_now)
+
+
 class Intent(ProtocolModel):
     id: Identifier = Field(default_factory=lambda: new_id("intent"))
     author: Text
@@ -111,6 +119,7 @@ class Intent(ProtocolModel):
     parent_intent: Identifier | None = None
     supersedes: Identifier | None = None
     change_reason: Text | None = None
+    reviews: list[IntentReview] = Field(default_factory=list)
     created_at: AwareDatetime = Field(default_factory=utc_now)
     artifacts: list[Identifier] = Field(default_factory=list)
     operations: dict[Text, Operation] = Field(default_factory=dict)
@@ -214,7 +223,7 @@ class BackboneState(ProtocolModel):
 
 
 INTENT_TRANSITIONS = {
-    IntentStatus.DRAFT: {IntentStatus.ACCEPTED},
+    IntentStatus.DRAFT: {IntentStatus.ACCEPTED, IntentStatus.REJECTED},
     IntentStatus.ACCEPTED: {
         IntentStatus.IN_PROGRESS,
         IntentStatus.REJECTED,

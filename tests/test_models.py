@@ -181,6 +181,7 @@ def test_conflict_requires_distinct_parties():
 def test_intent_lifecycle(current, target):
     legal = {
         ("draft", "accepted"),
+        ("draft", "rejected"),
         ("accepted", "in_progress"),
         ("accepted", "rejected"),
         ("accepted", "superseded"),
