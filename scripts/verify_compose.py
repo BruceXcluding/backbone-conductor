@@ -5,14 +5,15 @@ from __future__ import annotations
 import json
 import os
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
 import time
 from http.client import HTTPException
 from pathlib import Path
-from urllib.error import HTTPError
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPSHandler, ProxyHandler, Request, build_opener
 
 from backbone_conductor.auth import create_token_file, rotate_token_file
 
@@ -42,9 +43,15 @@ def git(repo: Path, *args: str) -> str:
     return command("git", "-C", str(repo), *args)
 
 
-def compose(project: str, env: dict[str, str], *args: str, separate: bool = False) -> str:
+def compose(
+    project: str, env: dict[str, str], *args: str, separate: bool = False, tls: bool = False
+) -> str:
     files = ["-f", str(PROJECT_ROOT / "compose.yaml")]
-    if separate:
+    if tls:
+        files += ["-f", str(PROJECT_ROOT / "compose.tls.yaml")]
+        if separate:
+            files += ["-f", str(PROJECT_ROOT / "compose.ledger-tls.yaml")]
+    elif separate:
         files += ["-f", str(PROJECT_ROOT / "compose.ledger.yaml")]
     return command("docker", "compose", "-p", project, *files, *args, env=env)
 
@@ -56,27 +63,36 @@ def port_available() -> int:
 
 
 def request(
-    port: int, path: str, token: str | None = None, data: dict | None = None
+    port: int,
+    path: str,
+    token: str | None = None,
+    data: dict | None = None,
+    certificate: Path | None = None,
 ) -> tuple[int, dict]:
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     body = None
     if data is not None:
         headers["Content-Type"] = "application/json"
         body = json.dumps(data).encode("utf-8")
-    target = Request(f"http://127.0.0.1:{port}{path}", data=body, headers=headers)
+    scheme = "https" if certificate else "http"
+    target = Request(f"{scheme}://127.0.0.1:{port}{path}", data=body, headers=headers)
+    opener = HTTP
+    if certificate:
+        context = ssl.create_default_context(cafile=str(certificate))
+        opener = build_opener(ProxyHandler({}), HTTPSHandler(context=context))
     try:
-        with HTTP.open(target, timeout=2) as response:
+        with opener.open(target, timeout=2) as response:
             return response.status, json.load(response)
     except HTTPError as error:
         with error:
             return error.code, json.load(error)
 
 
-def wait_healthy(port: int) -> None:
+def wait_healthy(port: int, certificate: Path | None = None) -> None:
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         try:
-            if request(port, "/health")[0] == 200:
+            if request(port, "/health", certificate=certificate)[0] == 200:
                 return
         except (OSError, HTTPException):
             pass
@@ -169,6 +185,107 @@ def verify_separate(project: str, repo: Path, auth_dir: Path, token: str, port: 
         compose(project, env, "down", separate=True)
 
 
+def create_test_certificate(directory: Path) -> Path:
+    directory.mkdir(mode=0o700)
+    certificate = directory / "server.crt"
+    key = directory / "server.key"
+    command(
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-sha256",
+        "-nodes",
+        "-keyout",
+        str(key),
+        "-out",
+        str(certificate),
+        "-days",
+        "1",
+        "-subj",
+        "/CN=localhost",
+        "-addext",
+        "subjectAltName=DNS:localhost,IP:127.0.0.1",
+    )
+    key.chmod(0o600)
+    return certificate
+
+
+def verify_tls(
+    project: str,
+    repo: Path,
+    auth_dir: Path,
+    tls_dir: Path,
+    token: str,
+    *,
+    separate: bool,
+) -> None:
+    port = port_available()
+    base_port = port_available()
+    while base_port == port:
+        base_port = port_available()
+    env = {
+        **os.environ,
+        "BACKBONE_REPO": str(repo),
+        "BACKBONE_AUTH_DIR": str(auth_dir),
+        "BACKBONE_TLS_DIR": str(tls_dir),
+        "BACKBONE_PORT": str(base_port),
+        "BACKBONE_TLS_PORT": str(port),
+        "BACKBONE_UID": str(os.getuid()),
+        "BACKBONE_GID": str(os.getgid()),
+    }
+    certificate = tls_dir / "server.crt"
+    branch = "backbone" if separate else "HEAD"
+    code_head = git(repo, "rev-parse", "HEAD")
+    ledger_head = git(repo, "rev-parse", branch)
+    try:
+        compose(project, env, "config", "--quiet", separate=separate, tls=True)
+        compose(project, env, "up", "-d", separate=separate, tls=True)
+        wait_healthy(port, certificate)
+        assert request(port, "/state", certificate=certificate)[0] == 401
+        assert request(port, "/state", token, certificate=certificate)[0] == 200
+        intent_id = "tls-separate-intent" if separate else "tls-inline-intent"
+        status, intent = request(
+            port,
+            "/intents",
+            token,
+            {"id": intent_id, "problem": "Verify Compose HTTPS", "proposed_outcome": "Pass"},
+            certificate,
+        )
+        assert status == 201 and intent["id"] == intent_id, (status, intent)
+        assert git(repo, "rev-parse", branch) != ledger_head
+        assert "Backbone-HTTP-Principal: owner" in git(repo, "log", "-1", branch, "--format=%B")
+        assert git(repo, "status", "--porcelain") == ""
+        if separate:
+            assert git(repo, "rev-parse", "HEAD") == code_head
+        try:
+            with HTTP.open(f"https://127.0.0.1:{port}/health", timeout=2):
+                pass
+        except URLError:
+            pass
+        else:
+            raise AssertionError("Untrusted TLS certificate was accepted")
+        for plain_port in (port, base_port):
+            try:
+                with HTTP.open(f"http://127.0.0.1:{plain_port}/health", timeout=2) as response:
+                    assert response.status != 200
+            except (OSError, HTTPException):
+                pass
+        compose(project, env, "restart", separate=separate, tls=True)
+        wait_healthy(port, certificate)
+        status, state = request(port, "/state", token, certificate=certificate)
+        assert status == 200 and intent_id in state["intents"], (status, state)
+    except BaseException:
+        try:
+            print(compose(project, env, "logs", "--no-color", separate=separate, tls=True))
+        except Exception:
+            pass
+        raise
+    finally:
+        compose(project, env, "down", separate=separate, tls=True)
+
+
 def main() -> None:
     temporary_root = "/private/tmp" if sys.platform == "darwin" else "/tmp"
     with tempfile.TemporaryDirectory(prefix="backbone-compose-", dir=temporary_root) as temporary:
@@ -185,7 +302,11 @@ def main() -> None:
         project = f"backbone-compose-{os.getpid()}"
         new_token = verify_inline(project, inline_repo, auth_dir, old_token, port_available())
         verify_separate(project, separate_repo, auth_dir, new_token, port_available())
-    print("Compose inline and separate-ledger verification passed")
+        tls_dir = root / "tls"
+        create_test_certificate(tls_dir)
+        verify_tls(project, inline_repo, auth_dir, tls_dir, new_token, separate=False)
+        verify_tls(project, separate_repo, auth_dir, tls_dir, new_token, separate=True)
+    print("Compose HTTP and HTTPS inline and separate-ledger verification passed")
 
 
 if __name__ == "__main__":
