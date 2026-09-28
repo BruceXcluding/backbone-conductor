@@ -18,7 +18,20 @@ backbone --repo /repo serve \
 
 创建命令仅输出一次明文令牌，不把它们写入凭据文件；文件权限为 0600，内容是 SHA-256 摘要与 principal/role 映射。妥善保存明文令牌，避免录入 shell 历史、应用日志或 Git。令牌持有者使用 `Authorization: Bearer TOKEN`。`/health` 无需令牌；其他路径均需令牌，成员对未列入成员接口的路径默认被拒绝。管理员可以使用全部端点；成员只能创建自己的草稿意图和提议决策、读取自己的任务和更新、执行自己的任务开始/上下文刷新/产物提交。
 
-轮换时运行 `backbone --repo /repo auth rotate --file /private/path/backbone-http-tokens.json --admin owner --member alice`，保存命令输出的一次性新令牌并分发给对应用户。它先验证原文件，再原子替换为新的 0600 摘要文件；替换后的请求会拒绝旧令牌，未列出的成员也失去访问权。运行中的 HTTP 服务逐请求读取当前文件，无需重启；若文件缺失、权限不安全或内容损坏，受保护请求和 `/health` 返回 503，不会继续接受缓存的旧令牌。直接提供 HTTP 仍是明文传输，远程访问需在可信反向代理处终止 TLS，并限制后端端口只接受代理流量。Git 仓库写权限仍需在操作系统层隔离；HTTP 角色不限制拥有仓库文件权限的本机用户。
+轮换时运行 `backbone --repo /repo auth rotate --file /private/path/backbone-http-tokens.json --admin owner --member alice`，保存命令输出的一次性新令牌并分发给对应用户。它先验证原文件，再原子替换为新的 0600 摘要文件；替换后的请求会拒绝旧令牌，未列出的成员也失去访问权。运行中的 HTTP 服务逐请求读取当前文件，无需重启；若文件缺失、权限不安全或内容损坏，受保护请求和 `/health` 返回 503，不会继续接受缓存的旧令牌。直接提供 HTTP 仍是明文传输，远程访问需启用 TLS；若由可信反向代理终止 TLS，后端端口只应接受代理流量。Git 仓库写权限仍需在操作系统层隔离；HTTP 角色不限制拥有仓库文件权限的本机用户。
+
+## 直接 HTTPS（可选）
+
+已有可信证书与对应 PEM 私钥时，可不经反向代理直接运行 HTTPS：
+
+```sh
+backbone --repo /repo serve --host 0.0.0.0 --port 8443 \
+  --auth-file /private/path/backbone-http-tokens.json \
+  --tls-certfile /private/path/server.crt \
+  --tls-keyfile /private/path/server.key
+```
+
+证书须覆盖客户端连接的主机名并受客户端信任；私钥必须是仓库外、仅所有者可访问的普通文件，不接受符号链接。`--tls-certfile` 与 `--tls-keyfile` 必须一起提供，bearer 认证仍必需。证书续期及服务重启由部署者管理；当前不提供 ACME 自动签发或热加载证书。也可继续使用可信反向代理终止 TLS。此处只验证了本机自签证书下的真实 HTTPS 流程，尚未验证远程服务器或公网部署。
 
 ## Docker Compose
 

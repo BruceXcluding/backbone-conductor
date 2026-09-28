@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import stat
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,21 @@ def _json_file(filename: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("JSON input must be an object")
     return value
+
+
+def _validate_tls_key(filename: str, repo: str) -> None:
+    """Keep the server's private key out of the ledger and other users' reach."""
+    key = Path(filename).expanduser().absolute()
+    if key.is_symlink():
+        raise ValueError("TLS private key must be a regular file, not a symlink")
+    resolved = key.resolve(strict=True)
+    if resolved.is_relative_to(Path(repo).expanduser().resolve()):
+        raise ValueError("TLS private key must be outside the repository")
+    mode = key.stat(follow_symlinks=False).st_mode
+    if not stat.S_ISREG(mode):
+        raise ValueError("TLS private key must be a regular file")
+    if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise ValueError("TLS private key must be accessible only to its owner (0600)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -131,6 +147,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--auth-file", help="Private JSON file of bearer-token digests")
+    serve.add_argument("--tls-certfile", help="PEM certificate for direct HTTPS")
+    serve.add_argument("--tls-keyfile", help="PEM private key for direct HTTPS")
     auth = commands.add_parser("auth", help="Create a private HTTP token-digest file")
     auth_commands = auth.add_subparsers(dest="action", required=True)
     create_auth = auth_commands.add_parser("create")
@@ -168,10 +186,16 @@ def _run(args: argparse.Namespace) -> Any:
 
         if args.host not in {"127.0.0.1", "::1", "localhost"} and not args.auth_file:
             raise ValueError("Non-loopback HTTP binding requires --auth-file")
+        if bool(args.tls_certfile) != bool(args.tls_keyfile):
+            raise ValueError("Direct HTTPS requires both --tls-certfile and --tls-keyfile")
+        if args.tls_keyfile:
+            _validate_tls_key(args.tls_keyfile, args.repo)
         uvicorn.run(
             create_app(args.repo, auth_file=args.auth_file, ledger_branch=args.ledger_branch),
             host=args.host,
             port=args.port,
+            ssl_certfile=args.tls_certfile,
+            ssl_keyfile=args.tls_keyfile,
         )
         return None
     if args.command == "auth":

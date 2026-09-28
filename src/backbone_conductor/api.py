@@ -107,7 +107,7 @@ def create_app(
         description=(
             "Without --auth-file, bind to loopback for trusted local administrators. "
             "With --auth-file, bearer tokens authorize admin and bound member operations. "
-            "Use TLS at a trusted reverse proxy for remote access. "
+            "Use TLS at a trusted reverse proxy or configure direct HTTPS for remote access. "
             "Merge approval records require an actual Git merge and human semantic review."
         ),
     )

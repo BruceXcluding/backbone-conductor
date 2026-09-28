@@ -297,6 +297,46 @@ def test_non_loopback_serve_requires_auth_file(auth_repo: tuple[Path, Path], cap
     assert "--auth-file" in json.loads(capsys.readouterr().err)["error"]
 
 
+@pytest.mark.parametrize("option", ["--tls-certfile", "--tls-keyfile"])
+def test_direct_https_requires_certificate_and_key(
+    auth_repo: tuple[Path, Path], capsys, option: str
+) -> None:
+    repo, auth_file = auth_repo
+    assert main(["--repo", str(repo), "serve", "--auth-file", str(auth_file), option, "x"]) == 1
+    assert "requires both" in json.loads(capsys.readouterr().err)["error"]
+
+
+def test_direct_https_rejects_unsafe_private_key(auth_repo: tuple[Path, Path], capsys) -> None:
+    repo, auth_file = auth_repo
+    prefix = [
+        "--repo",
+        str(repo),
+        "serve",
+        "--auth-file",
+        str(auth_file),
+        "--tls-certfile",
+        str(repo.parent / "cert.pem"),
+        "--tls-keyfile",
+    ]
+    inside = repo / "key.pem"
+    inside.write_text("test", encoding="utf-8")
+    inside.chmod(0o600)
+    assert main([*prefix, str(inside)]) == 1
+    assert "outside the repository" in json.loads(capsys.readouterr().err)["error"]
+
+    outside = repo.parent / "key.pem"
+    outside.write_text("test", encoding="utf-8")
+    outside.chmod(0o644)
+    assert main([*prefix, str(outside)]) == 1
+    assert "0600" in json.loads(capsys.readouterr().err)["error"]
+
+    outside.chmod(0o600)
+    link = repo.parent / "key-link.pem"
+    link.symlink_to(outside)
+    assert main([*prefix, str(link)]) == 1
+    assert "symlink" in json.loads(capsys.readouterr().err)["error"]
+
+
 def test_token_file_creation_is_private_and_does_not_store_plaintext(
     auth_repo: tuple[Path, Path], tmp_path: Path, capsys
 ) -> None:

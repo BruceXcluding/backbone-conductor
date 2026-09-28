@@ -90,3 +90,7 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## v0.12 Linux Compose CI
 
 日期：2026-09-29。新增 `scripts/verify_compose.py`，在 GitHub Actions `ubuntu-latest` runner 上构建镜像，并以宿主 UID/GID 运行一次性仓库。内联模式验证健康检查、认证与未认证访问、HTTP 意图写入、干净 Git 审计提交和运行中令牌原子轮换；独立分支模式验证代码 HEAD 不变、`backbone` 分支推进、审计归属和容器重启后读取。脚本在 macOS Docker Desktop 和 Linux CI 均通过；Linux CI 运行 [36451069545](https://github.com/BruceXcluding/backbone-conductor/actions/runs/36451069545) 的 Compose job 与 Python 3.12/3.13 常规 job 全部通过。此前的 v0.11 “原生 Linux 未验证”限制已收窄为远程服务器、TLS 代理与真实多人共享部署未验证。
+
+## v0.13 直接 HTTPS
+
+日期：2026-09-29。`serve` 新增成对的 `--tls-certfile` / `--tls-keyfile`，私钥须位于仓库外、为非符号链接的普通文件且仅所有者可访问。真实 Uvicorn 子进程使用临时自签证书接受已信任证书且持有 bearer 令牌的 HTTPS 请求；无令牌返回 401，不信任证书或用明文 HTTP 访问 HTTPS 端口时连接失败。HTTPS 写入仍留下已认证 principal 的 Git 审计 trailer。完整套件强制执行真实 HTTP/HTTPS 测试后 **268 passed，1 个可选 DSH 测试 skipped，覆盖率 90.84%**；Ruff 检查与格式检查、合成评测 24/24、Git 示例、0.13.0 wheel/source distribution 构建通过。证书自动签发/续期、远程服务器、可信反向代理及真实多人部署仍未验证。
