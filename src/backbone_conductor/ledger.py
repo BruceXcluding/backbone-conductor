@@ -133,7 +133,12 @@ def migrate_ledger(repo: str | Path) -> dict[str, Any]:
                     )
                 tree = source._git("write-tree", env=index_env).stdout.strip()
             branch_commit = source._git(
-                "commit-tree", tree, "-p", source_head, input="backbone: migrate inline ledger\n"
+                "commit-tree",
+                *source._signing_args(),
+                tree,
+                "-p",
+                source_head,
+                input="backbone: migrate inline ledger\n",
             ).stdout.strip()
             if (
                 source._head() != source_head

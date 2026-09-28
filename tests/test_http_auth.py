@@ -292,6 +292,14 @@ def test_reviewer_can_review_others_intent_with_bound_identity(
         assert accepted.status_code == 200, accepted.text
         assert accepted.json()["reviews"][-1]["reviewer"] == "carol"
         assert accepted.json()["reviews"][-1]["reviewed_version"] == payload["expected_version"]
+        timeline = client.get("/timeline", headers=auth_header(CAROL_TOKEN))
+        assert timeline.status_code == 200
+        assert timeline.json()[0]["http_principal"] == "carol"
+        assert timeline.json()[0]["http_role"] == "reviewer"
+        assert client.get("/audit/verify", headers=auth_header(ALICE_TOKEN)).status_code == 403
+        audit = client.get("/audit/verify", headers=auth_header(CAROL_TOKEN))
+        assert audit.status_code == 200
+        assert audit.json()["unsigned"] >= 1
         assert client.post(path, headers=auth_header(CAROL_TOKEN), json=payload).status_code == 422
         own = Conductor(repo).create_intent(
             {"author": "carol", "problem": "Own scope", "proposed_outcome": "Deliver"}

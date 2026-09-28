@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -235,6 +236,29 @@ def test_migrate_inline_ledger_preserves_audit_ancestry(source_repo: Path, capsy
     )
     assert git(source_repo, "rev-parse", "HEAD") == code_head
     assert set(separate.state()["intents"]) == {"intent-before", "intent-after"}
+
+
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="ssh-keygen unavailable")
+def test_migration_signs_both_ledger_and_source_commits(source_repo: Path, tmp_path: Path):
+    Conductor(source_repo).initialize()
+    key = tmp_path / "migration-key"
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+        check=True,
+        capture_output=True,
+        timeout=20,
+    )
+    allowed = tmp_path / "allowed-signers"
+    allowed.write_text("ledger@example.invalid " + key.with_suffix(".pub").read_text())
+    git(source_repo, "config", "gpg.format", "ssh")
+    git(source_repo, "config", "user.signingkey", str(key))
+    git(source_repo, "config", "gpg.ssh.allowedSignersFile", str(allowed))
+    git(source_repo, "config", "commit.gpgsign", "true")
+
+    result = migrate_ledger(source_repo)
+    ledger = GitStore(result["worktree"])
+    assert ledger.verify_audit_signatures(limit=1)["valid"] == 1
+    git(source_repo, "verify-commit", "HEAD")
 
 
 def test_migrate_rejects_active_task_and_dirty_source(source_repo: Path):

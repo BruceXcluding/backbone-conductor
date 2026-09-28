@@ -83,6 +83,13 @@ class GitStore:
         result = self._git("rev-parse", "--verify", "HEAD", check=False)
         return result.stdout.strip() if result.returncode == 0 else None
 
+    def _signing_args(self) -> tuple[str, ...]:
+        """Make commit-tree honor the repository's normal commit signing setting."""
+        configured = self._git("config", "--bool", "commit.gpgsign", check=False)
+        if configured.returncode not in {0, 1}:
+            raise StorageError("Invalid Git commit.gpgsign setting")
+        return ("-S",) if configured.returncode == 0 and configured.stdout.strip() == "true" else ()
+
     def _ensure_safe(self) -> None:
         if self.path.is_symlink():
             raise StorageError(".backbone must not be a symbolic link")
@@ -280,7 +287,11 @@ class GitStore:
                     tree = self._git("write-tree", env=commit_env).stdout.strip()
                     parents = ["-p", head] if head else []
                     commit = self._git(
-                        "commit-tree", tree, *parents, input=attributed_message(message)
+                        "commit-tree",
+                        *self._signing_args(),
+                        tree,
+                        *parents,
+                        input=attributed_message(message),
                     ).stdout.strip()
 
                     # Prepare an index which retains every unrelated staged change.
@@ -352,11 +363,48 @@ class GitStore:
                     "message": message,
                 }
                 principal, role = principal.strip(), role.strip()
-                if principal and "\n" not in principal and role in {"admin", "member"}:
+                if principal and "\n" not in principal and role in {"admin", "member", "reviewer"}:
                     entry["http_principal"] = principal
                     entry["http_role"] = role
                 entries.append(entry)
             return entries
+
+    def verify_audit_signatures(self, limit: int = 50) -> dict[str, Any]:
+        """Verify the latest metadata commits using Git's configured trust store."""
+        entries = []
+        for item in self.log(limit):
+            commit = item["commit"]
+            raw = self._git("cat-file", "-p", commit).stdout
+            headers = raw.split("\n\n", 1)[0]
+            signed = any(
+                line.startswith(("gpgsig ", "gpgsig-sha256 ")) for line in headers.splitlines()
+            )
+            if not signed:
+                status = "unsigned"
+            else:
+                check = self._git("verify-commit", commit, check=False)
+                status = "valid" if check.returncode == 0 else "invalid"
+            entries.append({"commit": commit, "signature": status})
+        total = (
+            int(self._git("rev-list", "--count", "HEAD", "--", ".backbone").stdout.strip())
+            if entries
+            else 0
+        )
+        counts = {
+            status: sum(item["signature"] == status for item in entries)
+            for status in ("valid", "unsigned", "invalid")
+        }
+        return {
+            "checked": len(entries),
+            "limit": limit,
+            "total_metadata_commits": total,
+            "truncated": total > len(entries),
+            "valid": counts["valid"],
+            "unsigned": counts["unsigned"],
+            "invalid": counts["invalid"],
+            "all_inspected_signed_and_valid": bool(entries) and counts["valid"] == len(entries),
+            "commits": entries,
+        }
 
     def sync(self, remote: str = "origin", branch: str | None = None) -> dict[str, Any]:
         """Explicitly push the current branch; never pull or force-push."""
@@ -644,6 +692,7 @@ class GitStore:
                     message += "\nResolutions: " + json.dumps(choices, sort_keys=True) + "\n"
                 commit = self._git(
                     "commit-tree",
+                    *self._signing_args(),
                     tree,
                     "-p",
                     local_head,

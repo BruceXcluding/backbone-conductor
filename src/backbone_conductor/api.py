@@ -43,6 +43,7 @@ def _reviewer_route(method: str, path: str) -> bool:
             "/tasks",
             "/conflicts",
             "/timeline",
+            "/audit/verify",
             "/sync",
             "/docs",
             "/redoc",
@@ -407,5 +408,9 @@ def create_app(
     @app.get("/timeline")
     def timeline(limit: int = Query(default=50, ge=1, le=1000)) -> list[dict]:
         return conductor.log(limit)
+
+    @app.get("/audit/verify")
+    def verify_audit(limit: int = Query(default=50, ge=1, le=1000)) -> dict:
+        return conductor.verify_audit_signatures(limit)
 
     return app

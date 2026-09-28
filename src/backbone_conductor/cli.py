@@ -154,6 +154,15 @@ def build_parser() -> argparse.ArgumentParser:
     updates.add_argument("--since-version")
     log = commands.add_parser("log")
     log.add_argument("--limit", type=int, default=50)
+    audit = commands.add_parser("audit", help="Inspect Git audit commit signatures")
+    audit_actions = audit.add_subparsers(dest="action", required=True)
+    verify = audit_actions.add_parser("verify", help="Verify recent Backbone commit signatures")
+    verify.add_argument("--limit", type=int, default=50)
+    verify.add_argument(
+        "--require-signatures",
+        action="store_true",
+        help="Exit nonzero unless all inspected commits have valid signatures",
+    )
     commands.add_parser("schema", help="Print protocol JSON Schema")
     review = commands.add_parser("review", help="Request advisory semantic review through DSH")
     review.add_argument("task_id")
@@ -321,6 +330,8 @@ def _run(args: argparse.Namespace) -> Any:
         if not 1 <= args.limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")
         return conductor.log(args.limit)
+    if args.command == "audit":
+        return conductor.verify_audit_signatures(args.limit)
     raise ValueError(f"Unknown command: {args.command}")
 
 
@@ -336,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     if result is not None:
         print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.command == "audit" and args.action == "verify":
+        return int(
+            result["invalid"] > 0
+            or (args.require_signatures and not result["all_inspected_signed_and_valid"])
+        )
     return 0
 
 

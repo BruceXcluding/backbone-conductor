@@ -302,6 +302,7 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
                 "revise_intent",
                 "replace_intent",
                 "review_intent",
+                "verify_audit_signatures",
                 "cancel_task",
                 "refresh_backbone",
                 "reconcile_backbone",
@@ -332,10 +333,12 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             "revise_intent",
             "replace_intent",
             "review_intent",
+            "verify_audit_signatures",
             "cancel_task",
             "refresh_backbone",
             "reconcile_backbone",
         } <= admin_names
+        await create_server(interface_repo).call_tool("verify_audit_signatures", {"limit": 1})
         intent_id = next(iter(state["intents"]))
         Conductor(interface_repo).transition_intent(intent_id, "accepted")
         await create_server(interface_repo).call_tool(

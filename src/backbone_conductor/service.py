@@ -742,6 +742,9 @@ class Conductor:
     def log(self, limit: int = 50) -> list[dict]:
         return self.store.log(limit)
 
+    def verify_audit_signatures(self, limit: int = 50) -> dict:
+        return self.store.verify_audit_signatures(limit)
+
     def review_task(
         self,
         task_id: str,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -38,6 +39,22 @@ def snapshot(path: Path) -> dict[str, bytes]:
         for item in path.rglob("*")
         if item.is_file()
     }
+
+
+def configure_ssh_signing(repo: Path, key: Path, email: str) -> Path:
+    subprocess.run(
+        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)],
+        check=True,
+        capture_output=True,
+        timeout=20,
+    )
+    allowed = key.parent / f"{key.name}-allowed-signers"
+    allowed.write_text(email + " " + key.with_suffix(".pub").read_text())
+    git(repo, "config", "gpg.format", "ssh")
+    git(repo, "config", "user.signingkey", str(key))
+    git(repo, "config", "gpg.ssh.allowedSignersFile", str(allowed))
+    git(repo, "config", "commit.gpgsign", "true")
+    return allowed
 
 
 def increment_counter(repo: str) -> None:
@@ -108,6 +125,66 @@ def test_persistence_versions_and_generated_views(repo: Path):
     assert entry["message"] == "backbone: add coordination objects"
     assert entry["timestamp"]
     assert "http_principal" not in entry
+
+
+def test_audit_reports_unsigned_history_and_strict_cli_fails(repo: Path, capsys):
+    store = GitStore(repo)
+    store.init()
+    report = store.verify_audit_signatures()
+    assert report["checked"] == 1
+    assert report["unsigned"] == 1
+    assert not report["all_inspected_signed_and_valid"]
+    assert main(["--repo", str(repo), "audit", "verify"]) == 0
+    assert json.loads(capsys.readouterr().out)["unsigned"] == 1
+    assert main(["--repo", str(repo), "audit", "verify", "--require-signatures"]) == 1
+    assert json.loads(capsys.readouterr().out)["all_inspected_signed_and_valid"] is False
+
+
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="ssh-keygen unavailable")
+def test_commit_tree_honors_git_signing_and_verifies_trust(repo: Path, tmp_path: Path, capsys):
+    key = tmp_path / "audit-signing-key"
+    allowed = configure_ssh_signing(repo, key, "storage@example.test")
+    store = GitStore(repo)
+    store.init()
+    Conductor(repo).create_intent(
+        {"author": "alice", "problem": "Need export", "proposed_outcome": "Export records"}
+    )
+    report = store.verify_audit_signatures()
+    assert report["checked"] == report["valid"] == 2
+    assert report["all_inspected_signed_and_valid"]
+    assert all(item["signature"] == "valid" for item in report["commits"])
+    latest = store.verify_audit_signatures(limit=1)
+    assert latest["checked"] == 1
+    assert latest["total_metadata_commits"] == 2
+    assert latest["truncated"]
+    assert main(["--repo", str(repo), "audit", "verify", "--require-signatures"]) == 0
+    assert json.loads(capsys.readouterr().out)["valid"] == 2
+    allowed.write_text("")
+    untrusted = store.verify_audit_signatures()
+    assert untrusted["invalid"] == 2
+    assert not untrusted["all_inspected_signed_and_valid"]
+    assert main(["--repo", str(repo), "audit", "verify"]) == 1
+    assert json.loads(capsys.readouterr().out)["invalid"] == 2
+
+
+def test_missing_signing_key_rolls_back_metadata_transaction(repo: Path, tmp_path: Path):
+    store = GitStore(repo)
+    head = store.init().version
+    before = snapshot(repo / ".backbone")
+    git(repo, "config", "gpg.format", "ssh")
+    git(repo, "config", "user.signingkey", str(tmp_path / "missing-key"))
+    git(repo, "config", "commit.gpgsign", "true")
+    with pytest.raises(StorageError, match="commit-tree failed"):
+        store.mutate(
+            lambda state: state.sessions.update({"alice": {"active": True}}),
+            "backbone: signed change",
+        )
+    assert store.read().version == head
+    assert snapshot(repo / ".backbone") == before
+    git(repo, "config", "commit.gpgsign", "maybe")
+    with pytest.raises(StorageError, match="Invalid Git commit.gpgsign"):
+        store.mutate(lambda state: state.sessions.update({"bob": {"active": True}}), "again")
+    assert store.read().version == head
 
 
 def test_unrelated_staged_and_unstaged_changes_preserved(repo: Path):
@@ -484,6 +561,22 @@ def test_reconcile_disjoint_metadata_keeps_both_parents_and_regenerates_conflict
         {"id": "intent-later", "author": "owner", "problem": "Later", "proposed_outcome": "Later"}
     )
     assert first.read().merged_parent_version is None
+
+
+@pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="ssh-keygen unavailable")
+def test_reconcile_signs_merge_commit_when_enabled(repo: Path, tmp_path: Path):
+    first, second, _ = clone_pair(repo, tmp_path)
+    first.mutate(lambda state: state.sessions.update({"alice": {"value": 1}}), "alice update")
+    second.mutate(lambda state: state.sessions.update({"bob": {"value": 2}}), "bob update")
+    first.sync()
+    inspection = second.refresh()
+    assert inspection["status"] == "diverged"
+    configure_ssh_signing(second.root, tmp_path / "reconcile-key", "second@example.test")
+    result = Conductor(second.root).reconcile(
+        inspection["local_head"], inspection["remote_head"], "owner", "Reviewed both updates"
+    )
+    assert result["status"] == "reconciled"
+    assert second.verify_audit_signatures(limit=1)["valid"] == 1
 
 
 def test_reconcile_same_object_changes_require_review(repo: Path, tmp_path: Path):

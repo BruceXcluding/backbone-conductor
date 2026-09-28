@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.17 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合已在本机及 Linux CI 验证。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。多人共享部署仍需独立验证。
+这是独立个人兴趣项目。v0.18 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合已在本机及 Linux CI 验证。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。可选 Git 提交签名与审计签名验证。多人共享部署仍需独立验证。
 
 ## 快速开始
 
@@ -37,6 +37,8 @@ backbone --repo /path/to/project serve \
 ```
 
 请求使用 `Authorization: Bearer TOKEN`。管理员可执行全部 HTTP 操作；成员令牌绑定自己的 author 和 member_id，仅能创建草稿意图与提议决策、查看和提交自己的任务，以及检查自己的更新。审查者可读取审查上下文、接受或拒绝他人的草稿意图、记录实际 Git 合并后的审批并裁决冲突，但不能分派任务或同步仓库；自我审查与审批自己的任务会被拒绝。远程访问需使用可信反向代理终止 TLS，或为 `serve` 同时提供 `--tls-certfile` 和 `--tls-keyfile`；没有 `--auth-file` 时命令拒绝绑定非本机地址。使用 `auth rotate` 可不停机更换令牌。详见 [部署与恢复](docs/OPERATIONS.md)。
+
+审计提交可使用仓库的 Git `commit.gpgsign=true` 设置签名；`backbone --repo /path/to/project audit verify --require-signatures` 检查最近的元数据提交并对未签名或验证失败返回非零状态。历史上的未签名提交不会被追溯签名；签名证明 Git 密钥，不证明 HTTP principal 的真实身份。配置步骤与范围限制见 [部署与恢复](docs/OPERATIONS.md#审计与恢复)。
 
 ## 完整工作流
 

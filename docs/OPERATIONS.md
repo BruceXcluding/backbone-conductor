@@ -16,7 +16,7 @@ backbone --repo /repo serve \
   --auth-file /private/path/backbone-http-tokens.json
 ```
 
-创建命令仅输出一次明文令牌，不把它们写入凭据文件；文件权限为 0600，内容是 SHA-256 摘要与 principal/role 映射。妥善保存明文令牌，避免录入 shell 历史、应用日志或 Git。令牌持有者使用 `Authorization: Bearer TOKEN`。`/health` 无需令牌；其他路径均需令牌，未列入相应角色的路径默认被拒绝。管理员可以使用全部端点；成员只能创建自己的草稿意图和提议决策、读取自己的任务和更新、执行自己的任务开始/上下文刷新/产物提交。审查者可读取完整项目快照、意图、决策、任务、冲突和时间线；可在实际 Git 合并之后，以自己的身份和非空理由记录任务审批，也可用非空理由裁决冲突。审查者不能分派、开始或提交任务、修改意图/决策状态、检测冲突、同步仓库或审批分派给自己的任务。该角色只限制 HTTP 操作，不能证明不同令牌由不同自然人持有，也不替代仓库文件权限隔离。
+创建命令仅输出一次明文令牌，不把它们写入凭据文件；文件权限为 0600，内容是 SHA-256 摘要与 principal/role 映射。妥善保存明文令牌，避免录入 shell 历史、应用日志或 Git。令牌持有者使用 `Authorization: Bearer TOKEN`。`/health` 无需令牌；其他路径均需令牌，未列入相应角色的路径默认被拒绝。管理员可以使用全部端点；成员只能创建自己的草稿意图和提议决策、读取自己的任务和更新、执行自己的任务开始/上下文刷新/产物提交。审查者可读取完整项目快照、意图、决策、任务、冲突、时间线和审计签名报告；可带理由接受或拒绝他人的意图草稿，在实际 Git 合并之后记录任务审批，也可用非空理由裁决冲突。审查者不能分派、开始或提交任务、执行其他意图/决策状态变更、检测冲突、同步仓库、自我审查或审批分派给自己的任务。该角色只限制 HTTP 操作，不能证明不同令牌由不同自然人持有，也不替代仓库文件权限隔离。
 
 轮换时运行 `backbone --repo /repo auth rotate --file /private/path/backbone-http-tokens.json --admin owner --member alice --reviewer carol`，保存命令输出的一次性新令牌并分发给对应用户。它先验证原文件，再原子替换为新的 0600 摘要文件；替换后的请求会拒绝旧令牌，未列出的成员或审查者也失去访问权。运行中的 HTTP 服务逐请求读取当前文件，无需重启；若文件缺失、权限不安全或内容损坏，受保护请求和 `/health` 返回 503，不会继续接受缓存的旧令牌。直接提供 HTTP 仍是明文传输，远程访问需启用 TLS；若由可信反向代理终止 TLS，后端端口只应接受代理流量。Git 仓库写权限仍需在操作系统层隔离；HTTP 角色不限制拥有仓库文件权限的本机用户。
 
@@ -82,7 +82,19 @@ docker compose -f compose.yaml -f compose.tls.yaml up -d
 
 ## 审计与恢复
 
-- `backbone log` / `git log -- .backbone` 查看历史。已认证 HTTP 写入会在提交中留下 `Backbone-HTTP-Principal` 与 `Backbone-HTTP-Role` trailer，`backbone log` 返回 `http_principal` / `http_role`；未认证本地调用没有这些字段。它们记录服务端已验证的 bearer principal，不是 Git 签名，也无法阻止拥有仓库写权限的人伪造提交；Git author 仍由仓库配置决定。
+在需要签名的协调仓库中，先按 [Git 的提交签名文档](https://git-scm.com/docs/git-commit-tree) 配置可用的 GPG 或 SSH 私钥与可信公钥。SSH 示例中的私钥和 allowed signers 文件应放在仓库外，并限制文件访问：
+
+```sh
+git -C /repo config gpg.format ssh
+git -C /repo config user.signingkey /private/path/audit-signing-key
+git -C /repo config gpg.ssh.allowedSignersFile /private/path/allowed-signers
+git -C /repo config commit.gpgsign true
+backbone --repo /repo audit verify --limit 50 --require-signatures
+```
+
+Backbone 用 `git commit-tree` 写元数据，启用 `commit.gpgsign=true` 时会显式传入 `-S`；签名失败则回滚该次元数据事务。`audit verify` 使用 Git 当前配置的信任库验证最近 `--limit` 个元数据提交，返回 `valid`、`unsigned`、`invalid`、`total_metadata_commits` 与 `truncated`。默认模式对无效签名返回非零状态；`--require-signatures` 还要求所检查提交全部有效。`truncated=true` 表示仍有更早提交未检查；旧提交不会因开启签名而补签。独立元数据分支使用 `--ledger-branch backbone` 检查该分支。Git 签名只证明某可信密钥签过提交，不能证明 HTTP principal、Git author 或自然人身份；allowed signers 的维护与私钥保护由部署者负责。验证命令不修改仓库。
+
+- `backbone log` / `git log -- .backbone` 查看历史。已认证 HTTP 写入会在提交中留下 `Backbone-HTTP-Principal` 与 `Backbone-HTTP-Role` trailer，`backbone log` 返回 `http_principal` / `http_role`（包括审查者）；未认证本地调用没有这些字段。它们记录服务端已验证的 bearer principal，不是 Git 签名，也无法阻止拥有仓库写权限的人伪造提交；Git author 仍由仓库配置决定。
 - `backbone decision transition DECISION_ID reverted` 撤销接受过的决策并重算冲突。
 - 整体回退需先停服务和备份，查看差异后 `git revert <metadata-commit>`；再确认 backbone status。首选领域命令，整提交回退可能改变多个对象。
 - state.json 是权威快照，其他文件是生成视图。未提交的手工修改会被拒绝；修复时先停服务、检查并提交一致快照。
