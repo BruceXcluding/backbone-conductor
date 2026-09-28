@@ -124,3 +124,9 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 ## v0.19 可筛选审计时间线
 
 日期：2026-09-29。`backbone log` 与 HTTP `/timeline` 增加精确 Git author、已认证 HTTP principal、事件类型和带时区的 ISO 8601 起止时间筛选。先筛选再应用数量上限，因此可以取到较早的匹配提交；审查者仍可读、成员仍被拒绝。事件类型根据提交主题归类，时间来自 Git author 元数据，均不能作为独立验证的身份或事件事实。完整套件强制执行真实 HTTP/HTTPS 用例后 **286 passed，1 个可选 DSH 用例 skipped，覆盖率 90.84%**；Ruff、合成评测 24/24、Git 示例、0.19.0 wheel/source distribution 构建及隔离 wheel 导入通过。本机源码测试和示例继续使用 `PYTHONPATH=src`，因为环境隐藏 editable `.pth`。
+
+## v0.20 公开历史 Git 合并回放试验
+
+日期：2026-09-29。新增 [四例固定数据及来源](../evals/GIT_MERGE_PILOT.md)，包含 jsoup 和 Amaze File Manager 的真实双父合并提交。已在临时上游克隆逐例重放 `git merge-tree --write-tree`，并核对父 SHA、共同祖先到各父提交的修改路径和文本冲突标签。两例确有文本冲突；一例同文件修改却可干净合并，另一路径不重叠。Backbone `resource_contention` 对这些**文本冲突**标签的结果为 TP 2、FP 1、FN 0、TN 1；这是刻意选取的四例回顾性路径试验，不能据此宣称真实意图冲突 precision、recall 或 80% 目标。后续须用事前声明的意图及独立人工标签扩大评测。CI 仅离线运行固定数据，源仓库重放由显式验证命令完成。
+
+完整测试强制执行真实 HTTP/HTTPS 用例后 **288 passed，1 个可选 DSH 用例 skipped，覆盖率 90.84%**。Ruff、24/24 合成评测、四例 Git 合并试验、Git 示例、0.20.0 wheel/source distribution 构建、锁定开发环境离线同步及隔离 wheel 导入通过。本机源码测试与示例使用 `PYTHONPATH=src`，因为环境隐藏 editable `.pth`；未调用付费模型。

@@ -16,3 +16,5 @@ coordinate、accept_existing、override_existing、accept_risk 记录人工选�
 制品路径来自固定 Git 提交的 diff；关闭 rename detection，同时检查移动前后路径。使用完整路径段匹配，src/auth 不匹配 src/author.py。全局决策没有 related_intents 时，其冲突适用于所有任务。
 
 运行 `python scripts/evaluate.py` 检查 24 个合成场景；其 precision/recall/F1 不证明真实项目检测率 ≥80%。
+
+另有 [四例历史 Git 合并试验](evals/GIT_MERGE_PILOT.md)，用公开项目的真实分支路径和 Git 文本冲突标签检查 `resource_contention`。这只测路径预警相对文本冲突的表现；意图级准确率仍待独立人工标注。
