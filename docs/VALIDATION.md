@@ -130,3 +130,9 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 日期：2026-09-29。新增 [四例固定数据及来源](../evals/GIT_MERGE_PILOT.md)，包含 jsoup 和 Amaze File Manager 的真实双父合并提交。已在临时上游克隆逐例重放 `git merge-tree --write-tree`，并核对父 SHA、共同祖先到各父提交的修改路径和文本冲突标签。两例确有文本冲突；一例同文件修改却可干净合并，另一路径不重叠。Backbone `resource_contention` 对这些**文本冲突**标签的结果为 TP 2、FP 1、FN 0、TN 1；这是刻意选取的四例回顾性路径试验，不能据此宣称真实意图冲突 precision、recall 或 80% 目标。后续须用事前声明的意图及独立人工标签扩大评测。CI 仅离线运行固定数据，源仓库重放由显式验证命令完成。
 
 完整测试强制执行真实 HTTP/HTTPS 用例后 **288 passed，1 个可选 DSH 用例 skipped，覆盖率 90.84%**。Ruff、24/24 合成评测、四例 Git 合并试验、Git 示例、0.20.0 wheel/source distribution 构建、锁定开发环境离线同步及隔离 wheel 导入通过。本机源码测试与示例使用 `PYTHONPATH=src`，因为环境隐藏 editable `.pth`；未调用付费模型。
+
+## v0.21 DSH 成功审查指标
+
+日期：2026-09-29。可选 DSH 审查在成功返回结构化建议时记录 SDK 客户端创建至关闭的单次耗时（毫秒）、SDK 会话 ID 和完成状态，随 `semantic_review` 写入 Git 审计；非法输出与未完成回合仍不会形成审查记录。使用无模型 Harness 替身验证时间计算、返回字段和服务层持久化，已安装 SDK 的构造接口另经独立测试。SDK 当前未提供稳定的 token 用量或费用字段，本版不估算费用；真实模型质量、费用、延迟和故障恢复仍未在线验证。
+
+隔离开发环境强制执行真实 HTTP/HTTPS 用例后 **288 passed，1 个可选 DSH 用例 skipped，覆盖率 90.86%**；已安装可选 SDK 的接口测试另 **1 passed**。Ruff、24/24 合成评测、Git 示例、锁文件校验、0.21.0 wheel/source distribution 构建和隔离 wheel 导入通过。工作区 `.venv` 的首次全套运行出现一次失败并在较慢的测试阶段被中断；随后该接口测试文件单独重跑 **13 passed**。本环境的完整通过结果来自 `/private/tmp` 隔离虚拟环境，源码测试与示例使用 `PYTHONPATH=src`；本次未调用付费模型。

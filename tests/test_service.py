@@ -208,10 +208,22 @@ def test_advisory_semantic_review_and_stale_review_rejected(project, monkeypatch
     monkeypatch.setattr(
         DSHReviewer,
         "review",
-        lambda *args: {"verdict": "aligned", "rationale": "Meets task", "concerns": []},
+        lambda *args: {
+            "verdict": "aligned",
+            "rationale": "Meets task",
+            "concerns": [],
+            "runtime": {
+                "elapsed_ms": 250.0,
+                "session_id": "session-review-001",
+                "finish_reason": "completed",
+            },
+        },
     )
     review = service.review_task(task["id"], str(repo / "dsh-home"), "test-model")
     assert review["advisory"]
+    assert review["runtime"]["elapsed_ms"] == 250.0
+    assert review["runtime"]["session_id"] == "session-review-001"
+    assert service.state()["tasks"][task["id"]]["artifact"]["checks"]["semantic_review"] == review
     assert service.state()["tasks"][task["id"]]["status"] == "submitted"
 
     def stale(*args):

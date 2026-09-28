@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from time import monotonic_ns
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -52,6 +53,7 @@ class DSHReviewer:
                 "Return ONLY a JSON object matching this schema: "
                 + json.dumps(SemanticReview.model_json_schema())
             )
+            started_ns = monotonic_ns()
             harness = DeepSeekHarness(
                 dsh_home=str(self.home),
                 cwd=directory,
@@ -68,14 +70,23 @@ class DSHReviewer:
                 ) from exc
             finally:
                 harness.close()
+            elapsed_ms = round((monotonic_ns() - started_ns) / 1_000_000, 3)
             if result.finish_reason != "completed":
                 raise ValueError(f"DSH review did not complete: {result.finish_reason}")
             response = result.final_response.strip()
             if response.startswith("```json\n") and response.endswith("```"):
                 response = response[8:-3].strip()
             try:
-                return SemanticReview.model_validate_json(response).model_dump()
+                review = SemanticReview.model_validate_json(response).model_dump()
             except ValueError as exc:
                 raise ValueError(
                     "DSH returned an invalid semantic review; no approval was recorded"
                 ) from exc
+            return {
+                **review,
+                "runtime": {
+                    "elapsed_ms": elapsed_ms,
+                    "session_id": result.session_id,
+                    "finish_reason": result.finish_reason,
+                },
+            }

@@ -57,7 +57,11 @@ def harness_stub(monkeypatch):
             state.prompt = prompt
             if state.run_error is not None:
                 raise state.run_error
-            return SimpleNamespace(final_response=state.response, finish_reason=state.finish_reason)
+            return SimpleNamespace(
+                final_response=state.response,
+                finish_reason=state.finish_reason,
+                session_id="session-review-001",
+            )
 
     module = ModuleType("deepseek_harness")
     module.DeepSeekHarness = Harness
@@ -73,6 +77,9 @@ def harness_stub(monkeypatch):
 def test_review_isolated_workspace_explicit_home_and_advisory_output(
     tmp_path: Path, monkeypatch, harness_stub
 ) -> None:
+    monkeypatch.setattr(
+        "backbone_conductor.runtime.monotonic_ns", iter([1_000_000_000, 1_250_000_000]).__next__
+    )
     monkeypatch.setenv("DSH_HOME", str(tmp_path / "existing-shared-home"))
     before_home = os.environ["DSH_HOME"]
     home = tmp_path / "dedicated-review-home"
@@ -83,6 +90,11 @@ def test_review_isolated_workspace_explicit_home_and_advisory_output(
         "verdict": "aligned",
         "rationale": "Export follows the requested contract",
         "concerns": [],
+        "runtime": {
+            "elapsed_ms": 250.0,
+            "session_id": "session-review-001",
+            "finish_reason": "completed",
+        },
     }
     assert harness_stub.context == context
     assert harness_stub.diff == diff
