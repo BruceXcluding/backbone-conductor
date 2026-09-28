@@ -71,17 +71,21 @@ class TokenAuth:
             raise ValueError("HTTP credential file needs at least one token")
         tokens: list[tuple[str, Principal]] = []
         seen: set[str] = set()
+        seen_names: set[str] = set()
         for entry in entries:
             if not isinstance(entry, dict) or set(entry) != {"name", "role", "sha256"}:
                 raise ValueError("Each token needs name, role and sha256 only")
             name, role, digest = entry["name"], entry["role"], entry["sha256"]
             if not isinstance(name, str) or not _NAME.fullmatch(name):
                 raise ValueError("Invalid HTTP token principal name")
-            if not isinstance(role, str) or role not in {"admin", "member"}:
-                raise ValueError("HTTP token role must be admin or member")
+            if name in seen_names:
+                raise ValueError("HTTP token principal names must be unique")
+            if not isinstance(role, str) or role not in {"admin", "member", "reviewer"}:
+                raise ValueError("HTTP token role must be admin, member or reviewer")
             if not isinstance(digest, str) or not _DIGEST.fullmatch(digest) or digest in seen:
                 raise ValueError("HTTP token sha256 must be unique lowercase hex")
             seen.add(digest)
+            seen_names.add(name)
             tokens.append((digest, Principal(name, role)))
         if not any(principal.role == "admin" for _, principal in tokens):
             raise ValueError("HTTP credential file needs an admin token")
@@ -106,8 +110,14 @@ class TokenAuth:
         return matched
 
 
-def _issue(admin: str, members: list[str]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    principals = [(admin, "admin"), *((member, "member") for member in members)]
+def _issue(
+    admin: str, members: list[str], reviewers: list[str] | None = None
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    principals = [
+        (admin, "admin"),
+        *((member, "member") for member in members),
+        *((reviewer, "reviewer") for reviewer in reviewers or []),
+    ]
     names = [name for name, _ in principals]
     if any(not _NAME.fullmatch(name) for name in names) or len(set(names)) != len(names):
         raise ValueError("Token principal names must be unique and use safe characters")
@@ -135,14 +145,18 @@ def _write_digests(descriptor: int, digests: list[dict[str, str]]) -> None:
 
 
 def create_token_file(
-    path: str | Path, repo: str | Path, admin: str, members: list[str]
+    path: str | Path,
+    repo: str | Path,
+    admin: str,
+    members: list[str],
+    reviewers: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """Create a private digest file and return one-time plaintext credentials."""
     repository = Path(repo).expanduser().resolve()
     location = Path(path).expanduser().resolve()
     if location.is_relative_to(repository):
         raise ValueError("HTTP credential file must be outside the repository")
-    issued, digests = _issue(admin, members)
+    issued, digests = _issue(admin, members, reviewers)
     descriptor = os.open(location, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         _write_digests(descriptor, digests)
@@ -154,14 +168,18 @@ def create_token_file(
 
 
 def rotate_token_file(
-    path: str | Path, repo: str | Path, admin: str, members: list[str]
+    path: str | Path,
+    repo: str | Path,
+    admin: str,
+    members: list[str],
+    reviewers: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """Atomically replace a valid credential file, revoking its old tokens."""
     repository = Path(repo).expanduser().resolve()
     location = Path(path).expanduser().absolute()
     TokenAuth(location, repository)
     previous = location.stat(follow_symlinks=False)
-    issued, digests = _issue(admin, members)
+    issued, digests = _issue(admin, members, reviewers)
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{location.name}.rotate-", dir=location.parent
     )

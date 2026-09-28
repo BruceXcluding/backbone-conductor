@@ -33,6 +33,31 @@ def _member_route(method: str, path: str) -> bool:
     return False
 
 
+def _reviewer_route(method: str, path: str) -> bool:
+    if method == "GET":
+        if path in {
+            "/state",
+            "/schema",
+            "/intents",
+            "/decisions",
+            "/tasks",
+            "/conflicts",
+            "/timeline",
+            "/sync",
+            "/docs",
+            "/redoc",
+            "/openapi.json",
+        }:
+            return True
+        return re.fullmatch(r"/(intents|decisions|tasks)/[^/]+", path) is not None
+    if method == "POST":
+        return (
+            re.fullmatch(r"/tasks/[^/]+/merge", path) is not None
+            or re.fullmatch(r"/conflicts/[^/]+/resolve", path) is not None
+        )
+    return False
+
+
 class Action(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -98,7 +123,7 @@ def create_app(
     auth_file: str | Path | None = None,
     ledger_branch: str | None = None,
 ) -> FastAPI:
-    """Create a local admin API or an authenticated admin/member API."""
+    """Create a local admin API or an authenticated admin/member/reviewer API."""
     conductor = Conductor(repo, ledger_branch=ledger_branch)
     auth = TokenAuth(auth_file, conductor.code_store.root) if auth_file is not None else None
     app = FastAPI(
@@ -106,7 +131,7 @@ def create_app(
         version=__version__,
         description=(
             "Without --auth-file, bind to loopback for trusted local administrators. "
-            "With --auth-file, bearer tokens authorize admin and bound member operations. "
+            "With --auth-file, bearer tokens authorize admin, member and reviewer operations. "
             "Use TLS at a trusted reverse proxy or configure direct HTTPS for remote access. "
             "Merge approval records require an actual Git merge and human semantic review."
         ),
@@ -136,6 +161,12 @@ def create_app(
             request.state.principal = principal
             if principal.role == "member" and not _member_route(request.method, request.url.path):
                 return JSONResponse(status_code=403, content={"detail": "Admin role required"})
+            if principal.role == "reviewer" and not _reviewer_route(
+                request.method, request.url.path
+            ):
+                return JSONResponse(
+                    status_code=403, content={"detail": "Reviewer role cannot access this endpoint"}
+                )
         if auth is None or request.state.principal is None:
             return await call_next(request)
         token = bind_http_actor(request.state.principal.name, request.state.principal.role)
@@ -298,6 +329,12 @@ def create_app(
     @app.post("/tasks/{task_id}/merge")
     def merge_task(task_id: str, data: Approval, request: Request) -> dict:
         """Record human approval after performing the actual Git merge externally."""
+        principal = request.state.principal
+        if principal.role == "reviewer":
+            if not data.rationale or not data.rationale.strip():
+                raise ValueError("Reviewer approval requires a rationale")
+            if conductor.state()["tasks"][task_id]["member_id"] == principal.name:
+                raise PermissionError("Reviewers cannot approve their own assigned task")
         return conductor.merge_task(task_id, actor(request, data.author), data.rationale)
 
     @app.get("/conflicts")

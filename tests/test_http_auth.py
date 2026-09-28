@@ -19,6 +19,7 @@ from backbone_conductor.service import Conductor
 ADMIN_TOKEN = "admin-token-" + "a" * 40
 ALICE_TOKEN = "alice-token-" + "b" * 40
 BOB_TOKEN = "bob-token-" + "c" * 40
+CAROL_TOKEN = "reviewer-token-" + "d" * 40
 
 
 def git(repo: Path, *args: str) -> None:
@@ -49,6 +50,7 @@ def auth_repo(tmp_path: Path) -> tuple[Path, Path]:
                     credential("owner", "admin", ADMIN_TOKEN),
                     credential("alice", "member", ALICE_TOKEN),
                     credential("bob", "member", BOB_TOKEN),
+                    credential("carol", "reviewer", CAROL_TOKEN),
                 ]
             }
         ),
@@ -229,6 +231,192 @@ def test_http_authenticates_and_limits_member_to_own_tasks(auth_repo: tuple[Path
     assert "Backbone-HTTP-" not in local_commit
 
 
+def test_reviewer_can_approve_integrated_work_but_not_manage_tasks(
+    auth_repo: tuple[Path, Path],
+) -> None:
+    repo, auth_file = auth_repo
+    reviewer = auth_header(CAROL_TOKEN)
+    admin = auth_header(ADMIN_TOKEN)
+    member = auth_header(ALICE_TOKEN)
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        for path in ("/state", "/intents", "/decisions", "/tasks", "/conflicts", "/timeline"):
+            assert client.get(path, headers=reviewer).status_code == 200
+        for path in ("/initialize", "/tasks", "/conflicts/check", "/refresh", "/sync"):
+            assert client.post(path, headers=reviewer, json={}).status_code == 403
+        assert client.post("/intents", headers=reviewer, json={}).status_code == 403
+        assert client.post("/decisions", headers=reviewer, json={}).status_code == 403
+        assert client.post("/reconcile", headers=reviewer, json={}).status_code == 403
+
+        created = client.post(
+            "/intents",
+            headers=member,
+            json={
+                "id": "intent-review",
+                "problem": "Need a reviewed feature",
+                "proposed_outcome": "Add the feature",
+                "affected_paths": ["feature.py"],
+            },
+        )
+        assert created.status_code == 201, created.text
+        assert client.get("/intents/intent-review", headers=reviewer).status_code == 200
+        assert (
+            client.post(
+                "/intents/intent-review/transition",
+                headers=reviewer,
+                json={"status": "accepted"},
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                "/intents/intent-review/transition",
+                headers=admin,
+                json={"status": "accepted"},
+            ).status_code
+            == 200
+        )
+        dispatched = client.post(
+            "/tasks", headers=admin, json={"intent_id": "intent-review", "member_id": "alice"}
+        )
+        assert dispatched.status_code == 201, dispatched.text
+        task_id = dispatched.json()["id"]
+        assert client.get(f"/tasks/{task_id}", headers=reviewer).status_code == 200
+        assert (
+            client.post(
+                f"/tasks/{task_id}/start", headers=member, json={"member_id": "alice"}
+            ).status_code
+            == 200
+        )
+
+        git(repo, "switch", "-c", "review-feature")
+        (repo / "feature.py").write_text("def feature():\n    return True\n", encoding="utf-8")
+        git(repo, "add", "feature.py")
+        git(repo, "commit", "-m", "Add reviewed feature")
+        git(repo, "switch", "main")
+        submitted = client.post(
+            f"/tasks/{task_id}/submit",
+            headers=member,
+            json={
+                "member_id": "alice",
+                "artifact": {
+                    "branch": "review-feature",
+                    "base_ref": "main",
+                    "summary": "Added feature",
+                },
+            },
+        )
+        assert submitted.status_code == 200, submitted.text
+        git(repo, "merge", "--no-edit", "review-feature")
+        assert (
+            client.post(
+                f"/tasks/{task_id}/merge", headers=reviewer, json={"author": "carol"}
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"/tasks/{task_id}/merge",
+                headers=reviewer,
+                json={"author": "owner", "rationale": "Reviewed feature and constraints"},
+            ).status_code
+            == 403
+        )
+        approved = client.post(
+            f"/tasks/{task_id}/merge",
+            headers=reviewer,
+            json={"author": "carol", "rationale": "Reviewed feature and constraints"},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["review_decision"]["author"] == "carol"
+        assert approved.json()["task"]["status"] == "merged"
+
+        another = client.post(
+            "/intents",
+            headers=admin,
+            json={"id": "intent-self", "problem": "Self review", "proposed_outcome": "Avoid it"},
+        )
+        assert another.status_code == 201
+        assert (
+            client.post(
+                "/intents/intent-self/transition", headers=admin, json={"status": "accepted"}
+            ).status_code
+            == 200
+        )
+        own_task = client.post(
+            "/tasks", headers=admin, json={"intent_id": "intent-self", "member_id": "carol"}
+        )
+        assert own_task.status_code == 201
+        assert (
+            client.post(
+                f"/tasks/{own_task.json()['id']}/merge",
+                headers=reviewer,
+                json={"author": "carol", "rationale": "Cannot approve my own assignment"},
+            ).status_code
+            == 403
+        )
+
+    history = subprocess.run(
+        ["git", "-C", str(repo), "log", "--format=%B", "--", ".backbone"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "Backbone-HTTP-Principal: carol" in history
+    assert "Backbone-HTTP-Role: reviewer" in history
+
+
+def test_reviewer_can_arbitrate_with_bound_identity(auth_repo: tuple[Path, Path]) -> None:
+    repo, auth_file = auth_repo
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        for intent_id, token in (("intent-left", ALICE_TOKEN), ("intent-right", BOB_TOKEN)):
+            response = client.post(
+                "/intents",
+                headers=auth_header(token),
+                json={
+                    "id": intent_id,
+                    "problem": "Competing change",
+                    "proposed_outcome": "Change shared path",
+                    "affected_paths": ["shared.py"],
+                },
+            )
+            assert response.status_code == 201, response.text
+            assert (
+                client.post(
+                    f"/intents/{intent_id}/transition",
+                    headers=auth_header(ADMIN_TOKEN),
+                    json={"status": "accepted"},
+                ).status_code
+                == 200
+            )
+        checked = client.post("/conflicts/check", headers=auth_header(ADMIN_TOKEN))
+        assert checked.status_code == 200, checked.text
+        conflicts = client.get("/conflicts", headers=auth_header(CAROL_TOKEN)).json()
+        assert conflicts
+        conflict_id = conflicts[0]["id"]
+        spoof = client.post(
+            f"/conflicts/{conflict_id}/resolve",
+            headers=auth_header(CAROL_TOKEN),
+            json={"author": "owner", "action": "coordinate", "rationale": "Reviewed both scopes"},
+        )
+        assert spoof.status_code == 403
+        resolved = client.post(
+            f"/conflicts/{conflict_id}/resolve",
+            headers=auth_header(CAROL_TOKEN),
+            json={"author": "carol", "action": "coordinate", "rationale": "Reviewed both scopes"},
+        )
+        assert resolved.status_code == 200, resolved.text
+        assert resolved.json()["decision"]["author"] == "carol"
+        assert resolved.json()["conflict"]["resolved"] is True
+    latest = subprocess.run(
+        ["git", "-C", str(repo), "log", "-1", "--format=%B", "--", ".backbone"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "Backbone-HTTP-Principal: carol" in latest
+    assert "Backbone-HTTP-Role: reviewer" in latest
+
+
 def test_member_decisions_and_admin_author_are_bound(auth_repo: tuple[Path, Path]) -> None:
     repo, auth_file = auth_repo
     with TestClient(create_app(repo, auth_file=auth_file)) as client:
@@ -288,6 +476,10 @@ def test_credential_file_is_private_and_outside_git(auth_repo: tuple[Path, Path]
     config["tokens"].append(config["tokens"][0])
     auth_file.write_text(json.dumps(config))
     with pytest.raises(ValueError, match="unique"):
+        TokenAuth(auth_file, repo)
+    config["tokens"][-1] = credential("carol", "reviewer", "another-token-" + "x" * 40)
+    auth_file.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="principal names must be unique"):
         TokenAuth(auth_file, repo)
 
 
@@ -355,17 +547,20 @@ def test_token_file_creation_is_private_and_does_not_store_plaintext(
                 "owner",
                 "--member",
                 "alice",
+                "--reviewer",
+                "carol",
             ]
         )
         == 0
     )
     issued = json.loads(capsys.readouterr().out)["credentials"]
-    assert len(issued) == 2
+    assert len(issued) == 3
     assert output.stat().st_mode & 0o777 == 0o600
     assert all(item["token"] not in output.read_text() for item in issued)
     auth = TokenAuth(output, repo)
     assert auth.authenticate(f"Bearer {issued[0]['token']}").role == "admin"
     assert auth.authenticate(f"Bearer {issued[1]['token']}").name == "alice"
+    assert auth.authenticate(f"Bearer {issued[2]['token']}").role == "reviewer"
     with pytest.raises(FileExistsError):
         create_token_file(output, repo, "owner", [])
     assert (
@@ -387,6 +582,8 @@ def test_token_file_creation_is_private_and_does_not_store_plaintext(
     capsys.readouterr()
     with pytest.raises(ValueError, match="unique"):
         create_token_file(tmp_path / "duplicate.json", repo, "alice", ["alice"])
+    with pytest.raises(ValueError, match="unique"):
+        create_token_file(tmp_path / "duplicate-reviewer.json", repo, "owner", [], ["owner"])
 
 
 def test_http_tokens_rotate_without_restart_and_fail_closed(
@@ -395,6 +592,7 @@ def test_http_tokens_rotate_without_restart_and_fail_closed(
     repo, auth_file = auth_repo
     with TestClient(create_app(repo, auth_file=auth_file)) as client:
         assert client.get("/state", headers=auth_header(ADMIN_TOKEN)).status_code == 200
+        assert client.get("/state", headers=auth_header(CAROL_TOKEN)).status_code == 200
         assert (
             main(
                 [
@@ -408,19 +606,23 @@ def test_http_tokens_rotate_without_restart_and_fail_closed(
                     "owner",
                     "--member",
                     "alice",
+                    "--reviewer",
+                    "carol",
                 ]
             )
             == 0
         )
         issued = json.loads(capsys.readouterr().out)["credentials"]
-        assert len(issued) == 2
+        assert len(issued) == 3
         assert auth_file.stat().st_mode & 0o777 == 0o600
         assert all(item["token"] not in auth_file.read_text() for item in issued)
         assert client.get("/state", headers=auth_header(ADMIN_TOKEN)).status_code == 401
         assert client.get("/tasks", headers=auth_header(BOB_TOKEN)).status_code == 401
+        assert client.get("/state", headers=auth_header(CAROL_TOKEN)).status_code == 401
         new_admin = auth_header(issued[0]["token"])
         assert client.get("/state", headers=new_admin).status_code == 200
         assert client.get("/tasks", headers=auth_header(issued[1]["token"])).status_code == 200
+        assert client.get("/state", headers=auth_header(issued[2]["token"])).status_code == 200
         auth_file.chmod(0o644)
         assert client.get("/state", headers=new_admin).status_code == 503
         assert client.get("/health").status_code == 503

@@ -155,10 +155,16 @@ def build_parser() -> argparse.ArgumentParser:
     create_auth.add_argument("--file", required=True, help="New file outside the Git repository")
     create_auth.add_argument("--admin", required=True, help="Administrator principal name")
     create_auth.add_argument("--member", action="append", default=[], help="Member principal name")
+    create_auth.add_argument(
+        "--reviewer", action="append", default=[], help="Reviewer principal name"
+    )
     rotate_auth = auth_commands.add_parser("rotate", help="Replace tokens without restarting HTTP")
     rotate_auth.add_argument("--file", required=True, help="Existing private token file")
     rotate_auth.add_argument("--admin", required=True, help="Administrator principal name")
     rotate_auth.add_argument("--member", action="append", default=[], help="Member principal name")
+    rotate_auth.add_argument(
+        "--reviewer", action="append", default=[], help="Reviewer principal name"
+    )
     mcp = commands.add_parser("mcp", help="Run the MCP server over stdio")
     mcp.add_argument("--member", help="Bind member operations and omit administrator tools")
     return parser
@@ -205,10 +211,12 @@ def _run(args: argparse.Namespace) -> Any:
         return {
             "file": args.file,
             "credentials": (
-                create_token_file(args.file, conductor.code_store.root, args.admin, args.member)
+                create_token_file(
+                    args.file, conductor.code_store.root, args.admin, args.member, args.reviewer
+                )
                 if args.action == "create"
                 else rotate_token_file(
-                    args.file, conductor.code_store.root, args.admin, args.member
+                    args.file, conductor.code_store.root, args.admin, args.member, args.reviewer
                 )
             ),
             "detail": "Save these plaintext tokens now; only SHA-256 digests are stored in the file.",
