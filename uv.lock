@@ -50,11 +50,12 @@ wheels = [
 
 [[package]]
 name = "backbone-conductor"
-version = "0.29.0"
+version = "0.30.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "filelock" },
+    { name = "httpx" },
     { name = "mcp" },
     { name = "pydantic" },
     { name = "uvicorn" },
@@ -78,6 +79,7 @@ requires-dist = [
     { name = "deepseek-harness-sdk", marker = "extra == 'dsh'", specifier = ">=0.1,<1" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "filelock", specifier = ">=3.16,<4" },
+    { name = "httpx", specifier = ">=0.28,<1" },
     { name = "mcp", specifier = ">=1.12,<2" },
     { name = "pydantic", specifier = ">=2.10,<3" },
     { name = "uvicorn", specifier = ">=0.34,<1" },

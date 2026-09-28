@@ -188,6 +188,9 @@ def build_parser() -> argparse.ArgumentParser:
     dsh.add_argument("--model", required=True)
     dsh.add_argument("--provider", default="deepseek-official")
     dsh.add_argument("--session-id", help="Continue an existing DSH session in this home")
+    dsh.add_argument("--mcp-url", help="Authenticated remote coordinator /mcp URL")
+    dsh.add_argument("--mcp-token-file", help="Private file containing this member's bearer token")
+    dsh.add_argument("--mcp-ca-file", help="CA certificate for a remote HTTPS coordinator")
     dsh_prompt = dsh.add_mutually_exclusive_group(required=True)
     dsh_prompt.add_argument("--prompt")
     dsh_prompt.add_argument("--prompt-file", help="UTF-8 prompt file")
@@ -314,11 +317,28 @@ def _run(args: argparse.Namespace) -> Any:
         )
         return None
     if args.command == "dsh":
-        from .dsh_agent import DSHMemberRunner
+        from .dsh_agent import DSHMemberRunner, DSHRemoteMemberRunner
 
         prompt = (
             Path(args.prompt_file).read_text(encoding="utf-8") if args.prompt_file else args.prompt
         )
+        if args.mcp_url:
+            if not args.mcp_token_file:
+                raise ValueError("Remote DSH requires --mcp-token-file")
+            if args.ledger_branch:
+                raise ValueError("Remote DSH does not use --ledger-branch")
+            return DSHRemoteMemberRunner(
+                args.workspace,
+                args.dsh_home,
+                args.member,
+                args.model,
+                args.mcp_url,
+                args.mcp_token_file,
+                args.provider,
+                ca_file=args.mcp_ca_file,
+            ).run(prompt, session_id=args.session_id)
+        if args.mcp_token_file or args.mcp_ca_file:
+            raise ValueError("--mcp-token-file and --mcp-ca-file require --mcp-url")
         return DSHMemberRunner(
             args.repo,
             args.workspace,

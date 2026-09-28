@@ -18,6 +18,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from backbone_conductor.auth import create_token_file
+from backbone_conductor.dsh_agent import DSHRemoteMemberRunner
 from backbone_conductor.service import Conductor
 
 
@@ -153,6 +154,44 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(tmp_path: Pa
                         return json.loads(result.content[0].text)
 
         assert asyncio.run(member_mcp())["author"] == "alice"
+        workspace = tmp_path / "member-workspace"
+        workspace.mkdir()
+        token_file = tmp_path / "alice.token"
+        token_file.write_text(member_token + "\n", encoding="ascii")
+        token_file.chmod(0o600)
+        runner = DSHRemoteMemberRunner(
+            workspace,
+            tmp_path / "private-dsh-home",
+            "alice",
+            "placeholder",
+            f"{url}/mcp",
+            token_file,
+            ca_file=certificate,
+        )
+        runner._preflight_mcp()
+        assert runner._harness_env() == {"NODE_EXTRA_CA_CERTS": str(certificate)}
+        if os.environ.get("BACKBONE_REQUIRE_DSH_MCP") == "1":
+            from deepseek_harness import DeepSeekHarness
+
+            patch = tmp_path / "trusted-remote.patch.yml"
+            patch.write_text(json.dumps(runner.member_patch()), encoding="utf-8")
+            patch.chmod(0o600)
+            harness = DeepSeekHarness(
+                dsh_home=str(runner.home),
+                cwd=str(workspace),
+                profile="sdk-minimal",
+                patches=(str(patch),),
+                provider="deepseek-official",
+                model="placeholder",
+                env=runner._harness_env(),
+                initialize_timeout_seconds=30,
+            )
+            try:
+                harness.start()
+                assert harness._initialized
+                assert harness.client._proc.poll() is None
+            finally:
+                harness.close()
         with httpx.Client(trust_env=False, timeout=2) as untrusted:
             with pytest.raises(httpx.RequestError):
                 untrusted.get(f"{url}/health")

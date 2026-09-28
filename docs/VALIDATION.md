@@ -176,3 +176,9 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 日期：2026-09-29。`review --attempt-log` 可选地把通过前置任务与 diff 校验后、在 DSH 调用或审查结果入账阶段失败的尝试追加到仓库外 JSONL。记录任务、模型/provider、观察到的 Backbone 版本和制品 SHA、失败阶段、总耗时及错误类型；不记录提示词、diff 或原始 provider 错误。目录必须为当前用户所有且不对组和其他用户开放，文件需为 owner-only 普通文件，拒绝符号链接、硬链接及仓库/Git 目录内路径。失败不生成语义审查结论或 Git 审计提交；成功审查仍按原逻辑存入 Git。该日志不能捕获进程崩溃或前置校验失败，也不测实际模型成本。
 
 定向测试覆盖运行时失败连续追加、脱敏、Git 状态不变、过期结果的入账阶段失败，以及不安全路径拒绝。基础完整套件 **307 passed，6 个环境/可选 SDK 用例 skipped，覆盖率 91.02%**；Ruff、锁文件检查、24/24 合成规则评测、四例历史合并回放、示例、0.29.0 wheel/source distribution 构建及隔离 wheel 导入通过。仍未执行付费模型调用或真实多人部署。
+
+## v0.30 无本地协调仓库的 DSH 成员入口
+
+日期：2026-09-29。`backbone dsh` 新增 `--mcp-url`、`--mcp-token-file` 与可选 `--mcp-ca-file`，可从独立工作树连接已认证的远程 `/mcp`，无需本地协调仓库。非回环地址要求 HTTPS；成员 bearer token 从当前用户持有的 0600 单硬链接文件读取，不能放在工作树或 DSH home；远程 DSH home 需为当前用户持有的 0700 目录。调用模型前，官方 Python MCP 客户端用同一令牌核对精确成员工具列表和 `get_my_task` 的成员绑定。DSH 客户端插件使用 `streamable-http`，本回合含 bearer header 的 0600 临时补丁运行后删除。会话命名空间绑定远程 URL 与成员。
+
+本机真实回环 HTTP 测试验证正确成员、错误成员拒绝、Python MCP 工具发现与正式 DSH SDK 无模型启动；自签 HTTPS 测试验证自定义 CA、真实 MCP 握手与正式 SDK 无模型启动。远程 DSH 工具调用尚未通过 SDK 的无模型接口证实，真实付费模型回合和不同自然人的部署仍未执行。基础完整套件 **315 passed，2 个仅在 DSH 强制套件执行的用例 skipped，覆盖率 90.85%**；Ruff、锁文件检查、24/24 合成规则评测、四例历史 Git 合并回放、示例、0.30.0 wheel/source distribution 构建及 wheel 导入通过。

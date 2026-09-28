@@ -11,7 +11,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from backbone_conductor.dsh_agent import DSHMemberRunner
+from backbone_conductor.dsh_agent import DSHMemberRunner, DSHRemoteMemberRunner
 from backbone_conductor.runtime import DSHReviewer, _review_patch
 from backbone_conductor.service import Conductor
 
@@ -276,6 +276,7 @@ def test_member_runner_mounts_scoped_mcp_and_closes_sdk(tmp_path: Path, monkeypa
             observed.options = options
             observed.patch = json.loads(Path(options["patches"][0]).read_text())
             observed.patch_path = Path(options["patches"][0])
+            observed.patch_mode = observed.patch_path.stat().st_mode & 0o777
 
         def run(self, prompt, *, session_id):
             observed.prompt = prompt
@@ -324,6 +325,7 @@ def test_member_runner_mounts_scoped_mcp_and_closes_sdk(tmp_path: Path, monkeypa
     ]
     assert mcp["config"]["env"]["PYTHONPATH"].endswith("/src")
     assert mcp["config"]["failOnStartupError"] is True
+    assert observed.patch_mode == 0o600
     assert not observed.patch_path.exists()
     assert not subprocess.run(
         ["git", "-C", str(repo), "status", "--porcelain"],
@@ -383,6 +385,100 @@ def test_member_runner_closes_sdk_on_failed_turn(tmp_path: Path, monkeypatch) ->
     with pytest.raises(ValueError, match="TimeoutError"):
         runner.run("Read my task")
     assert closed == [True]
+
+
+def test_remote_member_runner_requires_private_token_and_https(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "dsh-home"
+    token_file = tmp_path / "member.token"
+    token_file.write_text("a" * 48 + "\n")
+    token_file.chmod(0o600)
+    runner = DSHRemoteMemberRunner(
+        workspace, home, "alice", "model", "https://coordinator.example/mcp", token_file
+    )
+    config = runner.member_patch()[1]["insert"][0]["config"]
+    assert config["transport"] == "streamable-http"
+    assert config["url"] == "https://coordinator.example/mcp"
+    assert config["headers"] == {"Authorization": "Bearer " + "a" * 48}
+    assert runner.session_prefix.startswith("backbone-")
+    assert home.stat().st_mode & 0o777 == 0o700
+    with pytest.raises(ValueError, match="different repository or member"):
+        runner.run("Read task", session_id="foreign-session")
+    with pytest.raises(ValueError, match="HTTPS"):
+        DSHRemoteMemberRunner(
+            workspace, home, "alice", "model", "http://coordinator.example/mcp", token_file
+        )
+    with pytest.raises(ValueError, match="absolute /mcp"):
+        DSHRemoteMemberRunner(
+            workspace, home, "alice", "model", "https://coordinator.example/other", token_file
+        )
+    token_file.chmod(0o644)
+    with pytest.raises(ValueError, match="0600"):
+        runner.member_patch()
+    token_file.chmod(0o600)
+    workspace_token = workspace / "member.token"
+    workspace_token.write_text("a" * 48)
+    workspace_token.chmod(0o600)
+    with pytest.raises(ValueError, match="outside"):
+        DSHRemoteMemberRunner(
+            workspace,
+            home,
+            "alice",
+            "model",
+            "https://coordinator.example/mcp",
+            workspace_token,
+        )
+    home.chmod(0o755)
+    with pytest.raises(ValueError, match="0700"):
+        DSHRemoteMemberRunner(
+            workspace, home, "alice", "model", "https://coordinator.example/mcp", token_file
+        )
+
+
+def test_remote_member_runner_does_not_require_local_coordinator(
+    tmp_path: Path, monkeypatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    token_file = tmp_path / "member.token"
+    token_file.write_text("a" * 48)
+    token_file.chmod(0o600)
+    observed = SimpleNamespace(patch=None, patch_mode=None, closed=False)
+
+    class Harness:
+        def __init__(self, **options):
+            path = Path(options["patches"][0])
+            observed.patch = json.loads(path.read_text())
+            observed.patch_mode = path.stat().st_mode & 0o777
+
+        def run(self, _prompt, *, session_id):
+            return SimpleNamespace(
+                session_id=session_id, finish_reason="completed", final_response="Ready"
+            )
+
+        def close(self):
+            observed.closed = True
+
+    module = ModuleType("deepseek_harness")
+    module.DeepSeekHarness = Harness
+    monkeypatch.setitem(sys.modules, "deepseek_harness", module)
+    runner = DSHRemoteMemberRunner(
+        workspace,
+        tmp_path / "dsh-home",
+        "alice",
+        "model",
+        "https://coordinator.example/mcp",
+        token_file,
+    )
+    monkeypatch.setattr(
+        runner, "_preflight_mcp", lambda patch: observed.__dict__.update(preflight=patch)
+    )
+    assert runner.run("Read my task")["final_response"] == "Ready"
+    assert observed.closed
+    assert observed.patch_mode == 0o600
+    assert observed.patch[1]["insert"][0]["config"]["transport"] == "streamable-http"
+    assert observed.preflight == observed.patch
 
 
 def test_installed_sdk_starts_member_mcp_without_model_call(tmp_path: Path) -> None:

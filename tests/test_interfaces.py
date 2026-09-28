@@ -194,6 +194,49 @@ def test_cli_runs_member_scoped_dsh_entry_with_prompt_file(
     assert json.loads(capsys.readouterr().out)["session_id"] == "session-1"
 
 
+def test_cli_routes_remote_dsh_without_a_local_ledger(tmp_path: Path, monkeypatch, capsys) -> None:
+    from backbone_conductor.dsh_agent import DSHRemoteMemberRunner
+
+    workspace = tmp_path / "member-workspace"
+    workspace.mkdir()
+    token_file = tmp_path / "alice.token"
+    token_file.write_text("a" * 48)
+    token_file.chmod(0o600)
+    observed = {}
+
+    def run(self, prompt, *, session_id=None):
+        observed.update(member=self.member, url=self.mcp_url, prompt=prompt)
+        return {"member": self.member, "final_response": "Ready", "session_id": "session-1"}
+
+    monkeypatch.setattr(DSHRemoteMemberRunner, "run", run)
+    command = [
+        "dsh",
+        "--member",
+        "alice",
+        "--workspace",
+        str(workspace),
+        "--dsh-home",
+        str(tmp_path / "dsh-home"),
+        "--model",
+        "test-model",
+        "--mcp-url",
+        "https://coordinator.example/mcp",
+        "--mcp-token-file",
+        str(token_file),
+        "--prompt",
+        "Read my remote task",
+    ]
+    assert main(command) == 0
+    assert observed == {
+        "member": "alice",
+        "url": "https://coordinator.example/mcp",
+        "prompt": "Read my remote task",
+    }
+    assert json.loads(capsys.readouterr().out)["session_id"] == "session-1"
+    assert main(command[:-4] + ["--prompt", "Read my remote task"]) == 1
+    assert "mcp-token-file" in json.loads(capsys.readouterr().err)["error"]
+
+
 def test_python_module_propagates_failure_exit_code(interface_repo: Path) -> None:
     result = subprocess.run(
         [

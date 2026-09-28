@@ -20,6 +20,7 @@ from mcp.client.streamable_http import streamable_http_client
 from backbone_conductor.api import create_app
 from backbone_conductor.auth import create_token_file, rotate_token_file
 from backbone_conductor.cli import main
+from backbone_conductor.dsh_agent import DSHRemoteMemberRunner
 from backbone_conductor.ledger import create_ledger
 from backbone_conductor.service import Conductor
 
@@ -360,6 +361,96 @@ def test_live_streamable_http_mcp_client_and_rotation(remote_repo) -> None:
         assert response.status_code == 401
         context = asyncio.run(member_call(new_alice, "get_my_task", {}))
         assert context["member_id"] == "alice"
+    finally:
+        server.terminate()
+        try:
+            server.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.communicate(timeout=5)
+
+
+def test_remote_dsh_member_preflight_and_sdk_start(remote_repo, tmp_path: Path) -> None:
+    repo, credentials, tokens = remote_repo
+    with socket.socket() as listener:
+        try:
+            listener.bind(("127.0.0.1", 0))
+        except PermissionError:
+            if os.environ.get("BACKBONE_REQUIRE_LIVE_HTTP") == "1":
+                raise
+            pytest.skip("This sandbox does not permit loopback listening sockets")
+        port = listener.getsockname()[1]
+    base_url = f"http://127.0.0.1:{port}"
+    server = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "backbone_conductor",
+            "--repo",
+            str(repo),
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--auth-file",
+            str(credentials),
+            "--mcp-http",
+        ],
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if server.poll() is not None:
+                raise AssertionError(f"MCP server exited: {server.stderr.read()}")
+            try:
+                with httpx.Client(trust_env=False, timeout=0.5) as probe:
+                    if probe.get(f"{base_url}/health").status_code == 200:
+                        break
+            except httpx.RequestError:
+                time.sleep(0.1)
+        else:
+            raise AssertionError("MCP server did not become ready")
+
+        workspace = tmp_path / "member-workspace"
+        workspace.mkdir()
+        token_file = tmp_path / "alice.token"
+        token_file.write_text(tokens["alice"] + "\n", encoding="ascii")
+        token_file.chmod(0o600)
+        runner = DSHRemoteMemberRunner(
+            workspace, tmp_path / "dsh-home", "alice", "placeholder", f"{base_url}/mcp", token_file
+        )
+        runner._preflight_mcp()
+        token_file.write_text(tokens["bob"] + "\n", encoding="ascii")
+        with pytest.raises(ValueError, match="preflight failed"):
+            runner._preflight_mcp()
+        token_file.write_text(tokens["alice"] + "\n", encoding="ascii")
+
+        if os.environ.get("BACKBONE_REQUIRE_DSH_MCP") == "1":
+            from deepseek_harness import DeepSeekHarness
+
+            patch = tmp_path / "remote.patch.yml"
+            patch.write_text(json.dumps(runner.member_patch()), encoding="utf-8")
+            patch.chmod(0o600)
+            harness = DeepSeekHarness(
+                dsh_home=str(runner.home),
+                cwd=str(workspace),
+                profile="sdk-minimal",
+                patches=(str(patch),),
+                provider="deepseek-official",
+                model="placeholder",
+                initialize_timeout_seconds=30,
+            )
+            try:
+                harness.start()
+                assert harness._initialized
+                assert harness.client._proc.poll() is None
+            finally:
+                harness.close()
     finally:
         server.terminate()
         try:

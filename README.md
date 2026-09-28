@@ -2,7 +2,7 @@
 
 **让多个 Coding Agent 共享意图、约束与决策，用 Git 记录每次协作变更。**
 
-这是独立个人兴趣项目。v0.29 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合及可选成员 MCP 已在容器中验证，HTTPS 成员客户端还经过独立容器网络与挂载隔离测试。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。可选 Git 提交签名与审计签名验证；时间线支持按作者、HTTP principal、事件类型和时间筛选。前瞻评测工具可冻结事前预测并合并双人盲审标签，但真实意图冲突检测率仍无数据可报告。DSH 审查失败可选择写入仓库外的私有运行日志；多人共享部署仍需独立验证。
+这是独立个人兴趣项目。v0.30 提供 Git 协调内核、CLI、HTTP API、stdio MCP、确定性冲突检查、人工仲裁和可选 DeepSeek Harness 语义审查。HTTP 可选择启用可不停机轮换的令牌认证及直接 HTTPS；管理员、成员和审查者拥有不同接口权限，已认证请求的元数据提交记录 principal 与角色。多个克隆可显式获取远端、安全快进，并对经复核的元数据变更进行结构化合并，竞争对象可由管理员逐一裁决。新仓库可选择独立的 `backbone` 元数据分支，已有内联快照也可显式迁移并保留审计历史；Compose 的内联/独立分支与 HTTP/HTTPS 组合及可选成员 MCP 已在容器中验证，HTTPS 成员客户端还经过独立容器网络与挂载隔离测试。取消已分派任务后可创建有审计理由的替代意图草稿；审查者可记录意图草稿的接受或拒绝及理由。可选 Git 提交签名与审计签名验证；时间线支持按作者、HTTP principal、事件类型和时间筛选。前瞻评测工具可冻结事前预测并合并双人盲审标签，但真实意图冲突检测率仍无数据可报告。DSH 审查失败可选择写入仓库外的私有运行日志；多人共享部署仍需独立验证。
 
 ## 快速开始
 
@@ -189,6 +189,18 @@ uv run backbone --repo /absolute/project dsh --member alice \
 ```
 
 该命令先通过真实 MCP 握手检查成员身份与工具范围，再装载 DSH 的 MCP 客户端插件；模型回合需要自行配置凭据，尚未在线验证。详情与沙箱边界见 [DSH_PLUGIN_PLAN.md](DSH_PLUGIN_PLAN.md)。
+
+成员若不能访问协调仓库，可使用已启用 `/mcp` 的 HTTPS 服务。在**成员机器**上把自己的 bearer token 放到工作树及 DSH home 外的 0600 文件；DSH home 须为当前用户所有的 0700 目录。`--repo` 和 `--ledger-branch` 不用于远程模式：
+
+```sh
+uv run backbone dsh --member alice \
+  --workspace /absolute/alice-worktree --dsh-home /absolute/private-dsh-home \
+  --mcp-url https://coordinator.example/mcp \
+  --mcp-token-file /absolute/private/alice.token \
+  --model YOUR_MODEL --prompt "先读取我的任务与已接受决策"
+```
+
+自签证书可加 `--mcp-ca-file /absolute/ca.crt`。非回环 HTTP 被拒绝；运行前会核对令牌对应的成员和精确工具列表。令牌只从私有文件读取并写入本次运行的 0600 临时 DSH 补丁，运行后删除；专用 DSH home 中的运行日志仍应按敏感资料管理。令牌轮换后需更新文件并启动新回合。远程 DSH 插件经 CI 无模型启动验证，尚未进行付费模型回合或真实多人部署。
 
 ## 开发与验证
 
