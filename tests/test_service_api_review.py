@@ -1,5 +1,6 @@
 """Regression cases identified by an independent final service/interface audit."""
 
+import hashlib
 import subprocess
 
 import pytest
@@ -69,6 +70,80 @@ def test_merge_approval_must_be_recorded_on_assigned_base_branch(audit_project):
     assert service.state()["intents"][intent["id"]]["status"] == "in_progress"
     git(repo, "switch", "main")
     assert service.merge_task(task["id"], "reviewer")["task"]["status"] == "merged"
+
+
+def test_review_packet_is_pinned_to_submitted_diff_and_read_only(audit_project):
+    service, repo = audit_project
+    _intent, task, artifact = prepare_artifact(service, repo)
+    with pytest.raises(ValueError, match="submitted"):
+        service.inspect_task(task["id"])
+    submitted = service.submit_artifact("alice", artifact)
+    assert submitted["accepted"]
+    state_before = service.state()
+    head_before = git(repo, "rev-parse", "HEAD")
+    packet = service.inspect_task(task["id"])
+    pinned_sha = submitted["artifact"]["commit_sha"]
+    assert packet["version"] == state_before["version"]
+    assert packet["git"]["artifact_sha"] == pinned_sha
+    assert packet["git"]["branch_unchanged"] is True
+    assert packet["git"]["integrated_into_target"] is False
+    assert packet["diff"]["changed_paths"] == ["database.py"]
+    assert "+DATABASE = {}" in packet["diff"]["patch"]
+    assert packet["diff"]["truncated"] is False
+    assert packet["diff"]["sha256"] == hashlib.sha256(packet["diff"]["patch"].encode()).hexdigest()
+    assert packet["requires_human_review"] is True
+    assert service.state() == state_before
+    assert git(repo, "rev-parse", "HEAD") == head_before
+
+    git(repo, "switch", "feature/database")
+    (repo / "database.py").write_text("DATABASE = {'changed': True}\n")
+    git(repo, "add", "database.py")
+    git(repo, "commit", "-m", "Change after submission")
+    git(repo, "switch", "main")
+    changed = service.inspect_task(task["id"])
+    assert changed["git"]["branch_unchanged"] is False
+    assert changed["git"]["artifact_sha"] == pinned_sha
+    assert changed["diff"]["patch"] == packet["diff"]["patch"]
+
+
+@pytest.mark.parametrize("line_count,too_large", [(12_000, False), (60_000, True)])
+def test_review_packet_bounds_remote_patch_size(audit_project, line_count, too_large):
+    service, repo = audit_project
+    _intent, task, artifact = prepare_artifact(service, repo)
+    git(repo, "switch", "feature/database")
+    (repo / "database.py").write_text(
+        "DATABASE = {\n"
+        + "".join(f"    'entry-{index:06d}': {index},\n" for index in range(line_count))
+        + "}\n"
+    )
+    git(repo, "add", "database.py")
+    git(repo, "commit", "-m", "Expand database fixture")
+    git(repo, "switch", "main")
+    assert service.submit_artifact("alice", artifact)["accepted"]
+    if too_large:
+        with pytest.raises(ValueError, match="1 MB review limit"):
+            service.inspect_task(task["id"])
+    else:
+        packet = service.inspect_task(task["id"])
+        assert packet["diff"]["truncated"] is True
+        assert len(packet["diff"]["patch"].encode()) <= 131_072
+        full = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "diff",
+                "--no-ext-diff",
+                "--no-color",
+                "--binary",
+                f"{packet['git']['base_sha']}...{packet['git']['artifact_sha']}",
+                "--",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert packet["diff"]["sha256"] == hashlib.sha256(full.encode()).hexdigest()
 
 
 def test_global_dependency_conflict_blocks_artifact_until_human_arbitration(audit_project):

@@ -16,7 +16,7 @@ backbone --repo /repo serve \
   --auth-file /private/path/backbone-http-tokens.json
 ```
 
-创建命令仅输出一次明文令牌，不把它们写入凭据文件；文件权限为 0600，内容是 SHA-256 摘要与 principal/role 映射。妥善保存明文令牌，避免录入 shell 历史、应用日志或 Git。令牌持有者使用 `Authorization: Bearer TOKEN`。`/health` 无需令牌；其他路径均需令牌，未列入相应角色的路径默认被拒绝。管理员可以使用全部端点；成员只能创建自己的草稿意图和提议决策、读取自己的任务和更新、执行自己的任务开始/上下文刷新/产物提交。审查者可读取完整项目快照、意图、决策、任务、冲突、时间线和审计签名报告；可带理由接受或拒绝他人的意图草稿，在实际 Git 合并之后记录任务审批，也可用非空理由裁决冲突。审查者不能分派、开始或提交任务、执行其他意图/决策状态变更、检测冲突、同步仓库、自我审查或审批分派给自己的任务。该角色只限制 HTTP 操作，不能证明不同令牌由不同自然人持有，也不替代仓库文件权限隔离。
+创建命令仅输出一次明文令牌，不把它们写入凭据文件；文件权限为 0600，内容是 SHA-256 摘要与 principal/role 映射。妥善保存明文令牌，避免录入 shell 历史、应用日志或 Git。令牌持有者使用 `Authorization: Bearer TOKEN`。`/health` 无需令牌；其他路径均需令牌，未列入相应角色的路径默认被拒绝。管理员可以使用全部端点；成员只能创建自己的草稿意图和提议决策、读取自己的任务和更新、执行自己的任务开始/上下文刷新/产物提交。审查者可读取完整项目快照、意图、决策、任务、已提交任务的只读代码审查包、冲突、时间线和审计签名报告；可带理由接受或拒绝他人的意图草稿，在实际 Git 合并之后记录任务审批，也可用非空理由裁决冲突。审查者不能分派、开始或提交任务、执行其他意图/决策状态变更、检测冲突、同步仓库、自我审查或审批分派给自己的任务。该角色只限制 HTTP 操作，不能证明不同令牌由不同自然人持有，也不替代仓库文件权限隔离。
 
 轮换时运行 `backbone --repo /repo auth rotate --file /private/path/backbone-http-tokens.json --admin owner --member alice --reviewer carol`，保存命令输出的一次性新令牌并分发给对应用户。它先验证原文件，再原子替换为新的 0600 摘要文件；替换后的请求会拒绝旧令牌，未列出的成员或审查者也失去访问权。运行中的 HTTP 服务逐请求读取当前文件，无需重启；若文件缺失、权限不安全或内容损坏，受保护请求和 `/health` 返回 503，不会继续接受缓存的旧令牌。直接提供 HTTP 仍是明文传输，远程访问需启用 TLS；若由可信反向代理终止 TLS，后端端口只应接受代理流量。Git 仓库写权限仍需在操作系统层隔离；HTTP 角色不限制拥有仓库文件权限的本机用户。
 
@@ -108,7 +108,7 @@ git -C /coordinator fetch origin \
   refs/heads/feature/alice:refs/remotes/origin/feature/alice
 ```
 
-成员通过 `/mcp` 的 `submit_artifact` 提供 `intent_id`、`branch`（例如 `origin/feature/alice`）、`base_ref`（例如分派目标 `main`）、`summary` 和刚获取的 `commit_sha`。协调端从 Git 解析真实提交和路径，检查范围与决策；请求中的 SHA 只用于核对，不代替 Git 证据。收到 `accepted: true` 后，人工审阅代码及语义，再在协调端目标分支实际合并；审查者最后以自己的 bearer 凭据调用 `POST /tasks/{task_id}/merge`，提交 `{"author":"reviewer","rationale":"..."}`。未完成 Git 合并时该调用会被拒绝。合并和完成记录生成后再推送目标分支。成员功能分支若有新提交，必须重新进行检查和审阅。
+成员通过 `/mcp` 的 `submit_artifact` 提供 `intent_id`、`branch`（例如 `origin/feature/alice`）、`base_ref`（例如分派目标 `main`）、`summary` 和刚获取的 `commit_sha`。协调端从 Git 解析真实提交和路径，检查范围与决策；请求中的 SHA 只用于核对，不代替 Git 证据。收到 `accepted: true` 后，审查者可用 `GET /tasks/{task_id}/inspection`、管理员 MCP `inspect_task` 或本地 `backbone task inspect TASK_ID` 读取固定提交的代码差异、当前目标分支 SHA、分支是否变动、决策变化与阻塞冲突。响应最多展示 128 KiB 补丁并附完整补丁 SHA-256；若 `truncated=true`，审查者须在可访问仓库的环境中用响应里的完整 SHA 重新查看全部差异，不能只凭预览审批。超过 1 MB 的差异需拆分任务后重新提交。此接口只读，也不代替人工语义审阅。人工实际合并代码后，审查者最后以自己的 bearer 凭据调用 `POST /tasks/{task_id}/merge`，提交 `{"author":"reviewer","rationale":"..."}`。未完成 Git 合并时该调用会被拒绝。合并和完成记录生成后再推送目标分支。成员功能分支若有新提交，必须重新进行检查和审阅。
 
 本流程已用两个独立 Git 克隆、一个裸远端、真实本机 MCP/HTTP 服务和审查者凭据完成端到端验证；客户端由测试进程模拟，尚不等于不同自然人的远程部署。
 

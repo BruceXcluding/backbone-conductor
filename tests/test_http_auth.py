@@ -60,6 +60,49 @@ def auth_repo(tmp_path: Path) -> tuple[Path, Path]:
     return repo, auth_file
 
 
+def test_submitted_patch_is_visible_to_reviewer_but_not_member(
+    auth_repo: tuple[Path, Path], capsys
+) -> None:
+    repo, auth_file = auth_repo
+    service = Conductor(repo)
+    intent = service.create_intent(
+        {
+            "author": "owner",
+            "problem": "Add an export function",
+            "proposed_outcome": "Exports are available",
+            "affected_paths": ["export.py"],
+        }
+    )
+    service.transition_intent(intent["id"], "accepted")
+    task = service.dispatch_task(intent["id"], "alice")
+    service.start_task(task["id"], "alice")
+    git(repo, "switch", "-c", "feature/export")
+    (repo / "export.py").write_text("def export():\n    return []\n")
+    git(repo, "add", "export.py")
+    git(repo, "commit", "-m", "Implement export")
+    git(repo, "switch", "main")
+    assert service.submit_artifact(
+        "alice",
+        {
+            "intent_id": intent["id"],
+            "branch": "feature/export",
+            "base_ref": "main",
+            "summary": "Implement export",
+        },
+    )["accepted"]
+    route = f"/tasks/{task['id']}/inspection"
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        assert client.get(route).status_code == 401
+        assert client.get(route, headers=auth_header(ALICE_TOKEN)).status_code == 403
+        assert client.get(route, headers=auth_header(BOB_TOKEN)).status_code == 403
+        for token in (CAROL_TOKEN, ADMIN_TOKEN):
+            response = client.get(route, headers=auth_header(token))
+            assert response.status_code == 200, response.text
+            assert "+def export():" in response.json()["diff"]["patch"]
+    assert main(["--repo", str(repo), "task", "inspect", task["id"]]) == 0
+    assert "+def export():" in capsys.readouterr().out
+
+
 def test_http_authenticates_and_limits_member_to_own_tasks(auth_repo: tuple[Path, Path]) -> None:
     repo, auth_file = auth_repo
     with TestClient(create_app(repo, auth_file=auth_file)) as client:

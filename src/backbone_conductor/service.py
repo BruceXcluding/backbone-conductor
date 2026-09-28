@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 from time import monotonic_ns
@@ -661,6 +662,66 @@ class Conductor:
             }
 
         return self.store.mutate(change, "backbone: conflicts checked")
+
+    def inspect_task(self, task_id: str) -> dict:
+        """Build a read-only packet pinned to the artifact's checked Git commits."""
+        state = self.store.read()
+        task = state.tasks[task_id]
+        artifact = task.artifact
+        if (
+            task.status != TaskStatus.SUBMITTED
+            or artifact is None
+            or artifact.commit_sha is None
+            or artifact.base_sha is None
+        ):
+            raise ValueError("Only a successfully submitted task has a code review packet")
+        revision = f"{artifact.base_sha}...{artifact.commit_sha}"
+        diff = self._git("diff", "--no-ext-diff", "--no-color", "--binary", revision, "--")
+        if diff.returncode:
+            raise ValueError("Could not read the submitted Git diff")
+        patch = diff.stdout
+        patch_bytes = patch.encode("utf-8")
+        if len(patch_bytes) > 1_000_000:
+            raise ValueError("Artifact diff exceeds the 1 MB review limit; split the task")
+        preview_limit = 131_072
+        preview = patch_bytes[:preview_limit].decode("utf-8", errors="ignore")
+        try:
+            branch_sha = self._commit(artifact.branch)
+        except ValueError:
+            branch_sha = None
+        target_sha = self._commit(task.base_ref)
+        blockers = self._blockers(state, task.intent_id, task_id)
+        return {
+            "version": state.version,
+            "task": _dump(task),
+            "intent": _dump(state.intents[task.intent_id]),
+            "decision_ids_at_fork": task.decisions_at_fork,
+            "accepted_decisions": [
+                _dump(decision)
+                for decision in state.decisions.values()
+                if decision.status == DecisionStatus.ACCEPTED
+            ],
+            "decision_delta": self._decision_delta(state, task),
+            "blocking_conflicts": [_dump(conflict) for conflict in blockers],
+            "git": {
+                "base_sha": artifact.base_sha,
+                "artifact_sha": artifact.commit_sha,
+                "branch_sha": branch_sha,
+                "target_sha": target_sha,
+                "branch_unchanged": branch_sha == artifact.commit_sha,
+                "integrated_into_target": self._git(
+                    "merge-base", "--is-ancestor", artifact.commit_sha, target_sha
+                ).returncode
+                == 0,
+            },
+            "diff": {
+                "patch": preview,
+                "truncated": len(patch_bytes) > preview_limit,
+                "sha256": hashlib.sha256(patch_bytes).hexdigest(),
+                "changed_paths": artifact.changed_paths,
+            },
+            "requires_human_review": True,
+        }
 
     def resolve_conflict(self, conflict_id: str, author: str, action: str, rationale: str) -> dict:
         author = _actor(author)

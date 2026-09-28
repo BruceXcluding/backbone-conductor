@@ -201,6 +201,11 @@ def create_server(
             return conductor.merge_task(task_id, author, rationale)
 
         @server.tool()
+        def inspect_task(task_id: str) -> dict:
+            """Administrator: inspect a pinned patch and context before human approval."""
+            return conductor.inspect_task(task_id)
+
+        @server.tool()
         def refresh_backbone(remote: str = "origin", branch: str | None = None) -> dict:
             """Administrator: fetch peer history and fast-forward, or report divergence."""
             return conductor.refresh(remote, branch)

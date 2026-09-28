@@ -52,7 +52,10 @@ def _reviewer_route(method: str, path: str) -> bool:
             "/openapi.json",
         }:
             return True
-        return re.fullmatch(r"/(intents|decisions|tasks)/[^/]+", path) is not None
+        return (
+            re.fullmatch(r"/(intents|decisions|tasks)/[^/]+", path) is not None
+            or re.fullmatch(r"/tasks/[^/]+/inspection", path) is not None
+        )
     if method == "POST":
         return (
             re.fullmatch(r"/intents/[^/]+/review", path) is not None
@@ -360,6 +363,10 @@ def create_app(
     @app.get("/tasks/{task_id}")
     def task(task_id: str, request: Request) -> dict:
         return visible_task(request, task_id)
+
+    @app.get("/tasks/{task_id}/inspection")
+    def task_inspection(task_id: str) -> dict:
+        return conductor.inspect_task(task_id)
 
     @app.post("/tasks/{task_id}/start")
     def start_task(task_id: str, data: Member, request: Request) -> dict:
