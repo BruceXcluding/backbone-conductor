@@ -782,6 +782,40 @@ def test_credential_file_is_private_and_outside_git(auth_repo: tuple[Path, Path]
         TokenAuth(auth_file, repo)
 
 
+def test_http_credentials_fail_closed_for_hard_links_and_shared_directory(
+    auth_repo: tuple[Path, Path],
+) -> None:
+    repo, auth_file = auth_repo
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        assert client.get("/health").status_code == 200
+        linked = repo / "linked-credentials.json"
+        os.link(auth_file, linked)
+        try:
+            assert client.get("/health").status_code == 503
+            assert client.get("/whoami", headers=auth_header(ADMIN_TOKEN)).status_code == 503
+            with pytest.raises(ValueError, match="hard links"):
+                rotate_principal_token(auth_file, repo, "alice")
+        finally:
+            linked.unlink()
+        assert client.get("/health").status_code == 200
+
+        original_mode = auth_file.parent.stat().st_mode & 0o777
+        auth_file.parent.chmod(0o770)
+        try:
+            assert client.get("/health").status_code == 503
+            assert client.get("/whoami", headers=auth_header(ADMIN_TOKEN)).status_code == 503
+            with pytest.raises(ValueError, match="directory must be private"):
+                rotate_principal_token(auth_file, repo, "alice")
+            new_file = auth_file.parent / "new-credentials.json"
+            with pytest.raises(ValueError, match="directory must be private"):
+                create_token_file(new_file, repo, "owner", [])
+            assert not new_file.exists()
+        finally:
+            auth_file.parent.chmod(original_mode)
+        assert client.get("/health").status_code == 200
+        assert client.get("/whoami", headers=auth_header(ADMIN_TOKEN)).status_code == 200
+
+
 def test_non_loopback_serve_requires_auth_file(auth_repo: tuple[Path, Path], capsys) -> None:
     repo, _ = auth_repo
     assert main(["--repo", str(repo), "serve", "--host", "0.0.0.0"]) == 1
@@ -862,6 +896,11 @@ def test_token_file_creation_is_private_and_does_not_store_plaintext(
     assert auth.authenticate(f"Bearer {issued[2]['token']}").role == "reviewer"
     with pytest.raises(FileExistsError):
         create_token_file(output, repo, "owner", [])
+    dangling_link = tmp_path / "linked-creation.json"
+    dangling_link.symlink_to(tmp_path / "unexpected.json")
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        create_token_file(dangling_link, repo, "owner", [])
+    assert not (tmp_path / "unexpected.json").exists()
     assert (
         main(
             [

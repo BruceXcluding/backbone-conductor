@@ -23,6 +23,15 @@ _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,199}\Z")
 
 
+def _private_credential_directory(path: Path) -> None:
+    metadata = path.stat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        raise ValueError("HTTP credential directory must be private (no group/other access)")
+    uid = os.geteuid() if hasattr(os, "geteuid") else None
+    if uid not in (None, 0) and metadata.st_uid != uid:
+        raise ValueError("HTTP credential directory must belong to this user")
+
+
 @dataclass(frozen=True)
 class Principal:
     name: str
@@ -44,6 +53,7 @@ class TokenAuth:
             resolved = self.location.resolve(strict=True)
             if resolved.is_relative_to(self.repository):
                 raise ValueError("HTTP credential file must be outside the repository")
+            _private_credential_directory(self.location.parent)
             descriptor = os.open(
                 self.location,
                 os.O_RDONLY
@@ -55,6 +65,11 @@ class TokenAuth:
                 metadata = os.fstat(stream.fileno())
                 if not stat.S_ISREG(metadata.st_mode):
                     raise ValueError("HTTP credential file must be a regular file")
+                if metadata.st_nlink != 1:
+                    raise ValueError("HTTP credential file must not have hard links")
+                uid = os.geteuid() if hasattr(os, "geteuid") else None
+                if uid not in (None, 0) and metadata.st_uid != uid:
+                    raise ValueError("HTTP credential file must belong to this user")
                 if metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
                     raise ValueError(
                         "HTTP credential file must be accessible only to its owner (0600)"
@@ -170,11 +185,17 @@ def create_token_file(
 ) -> list[dict[str, str]]:
     """Create a private digest file and return one-time plaintext credentials."""
     repository = Path(repo).expanduser().resolve()
-    location = Path(path).expanduser().resolve()
+    location = Path(path).expanduser().absolute()
+    if location.is_symlink():
+        raise ValueError("HTTP credential file must not be a symlink")
+    location = location.resolve()
     if location.is_relative_to(repository):
         raise ValueError("HTTP credential file must be outside the repository")
+    _private_credential_directory(location.parent)
     issued, digests = _issue(admin, members, reviewers)
-    descriptor = os.open(location, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    descriptor = os.open(
+        location, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+    )
     try:
         _write_digests(descriptor, digests)
         TokenAuth(location, repository)
@@ -195,6 +216,9 @@ def _rotate_file(
     """Serialize cooperating writers and atomically publish one token generation."""
     repository = Path(repo).expanduser().resolve()
     location = Path(path).expanduser().absolute()
+    if location.resolve().is_relative_to(repository):
+        raise ValueError("HTTP credential file must be outside the repository")
+    _private_credential_directory(location.parent)
     try:
         with FileLock(str(location) + ".lock", timeout=10, mode=0o600, preserve_lock_file=True):
             entries = TokenAuth(location, repository)._load()
