@@ -20,9 +20,22 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from backbone_conductor.conflicts import detect_conflicts  # noqa: E402
 from backbone_conductor.models import BackboneState, Intent, IntentStatus  # noqa: E402
+from backbone_conductor.runtime import DSHReviewer, SemanticConflictAdvice  # noqa: E402
 from backbone_conductor.service import Conductor  # noqa: E402
 
 SHA = re.compile(r"[0-9a-f]{40}\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+ADVICE_FIELDS = {
+    "id",
+    "author",
+    "status",
+    "problem",
+    "proposed_outcome",
+    "constraints",
+    "affected_symbols",
+    "operations",
+    "affected_paths",
+}
 LIMITATION = (
     "Scores cover only independently reviewed, resolved cases in this submitted sample. "
     "Only pre-work intent-pair warnings are scored; decision and task rules are excluded. "
@@ -227,49 +240,12 @@ def freeze(dataset: Path, output: Path) -> dict[str, Any]:
     return frozen
 
 
-def _review_file(
-    path: Path,
-    dataset_sha: str,
-    predictions_sha: str,
-    authors: dict[str, set[str]],
-) -> tuple[str, dict[str, bool]]:
-    data = _read(path)
-    if (
-        set(data) != {"schema_version", "dataset_sha256", "predictions_sha256", "reviewer", "cases"}
-        or data["schema_version"] != 1
-    ):
-        raise ValueError(f"{path}: review file has an invalid schema")
-    if (
-        data["dataset_sha256"] != dataset_sha
-        or data["predictions_sha256"] != predictions_sha
-        or not isinstance(data["cases"], list)
-    ):
-        raise ValueError(f"{path}: review does not match frozen dataset and predictions")
-    reviewer = _nonempty(data["reviewer"], f"{path} reviewer")
-    labels: dict[str, bool] = {}
-    for item in data["cases"]:
-        if not isinstance(item, dict) or set(item) != {"id", "conflict", "rationale"}:
-            raise ValueError(f"{path}: each review case needs id, conflict, rationale")
-        case_id = _nonempty(item["id"], f"{path} case id")
-        if case_id not in authors or case_id in labels:
-            raise ValueError(f"{path}: unknown or duplicate case {case_id}")
-        if reviewer in authors[case_id]:
-            raise ValueError(f"{case_id}: reviewer must differ from intent authors")
-        if type(item["conflict"]) is not bool:
-            raise ValueError(f"{case_id}: conflict label must be boolean")
-        _nonempty(item["rationale"], f"{case_id} rationale")
-        labels[case_id] = item["conflict"]
-    return reviewer, labels
-
-
-def score(
+def _validated_predictions(
     dataset: Path,
+    data: dict[str, Any],
+    cases: list[tuple[dict[str, Any], list[Intent]]],
     predictions: Path,
-    first_review: Path,
-    second_review: Path,
-    adjudications: Path | None = None,
-) -> dict[str, Any]:
-    data, cases = _dataset(dataset)
+) -> tuple[dict[str, Any], dict[str, bool]]:
     frozen = _read(predictions)
     if (
         set(frozen)
@@ -277,12 +253,11 @@ def score(
         or frozen["schema_version"] != 1
     ):
         raise ValueError("predictions have an invalid schema")
-    dataset_sha = _digest(dataset)
-    if frozen["dataset_sha256"] != dataset_sha or frozen["sampling"] != data["sampling"]:
+    if frozen["dataset_sha256"] != _digest(dataset) or frozen["sampling"] != data["sampling"]:
         raise ValueError("predictions do not match the frozen dataset")
     _timestamp(frozen["frozen_at"], "frozen_at")
-    if not isinstance(frozen["detector_sha256"], str) or not re.fullmatch(
-        r"[0-9a-f]{64}", frozen["detector_sha256"]
+    if not isinstance(frozen["detector_sha256"], str) or not SHA256.fullmatch(
+        frozen["detector_sha256"]
     ):
         raise ValueError("predictions require a detector SHA-256")
     if not isinstance(frozen["cases"], list) or len(frozen["cases"]) != len(cases):
@@ -314,36 +289,287 @@ def score(
             ):
                 raise ValueError(f"{case['id']}: finding does not describe this pair")
         predicted[case["id"]] = bool(item["findings"])
+    return frozen, predicted
 
-    authors = {case["id"]: {intent.author for intent in intents} for case, intents in cases}
+
+def _semantic_context(
+    case: dict[str, Any], intents: list[Intent], rule_case: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "base_sha": case["base_sha"],
+        "intents": [intent.model_dump(mode="json", include=ADVICE_FIELDS) for intent in intents],
+        "accepted_decisions": [],
+        "deterministic_conflicts": [
+            {key: item[key] for key in ("id", "rule", "severity", "evidence")}
+            for item in rule_case["findings"]
+        ],
+    }
+
+
+def freeze_semantic(
+    dataset: Path,
+    predictions: Path,
+    output: Path,
+    dsh_home: Path,
+    model: str,
+    provider: str = "deepseek-official",
+) -> dict[str, Any]:
+    """Freeze optional model advice against the same pre-work pairs and rule predictions."""
+    if not all(path.is_absolute() for path in (dataset, predictions, output, dsh_home)):
+        raise ValueError("semantic study paths and DSH home must be absolute")
+    if len({path.resolve() for path in (dataset, predictions, output)}) != 3:
+        raise ValueError("semantic output must differ from dataset and predictions")
+    if output.resolve().is_relative_to(ROOT) or dsh_home.resolve().is_relative_to(ROOT):
+        raise ValueError("semantic output and DSH home must be outside the public repository")
+    if output.exists():
+        raise FileExistsError(
+            "semantic predictions already exist; freeze never overwrites evidence"
+        )
+    dataset_sha = _digest(dataset)
+    predictions_sha = _digest(predictions)
+    data, cases = _dataset(dataset)
+    deterministic, _predicted = _validated_predictions(dataset, data, cases, predictions)
+    if _digest(dataset) != dataset_sha or _digest(predictions) != predictions_sha:
+        raise ValueError("study inputs changed while semantic advice was preparing")
+    started_at = datetime.now(UTC)
+    if started_at < _timestamp(deterministic["frozen_at"], "deterministic frozen_at") or any(
+        started_at < _timestamp(case["captured_at"], "captured_at") for case, _intents in cases
+    ):
+        raise ValueError("semantic advice cannot run before its inputs were captured and frozen")
+    reviewer = DSHReviewer(dsh_home, model, provider)
+    implementation = hashlib.sha256()
+    for path in (ROOT / "src" / "backbone_conductor" / "runtime.py", Path(__file__)):
+        implementation.update(path.read_bytes())
+    frozen = {
+        "schema_version": 1,
+        "dataset_sha256": dataset_sha,
+        "predictions_sha256": predictions_sha,
+        "implementation_sha256": implementation.hexdigest(),
+        "model": model,
+        "provider": provider,
+        "cases": [],
+    }
+    for (case, intents), rule_case in zip(cases, deterministic["cases"], strict=True):
+        context = _semantic_context(case, intents, rule_case)
+        context_bytes = json.dumps(context, sort_keys=True, ensure_ascii=False).encode()
+        if len(context_bytes) > 1_000_000:
+            raise ValueError(f"{case['id']}: semantic context exceeds 1 MB")
+        advice = reviewer.advise_conflict(context)
+        fields = {key: advice[key] for key in SemanticConflictAdvice.model_fields if key in advice}
+        validated = SemanticConflictAdvice.model_validate(fields).model_dump()
+        runtime = advice.get("runtime")
+        if not isinstance(runtime, dict) or runtime.get("finish_reason") != "completed":
+            raise ValueError(f"{case['id']}: model advice did not complete")
+        frozen["cases"].append(
+            {
+                "id": case["id"],
+                "context_sha256": hashlib.sha256(context_bytes).hexdigest(),
+                "advice": {**validated, "runtime": runtime},
+            }
+        )
+    if (
+        _digest(dataset) != frozen["dataset_sha256"]
+        or _digest(predictions) != frozen["predictions_sha256"]
+    ):
+        raise ValueError("study inputs changed while semantic advice was running")
+    frozen["frozen_at"] = datetime.now(UTC).isoformat()
+    _write_exclusive(output, frozen)
+    return frozen
+
+
+def _review_file(
+    path: Path,
+    dataset_sha: str,
+    predictions_sha: str,
+    authors: dict[str, set[str]],
+    semantic_sha: str | None = None,
+) -> tuple[str, dict[str, bool]]:
+    data = _read(path)
+    expected = {"schema_version", "dataset_sha256", "predictions_sha256", "reviewer", "cases"}
+    if semantic_sha is not None:
+        expected.add("semantic_predictions_sha256")
+    if set(data) != expected or data["schema_version"] != 1:
+        raise ValueError(f"{path}: review file has an invalid schema")
+    if (
+        data["dataset_sha256"] != dataset_sha
+        or data["predictions_sha256"] != predictions_sha
+        or (semantic_sha is not None and data["semantic_predictions_sha256"] != semantic_sha)
+        or not isinstance(data["cases"], list)
+    ):
+        raise ValueError(f"{path}: review does not match frozen dataset and predictions")
+    reviewer = _nonempty(data["reviewer"], f"{path} reviewer")
+    labels: dict[str, bool] = {}
+    for item in data["cases"]:
+        if not isinstance(item, dict) or set(item) != {"id", "conflict", "rationale"}:
+            raise ValueError(f"{path}: each review case needs id, conflict, rationale")
+        case_id = _nonempty(item["id"], f"{path} case id")
+        if case_id not in authors or case_id in labels:
+            raise ValueError(f"{path}: unknown or duplicate case {case_id}")
+        if reviewer in authors[case_id]:
+            raise ValueError(f"{case_id}: reviewer must differ from intent authors")
+        if type(item["conflict"]) is not bool:
+            raise ValueError(f"{case_id}: conflict label must be boolean")
+        _nonempty(item["rationale"], f"{case_id} rationale")
+        labels[case_id] = item["conflict"]
+    return reviewer, labels
+
+
+def _validated_semantic(
+    path: Path,
+    dataset_sha: str,
+    predictions_sha: str,
+    cases: list[tuple[dict[str, Any], list[Intent]]],
+    deterministic: dict[str, Any],
+) -> dict[str, str]:
+    data = _read(path)
+    if (
+        set(data)
+        != {
+            "schema_version",
+            "dataset_sha256",
+            "predictions_sha256",
+            "implementation_sha256",
+            "frozen_at",
+            "model",
+            "provider",
+            "cases",
+        }
+        or data["schema_version"] != 1
+    ):
+        raise ValueError("semantic predictions have an invalid schema")
+    if data["dataset_sha256"] != dataset_sha or data["predictions_sha256"] != predictions_sha:
+        raise ValueError("semantic predictions do not match frozen dataset and rules")
+    frozen_at = _timestamp(data["frozen_at"], "semantic frozen_at")
+    if frozen_at < _timestamp(deterministic["frozen_at"], "deterministic frozen_at") or any(
+        frozen_at < _timestamp(case["captured_at"], "captured_at") for case, _intents in cases
+    ):
+        raise ValueError("semantic advice claims a freeze before its inputs existed")
+    if not isinstance(data["implementation_sha256"], str) or not SHA256.fullmatch(
+        data["implementation_sha256"]
+    ):
+        raise ValueError("semantic predictions require an implementation SHA-256")
+    _nonempty(data["model"], "semantic model")
+    _nonempty(data["provider"], "semantic provider")
+    if not isinstance(data["cases"], list) or len(data["cases"]) != len(cases):
+        raise ValueError("semantic predictions must cover every dataset case")
+    verdicts = {}
+    for (case, intents), rule_case, item in zip(
+        cases, deterministic["cases"], data["cases"], strict=True
+    ):
+        if not isinstance(item, dict) or set(item) != {"id", "context_sha256", "advice"}:
+            raise ValueError("semantic prediction case has an invalid schema")
+        if item["id"] != case["id"]:
+            raise ValueError("semantic prediction cases must match dataset order and IDs")
+        if not isinstance(item["context_sha256"], str) or not SHA256.fullmatch(
+            item["context_sha256"]
+        ):
+            raise ValueError(f"{case['id']}: semantic context requires a SHA-256")
+        expected_context_sha = hashlib.sha256(
+            json.dumps(
+                _semantic_context(case, intents, rule_case), sort_keys=True, ensure_ascii=False
+            ).encode()
+        ).hexdigest()
+        if item["context_sha256"] != expected_context_sha:
+            raise ValueError(f"{case['id']}: semantic context does not match frozen inputs")
+        advice = item["advice"]
+        if not isinstance(advice, dict) or set(advice) != {
+            *SemanticConflictAdvice.model_fields,
+            "runtime",
+        }:
+            raise ValueError(f"{case['id']}: semantic advice has an invalid schema")
+        SemanticConflictAdvice.model_validate(
+            {key: advice[key] for key in SemanticConflictAdvice.model_fields}
+        )
+        if (
+            not isinstance(advice["runtime"], dict)
+            or advice["runtime"].get("finish_reason") != "completed"
+        ):
+            raise ValueError(f"{case['id']}: semantic advice did not complete")
+        verdicts[case["id"]] = advice["verdict"]
+    return verdicts
+
+
+def _metrics(counts: dict[str, int]) -> dict[str, Any]:
+    precision = (
+        counts["tp"] / (counts["tp"] + counts["fp"]) if counts["tp"] + counts["fp"] else None
+    )
+    recall = counts["tp"] / (counts["tp"] + counts["fn"]) if counts["tp"] + counts["fn"] else None
+    return {
+        "counts": counts,
+        "precision": precision,
+        "recall": recall,
+        "f1": (
+            (2 * precision * recall / (precision + recall) if precision + recall else 0.0)
+            if precision is not None and recall is not None
+            else None
+        ),
+    }
+
+
+def _outcome(warning: bool, observed: bool) -> str:
+    return "tp" if warning and observed else "fp" if warning else "fn" if observed else "tn"
+
+
+def score(
+    dataset: Path,
+    predictions: Path,
+    first_review: Path,
+    second_review: Path,
+    adjudications: Path | None = None,
+    semantic_predictions: Path | None = None,
+) -> dict[str, Any]:
+    dataset_sha = _digest(dataset)
     prediction_sha = _digest(predictions)
-    reviewer_a, labels_a = _review_file(first_review, dataset_sha, prediction_sha, authors)
-    reviewer_b, labels_b = _review_file(second_review, dataset_sha, prediction_sha, authors)
+    data, cases = _dataset(dataset)
+    frozen, predicted = _validated_predictions(dataset, data, cases, predictions)
+    if _digest(dataset) != dataset_sha or _digest(predictions) != prediction_sha:
+        raise ValueError("study inputs changed while scoring was preparing")
+    authors = {case["id"]: {intent.author for intent in intents} for case, intents in cases}
+    semantic_sha = _digest(semantic_predictions) if semantic_predictions is not None else None
+    semantic_verdicts = (
+        _validated_semantic(semantic_predictions, dataset_sha, prediction_sha, cases, frozen)
+        if semantic_predictions is not None
+        else None
+    )
+    reviewer_a, labels_a = _review_file(
+        first_review, dataset_sha, prediction_sha, authors, semantic_sha
+    )
+    reviewer_b, labels_b = _review_file(
+        second_review, dataset_sha, prediction_sha, authors, semantic_sha
+    )
     if reviewer_a == reviewer_b:
         raise ValueError("two distinct reviewers are required")
     if adjudications is not None:
-        adjudicator, adjudicated = _review_file(adjudications, dataset_sha, prediction_sha, authors)
+        adjudicator, adjudicated = _review_file(
+            adjudications, dataset_sha, prediction_sha, authors, semantic_sha
+        )
         if adjudicator in {reviewer_a, reviewer_b}:
             raise ValueError("adjudicator must differ from both reviewers")
     else:
         adjudicated = {}
 
     counts = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+    semantic_counts = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+    combined_counts = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
+    resolved_abstentions = 0
     rows = []
     for case, _intents in cases:
         case_id = case["id"]
+        semantic_verdict = semantic_verdicts[case_id] if semantic_verdicts is not None else None
         values = [labels[case_id] for labels in (labels_a, labels_b) if case_id in labels]
         if len(values) < 2:
             if case_id in adjudicated:
                 raise ValueError(f"{case_id}: adjudication requires two disagreeing reviews")
             if not values:
-                rows.append(
-                    {"id": case_id, "status": "unlabeled", "prediction": predicted[case_id]}
-                )
+                row = {"id": case_id, "status": "unlabeled", "prediction": predicted[case_id]}
+                if semantic_verdict is not None:
+                    row["semantic_verdict"] = semantic_verdict
+                rows.append(row)
                 continue
-            rows.append(
-                {"id": case_id, "status": "awaiting_review", "prediction": predicted[case_id]}
-            )
+            row = {"id": case_id, "status": "awaiting_review", "prediction": predicted[case_id]}
+            if semantic_verdict is not None:
+                row["semantic_verdict"] = semantic_verdict
+            rows.append(row)
             continue
         if values[0] == values[1]:
             if case_id in adjudicated:
@@ -353,27 +579,40 @@ def score(
             observed = adjudicated[case_id]
             source = "adjudicated"
         else:
-            rows.append({"id": case_id, "status": "disputed", "prediction": predicted[case_id]})
+            row = {"id": case_id, "status": "disputed", "prediction": predicted[case_id]}
+            if semantic_verdict is not None:
+                row["semantic_verdict"] = semantic_verdict
+            rows.append(row)
             continue
         warning = predicted[case_id]
-        outcome = "tp" if warning and observed else "fp" if warning else "fn" if observed else "tn"
+        outcome = _outcome(warning, observed)
         counts[outcome] += 1
-        rows.append(
-            {
-                "id": case_id,
-                "project": case["project"],
-                "status": source,
-                "prediction": warning,
-                "label": observed,
-                "outcome": outcome,
-            }
-        )
+        row = {
+            "id": case_id,
+            "project": case["project"],
+            "status": source,
+            "prediction": warning,
+            "label": observed,
+            "outcome": outcome,
+        }
+        if semantic_verdict is not None:
+            semantic_warning = semantic_verdict == "conflict"
+            combined_warning = warning or semantic_warning
+            semantic_outcome = _outcome(semantic_warning, observed)
+            combined_outcome = _outcome(combined_warning, observed)
+            semantic_counts[semantic_outcome] += 1
+            combined_counts[combined_outcome] += 1
+            resolved_abstentions += semantic_verdict == "uncertain"
+            row.update(
+                semantic_verdict=semantic_verdict,
+                semantic_outcome=semantic_outcome,
+                combined_prediction=combined_warning,
+                combined_outcome=combined_outcome,
+            )
+        rows.append(row)
     resolved = sum(counts.values())
-    precision = (
-        counts["tp"] / (counts["tp"] + counts["fp"]) if counts["tp"] + counts["fp"] else None
-    )
-    recall = counts["tp"] / (counts["tp"] + counts["fn"]) if counts["tp"] + counts["fn"] else None
-    return {
+    metrics = _metrics(counts)
+    report = {
         "status": "complete_sample" if resolved == len(cases) else "incomplete",
         "dataset_sha256": dataset_sha,
         "predictions_sha256": prediction_sha,
@@ -383,17 +622,32 @@ def score(
         "resolved_projects": sorted({row["project"] for row in rows if "project" in row}),
         "sample_count": len(cases),
         "resolved_count": resolved,
-        "counts": counts,
-        "precision": precision,
-        "recall": recall,
-        "f1": (
-            (2 * precision * recall / (precision + recall) if precision + recall else 0.0)
-            if precision is not None and recall is not None
-            else None
-        ),
+        **metrics,
         "cases": rows,
         "limitation": LIMITATION,
     }
+    if semantic_verdicts is not None:
+        report["semantic_predictions_sha256"] = semantic_sha
+        report["semantic"] = {
+            **_metrics(semantic_counts),
+            "resolved_abstentions": resolved_abstentions,
+            "total_abstentions": sum(value == "uncertain" for value in semantic_verdicts.values()),
+            "uncertain_policy": "uncertain counts as no alert; positive labels become false negatives",
+        }
+        report["combined"] = _metrics(combined_counts)
+        report["limitation"] += (
+            " Semantic advice sees rule findings and intent plans, so its arm is not an "
+            "independent model-only detector. The prospective dataset omits accepted decisions. "
+            "Model calls may incur provider cost, and external evidence "
+            "is required to prove advice was frozen before outcomes and hidden from reviewers."
+        )
+    if (
+        _digest(dataset) != dataset_sha
+        or _digest(predictions) != prediction_sha
+        or (semantic_predictions is not None and _digest(semantic_predictions) != semantic_sha)
+    ):
+        raise ValueError("study inputs changed during scoring")
+    return report
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -412,9 +666,19 @@ def main(argv: list[str] | None = None) -> int:
     freeze_command = actions.add_parser("freeze", help="Freeze predictions before human labeling")
     freeze_command.add_argument("--dataset", type=Path, required=True)
     freeze_command.add_argument("--output", type=Path, required=True)
+    semantic_command = actions.add_parser(
+        "freeze-semantic", help="Freeze optional DSH advice against pre-work pairs"
+    )
+    semantic_command.add_argument("--dataset", type=Path, required=True)
+    semantic_command.add_argument("--predictions", type=Path, required=True)
+    semantic_command.add_argument("--output", type=Path, required=True)
+    semantic_command.add_argument("--dsh-home", type=Path, required=True)
+    semantic_command.add_argument("--model", required=True)
+    semantic_command.add_argument("--provider", default="deepseek-official")
     score_command = actions.add_parser("score", help="Score a frozen sample against reviews")
     score_command.add_argument("--dataset", type=Path, required=True)
     score_command.add_argument("--predictions", type=Path, required=True)
+    score_command.add_argument("--semantic-predictions", type=Path)
     score_command.add_argument("--review", action="append", type=Path, required=True)
     score_command.add_argument("--adjudications", type=Path)
     score_command.add_argument("--json", action="store_true")
@@ -436,10 +700,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Frozen {len(frozen['cases'])} cases to {args.output}")
             print(f"Dataset SHA-256: {frozen['dataset_sha256']}")
             return 0
+        if args.action == "freeze-semantic":
+            frozen = freeze_semantic(
+                args.dataset,
+                args.predictions,
+                args.output,
+                args.dsh_home,
+                args.model,
+                args.provider,
+            )
+            print(f"Frozen {len(frozen['cases'])} semantic cases to {args.output}")
+            print(f"Semantic predictions SHA-256: {_digest(args.output)}")
+            return 0
         if len(args.review) != 2:
             raise ValueError("score requires exactly two --review files")
         report = score(
-            args.dataset, args.predictions, args.review[0], args.review[1], args.adjudications
+            args.dataset,
+            args.predictions,
+            args.review[0],
+            args.review[1],
+            args.adjudications,
+            args.semantic_predictions,
         )
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         parser.error(f"invalid prospective evaluation: {exc}")
@@ -447,12 +728,20 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         print(f"Prospective sample: {report['resolved_count']}/{report['sample_count']} resolved")
+        label = "Rules: " if "semantic" in report else ""
         print(
-            f"TP {report['counts']['tp']} | FP {report['counts']['fp']} | FN {report['counts']['fn']} | TN {report['counts']['tn']}"
+            f"{label}TP {report['counts']['tp']} | FP {report['counts']['fp']} | FN {report['counts']['fn']} | TN {report['counts']['tn']}"
         )
         precision = "n/a" if report["precision"] is None else f"{report['precision']:.1%}"
         recall = "n/a" if report["recall"] is None else f"{report['recall']:.1%}"
         print(f"Precision {precision} | Recall {recall}")
+        if "semantic" in report:
+            for name in ("semantic", "combined"):
+                arm = report[name]
+                arm_precision = "n/a" if arm["precision"] is None else f"{arm['precision']:.1%}"
+                arm_recall = "n/a" if arm["recall"] is None else f"{arm['recall']:.1%}"
+                print(f"{name}: precision {arm_precision} | recall {arm_recall} | {arm['counts']}")
+            print(f"Semantic abstentions (resolved): {report['semantic']['resolved_abstentions']}")
         print(report["limitation"])
     return 0
 

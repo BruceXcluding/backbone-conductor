@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "evaluate_prospective.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from evaluate_prospective import capture, freeze, score  # noqa: E402
+from evaluate_prospective import capture, freeze, freeze_semantic, main, score  # noqa: E402
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -148,7 +149,7 @@ def _case(identifier: str, left_path: str, right_path: str) -> dict:
         "id": identifier,
         "project": "example/project",
         "base_sha": "a" * 40,
-        "captured_at": "2026-09-29T10:00:00Z",
+        "captured_at": "2025-01-01T10:00:00Z",
         "intents": [
             {
                 "id": f"{identifier}-alice",
@@ -156,7 +157,7 @@ def _case(identifier: str, left_path: str, right_path: str) -> dict:
                 "problem": "Change the first component",
                 "proposed_outcome": "Complete planned work",
                 "affected_paths": [left_path],
-                "created_at": "2026-09-29T09:00:00Z",
+                "created_at": "2025-01-01T09:00:00Z",
             },
             {
                 "id": f"{identifier}-bob",
@@ -164,7 +165,7 @@ def _case(identifier: str, left_path: str, right_path: str) -> dict:
                 "problem": "Change the second component",
                 "proposed_outcome": "Complete planned work",
                 "affected_paths": [right_path],
-                "created_at": "2026-09-29T09:30:00Z",
+                "created_at": "2025-01-01T09:30:00Z",
             },
         ],
     }
@@ -188,18 +189,24 @@ def _files(tmp_path: Path, cases: list[dict]) -> tuple[Path, Path]:
 
 
 def _reviews(
-    path: Path, dataset: Path, predictions: Path, reviewer: str, cases: list[dict]
+    path: Path,
+    dataset: Path,
+    predictions: Path,
+    reviewer: str,
+    cases: list[dict],
+    semantic: Path | None = None,
 ) -> None:
+    content = {
+        "schema_version": 1,
+        "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
+        "predictions_sha256": hashlib.sha256(predictions.read_bytes()).hexdigest(),
+        "reviewer": reviewer,
+        "cases": cases,
+    }
+    if semantic is not None:
+        content["semantic_predictions_sha256"] = hashlib.sha256(semantic.read_bytes()).hexdigest()
     path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
-                "predictions_sha256": hashlib.sha256(predictions.read_bytes()).hexdigest(),
-                "reviewer": reviewer,
-                "cases": cases,
-            }
-        ),
+        json.dumps(content),
         encoding="utf-8",
     )
 
@@ -236,6 +243,171 @@ def test_prospective_score_exposes_false_positives_and_missed_semantic_conflicts
     assert result["counts"] == {"tp": 1, "fp": 1, "fn": 1, "tn": 1}
     assert result["precision"] == result["recall"] == result["f1"] == 0.5
     assert "cannot prove" in result["limitation"]
+
+
+def test_semantic_advice_is_frozen_and_scored_separately(tmp_path, monkeypatch, capsys):
+    from backbone_conductor.runtime import DSHReviewer
+
+    dataset, predictions = _files(
+        tmp_path,
+        [
+            _case("rule-hit", "src/shared.py", "src/shared.py"),
+            _case("both-alert", "src/shared.py", "src/shared.py"),
+            _case("model-only", "src/one.py", "src/two.py"),
+            _case("abstain", "src/one.py", "src/two.py"),
+            _case("abstain-positive", "src/one.py", "src/two.py"),
+        ],
+    )
+    semantic = tmp_path / "semantic.json"
+    contexts = []
+
+    def advise(_self, context):
+        contexts.append(context)
+        case_id = context["intents"][0]["id"].removesuffix("-alice")
+        verdict = {
+            "rule-hit": "compatible",
+            "both-alert": "conflict",
+            "model-only": "conflict",
+            "abstain": "uncertain",
+            "abstain-positive": "uncertain",
+        }[case_id]
+        return {
+            "verdict": verdict,
+            "rationale": f"Prospective advice for {case_id}",
+            "evidence": [],
+            "coordination": [],
+            "runtime": {"finish_reason": "completed", "session_id": f"session-{case_id}"},
+        }
+
+    monkeypatch.setattr(DSHReviewer, "advise_conflict", advise)
+    frozen = freeze_semantic(dataset, predictions, semantic, tmp_path / "private-dsh", "mock-model")
+    assert len(frozen["cases"]) == 5
+    assert semantic.stat().st_mode & 0o777 == 0o600
+    assert all(
+        set(context) == {"base_sha", "intents", "accepted_decisions", "deterministic_conflicts"}
+        for context in contexts
+    )
+    assert all(context["accepted_decisions"] == [] for context in contexts)
+    assert contexts[0]["deterministic_conflicts"]
+    assert contexts[2]["deterministic_conflicts"] == []
+    with pytest.raises(FileExistsError):
+        freeze_semantic(dataset, predictions, semantic, tmp_path / "private-dsh", "mock-model")
+
+    first = tmp_path / "carol.json"
+    second = tmp_path / "dave.json"
+    labels = [
+        _review(identifier, conflict)
+        for identifier, conflict in (
+            ("rule-hit", True),
+            ("both-alert", False),
+            ("model-only", True),
+            ("abstain", False),
+            ("abstain-positive", True),
+        )
+    ]
+    _reviews(first, dataset, predictions, "carol", labels, semantic)
+    _reviews(second, dataset, predictions, "dave", labels, semantic)
+    report = score(dataset, predictions, first, second, semantic_predictions=semantic)
+    assert report["status"] == "complete_sample"
+    assert report["counts"] == {"tp": 1, "fp": 1, "fn": 2, "tn": 1}
+    assert report["semantic"]["counts"] == {"tp": 1, "fp": 1, "fn": 2, "tn": 1}
+    assert report["semantic"]["resolved_abstentions"] == 2
+    assert report["combined"]["counts"] == {"tp": 2, "fp": 1, "fn": 1, "tn": 1}
+    assert report["combined"]["recall"] == 2 / 3
+    assert "not an independent model-only detector" in report["limitation"]
+    assert (
+        main(
+            [
+                "score",
+                "--dataset",
+                str(dataset),
+                "--predictions",
+                str(predictions),
+                "--semantic-predictions",
+                str(semantic),
+                "--review",
+                str(first),
+                "--review",
+                str(second),
+                "--json",
+            ]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["combined"]["counts"] == report["combined"]["counts"]
+
+    tampered = json.loads(semantic.read_text())
+    tampered["cases"][0]["context_sha256"] = "0" * 64
+    semantic.write_text(json.dumps(tampered))
+    _reviews(first, dataset, predictions, "carol", labels, semantic)
+    _reviews(second, dataset, predictions, "dave", labels, semantic)
+    with pytest.raises(ValueError, match="semantic context does not match"):
+        score(dataset, predictions, first, second, semantic_predictions=semantic)
+
+
+def test_semantic_freeze_failure_leaves_no_prediction_artifact(tmp_path, monkeypatch):
+    from backbone_conductor.runtime import DSHReviewer
+
+    dataset, predictions = _files(tmp_path, [_case("pair", "src/one.py", "src/two.py")])
+    semantic = tmp_path / "semantic.json"
+
+    def change_input(_self, _context):
+        dataset.write_text(dataset.read_text() + "\n")
+        return {
+            "verdict": "uncertain",
+            "rationale": "Input changed while running",
+            "runtime": {"finish_reason": "completed"},
+        }
+
+    monkeypatch.setattr(DSHReviewer, "advise_conflict", change_input)
+    with pytest.raises(ValueError, match="inputs changed"):
+        freeze_semantic(dataset, predictions, semantic, tmp_path / "private-dsh", "mock-model")
+    assert not semantic.exists()
+
+
+def test_installed_sdk_freezes_semantic_study_with_local_mock_provider(
+    tmp_path, monkeypatch, mock_dsh_tool_provider, capsys
+):
+    if os.environ.get("BACKBONE_REQUIRE_DSH_MCP") != "1":
+        pytest.skip("set BACKBONE_REQUIRE_DSH_MCP=1 for installed SDK study check")
+    pytest.importorskip("deepseek_harness")
+    dataset, predictions = _files(tmp_path, [_case("pair", "src/one.py", "src/two.py")])
+    semantic = tmp_path / "semantic.json"
+    response = json.dumps(
+        {
+            "verdict": "conflict",
+            "rationale": "The planned APIs may be incompatible",
+            "evidence": ["Different return contracts"],
+            "coordination": ["Agree one contract"],
+        }
+    )
+    with mock_dsh_tool_provider(None, {}, response) as (provider_url, requests):
+        monkeypatch.setenv("DEEPSEEK_BASE_URL", provider_url)
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "local-study-mock-key")
+        assert (
+            main(
+                [
+                    "freeze-semantic",
+                    "--dataset",
+                    str(dataset),
+                    "--predictions",
+                    str(predictions),
+                    "--output",
+                    str(semantic),
+                    "--dsh-home",
+                    str(tmp_path / "private-dsh"),
+                    "--model",
+                    "mock-model",
+                ]
+            )
+            == 0
+        )
+    assert "Frozen 1 semantic cases" in capsys.readouterr().out
+    assert len(requests) == 1
+    assert "pair-alice" in json.dumps(requests[0]["messages"])
+    frozen = json.loads(semantic.read_text())
+    assert frozen["cases"][0]["advice"]["verdict"] == "conflict"
+    assert frozen["cases"][0]["advice"]["runtime"]["finish_reason"] == "completed"
 
 
 def test_missing_and_disputed_labels_do_not_become_negative_cases(tmp_path):
@@ -333,7 +505,7 @@ def test_cli_reports_incomplete_sample_without_claiming_target(tmp_path):
 def test_freeze_rejects_cases_that_are_not_two_prework_intents(tmp_path, mutation):
     case = _case("pair", "src/one.py", "src/two.py")
     if mutation == "future_intent":
-        case["intents"][1]["created_at"] = "2026-09-29T11:00:00Z"
+        case["intents"][1]["created_at"] = "2025-01-01T11:00:00Z"
     elif mutation == "same_author":
         case["intents"][1]["author"] = "alice"
     else:

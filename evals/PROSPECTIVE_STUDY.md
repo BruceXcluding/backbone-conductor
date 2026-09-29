@@ -62,6 +62,18 @@ python scripts/evaluate_prospective.py freeze \
 
 `freeze` 只创建新文件，不覆盖旧预测；它记录原始数据文件和检测器及评测脚本源码的 SHA-256、冻结时间、每例规则与证据。把数据与预测提交到私有证据仓库或可信时间戳存储，记录提交 SHA，然后再开始工作。**自报时间和哈希不能单独证明冻结发生在工作之前**；保存可独立核对的外部时间顺序很重要。后续 `score` 不会重新运行当前版本的检测器，而是使用冻结的预测；修改原数据文件会被拒绝。本流程只评估两份事前意图之间的预警，不覆盖决策和任务规则。
 
+若要同时评估可选 DSH 模型建议，先用 `uv sync --locked --group dev --extra dsh` 安装锁定 SDK，并在仓库外配置 provider 凭据及私有 DSH home。在工作开始及审阅者查看预测之前，使用**同一份**事前数据与确定性预测运行：
+
+```sh
+python scripts/evaluate_prospective.py freeze-semantic \
+  --dataset /private/study/cases.json \
+  --predictions /private/study/predictions.json \
+  --output /private/study/semantic.json \
+  --dsh-home /absolute/private-dsh-home --model YOUR_MODEL
+```
+
+此命令把两份意图的计划字段、代码基线 SHA 与已冻结的确定性证据逐例发送给配置的 provider；可能产生费用。模型**看得到规则证据**，因此后续“模型建议”指标并非独立的纯模型检测器指标。v1 前瞻数据不含已接受决策，也不能代表在线协调时含决策的完整建议质量。语义文件记录每例结构化意见、实际输入哈希、模型/提供商、完成状态和实现源码哈希；只有全部回合成功且原始数据及确定性预测在运行期间未改变，才以私有权限一次性创建文件。它不会修改 Backbone 仓库。将三份文件一起固定在外部可信证据存储，并记录冻结完成时间；模型调用和自报时间本身不能证明事前顺序。不可在已知工作结果后重新挑选或冻结案例。
+
 工作结果可供审阅时，先制定标签定义：`conflict=true` 表示两份原计划若并行执行，需要在集成前协调范围、先后顺序或设计；`false` 表示不需要这种协调。文本 Git 合并冲突只是证据之一，不能自动充当标签。两位非意图作者的审阅者分别看到原意图、实际产物及必要上下文，但**不看预测或对方标签**。每人单独写一个文件；文件中的 `dataset_sha256` 与 `predictions_sha256` 是绑定值，可从冻结文件计算，不需要展示预测内容。每个文件形如：
 
 ```json
@@ -90,5 +102,7 @@ python scripts/evaluate_prospective.py score \
   --review /private/study/dave.json \
   --adjudications /private/study/erin.json --json
 ```
+
+若冻结了 `semantic.json`，每份审阅及裁决文件都需额外加入 `"semantic_predictions_sha256": "填入 semantic.json 的 SHA-256"`。审阅者仅获取三个文件的哈希绑定值，不看预测内容；评分时增加 `--semantic-predictions /private/study/semantic.json`。报告分开给出确定性规则、看过规则证据的模型建议、两者 OR 联合预警的 TP/FP/FN/TN、精确率与召回率，不会以模型的 `compatible` 取消规则预警。`uncertain` 记为没有发出模型预警；若人工标签为正例，就计入模型建议的漏报，并另报弃答数。只有双人一致或经第三人裁决的案例进入任何一组指标；因此标签不足时的指标只覆盖已解决子集。
 
 没有分歧时省略 `--adjudications`。报告列出已解决样本的 TP/FP/FN/TN、精确率、召回率、F1 和逐例状态；没有正例时召回率为 `null`，没有预警时精确率为 `null`。`complete_sample` 只说明此文件的案例标签齐备，不证明抽样代表性、审阅者确为不同自然人或达到原草案的真实项目目标。发布指标前应检查时间顺序、采样偏差、标签一致性和各项目分布，并保留未解决样本及理由。不要把敏感任务、代码或审阅记录直接提交到本公开仓库。
