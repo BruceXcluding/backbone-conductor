@@ -202,13 +202,27 @@ def create_token_file(
         raise ValueError("HTTP credential file must be outside the repository")
     _private_credential_directory(location.parent)
     issued, digests = _issue(admin, members, reviewers)
-    descriptor = os.open(
-        location, os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{location.name}.create-", dir=location.parent
     )
+    temporary = Path(temporary_name)
+    published = False
     try:
         _write_digests(os.dup(descriptor), digests)
-        TokenAuth(location, repository)
+        TokenAuth(temporary, repository)
         expected = (json.dumps({"tokens": digests}, indent=2) + "\n").encode("utf-8")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        if (
+            not _matches_created_file(temporary, descriptor)
+            or os.read(descriptor, len(expected) + 1) != expected
+        ):
+            raise ValueError("HTTP credential temporary file changed during creation")
+        os.link(temporary, location)
+        published = True
+        if not _matches_created_file(temporary, descriptor):
+            raise ValueError("HTTP credential temporary file changed during creation")
+        temporary.unlink()
+        TokenAuth(location, repository)
         os.lseek(descriptor, 0, os.SEEK_SET)
         if (
             not _matches_created_file(location, descriptor)
@@ -217,11 +231,15 @@ def create_token_file(
         ):
             raise ValueError("HTTP credential file changed during creation")
     except BaseException:
-        if _matches_created_file(location, descriptor):
+        if published and _matches_created_file(location, descriptor):
             location.unlink()
         raise
     finally:
-        os.close(descriptor)
+        try:
+            if _matches_created_file(temporary, descriptor):
+                temporary.unlink()
+        finally:
+            os.close(descriptor)
     return issued
 
 

@@ -925,6 +925,59 @@ def test_token_file_creation_is_private_and_does_not_store_plaintext(
         create_token_file(tmp_path / "duplicate-reviewer.json", repo, "owner", [], ["owner"])
 
 
+def test_token_file_is_published_only_after_private_staging_validates(
+    auth_repo: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _ = auth_repo
+    output = tmp_path / "issued.json"
+    original_write, original_auth = auth_module._write_digests, TokenAuth
+
+    def write_while_unpublished(descriptor: int, digests: list[dict[str, str]]) -> None:
+        assert not output.exists()
+        original_write(descriptor, digests)
+
+    def validate_while_unpublished(path: Path, repository: Path):
+        if path != output:
+            assert not output.exists()
+        return original_auth(path, repository)
+
+    monkeypatch.setattr(auth_module, "_write_digests", write_while_unpublished)
+    monkeypatch.setattr(auth_module, "TokenAuth", validate_while_unpublished)
+    issued = create_token_file(output, repo, "owner", [])
+    assert original_auth(output, repo).authenticate(f"Bearer {issued[0]['token']}") is not None
+    assert not list(tmp_path.glob(".issued.json.create-*"))
+
+
+@pytest.mark.parametrize("failure", ["validation", "filename_taken"])
+def test_token_file_staging_failure_cleans_only_its_temporary_file(
+    auth_repo: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    repo, _ = auth_repo
+    output = tmp_path / "issued.json"
+    original_auth = TokenAuth
+
+    def validate_then_interfere(path: Path, repository: Path):
+        if path != output:
+            if failure == "validation":
+                raise ValueError("staging validation failed")
+            output.write_text("other writer\n")
+            output.chmod(0o600)
+        return original_auth(path, repository)
+
+    monkeypatch.setattr(auth_module, "TokenAuth", validate_then_interfere)
+    expected = ValueError if failure == "validation" else FileExistsError
+    with pytest.raises(expected):
+        create_token_file(output, repo, "owner", [])
+    if failure == "validation":
+        assert not output.exists()
+    else:
+        assert output.read_text() == "other writer\n"
+    assert not list(tmp_path.glob(".issued.json.create-*"))
+
+
 @pytest.mark.parametrize("same_bytes", [False, True])
 @pytest.mark.parametrize("validation_fails", [False, True])
 def test_token_file_creation_preserves_concurrent_replacement(
@@ -942,6 +995,8 @@ def test_token_file_creation_preserves_concurrent_replacement(
     def validate_then_replace(path: Path, repository: Path):
         nonlocal replacement
         validated = original_auth(path, repository)
+        if path != output:
+            return validated
         replacement = path.read_bytes() if same_bytes else b"other writer\n"
         path.unlink()
         path.write_bytes(replacement)
@@ -966,6 +1021,8 @@ def test_token_file_creation_rejects_in_place_change(
 
     def validate_then_modify(path: Path, repository: Path):
         validated = original_auth(path, repository)
+        if path != output:
+            return validated
         path.write_text("changed in place\n")
         return validated
 
