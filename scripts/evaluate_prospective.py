@@ -135,7 +135,7 @@ def _serialized(value: dict[str, Any]) -> bytes:
     return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
-def _write_exclusive(path: Path, value: dict[str, Any]) -> None:
+def _write_exclusive(path: Path, value: dict[str, Any]) -> tuple[int, int]:
     """Publish a complete private JSON file without replacing an existing artifact."""
     temporary: Path | None = None
     try:
@@ -147,10 +147,44 @@ def _write_exclusive(path: Path, value: dict[str, Any]) -> None:
             stream.write(_serialized(value).decode("utf-8"))
             stream.flush()
             os.fsync(stream.fileno())
+        metadata = temporary.stat()
         os.link(temporary, path)
+        return metadata.st_dev, metadata.st_ino
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def _is_owned(path: Path, identity: tuple[int, int]) -> bool:
+    try:
+        metadata = path.stat(follow_symlinks=False)
+        return (metadata.st_dev, metadata.st_ino) == identity
+    except FileNotFoundError:
+        return False
+
+
+def _unlink_if_owned(path: Path, identity: tuple[int, int]) -> None:
+    if _is_owned(path, identity):
+        path.unlink()
+
+
+def _publish_validated(
+    output: Path,
+    value: dict[str, Any],
+    inputs: tuple[tuple[Path, str], ...],
+    input_error: str,
+    output_error: str,
+) -> tuple[int, int]:
+    identity = _write_exclusive(output, value)
+    try:
+        if any(_digest(path) != expected for path, expected in inputs):
+            raise ValueError(input_error)
+        if output.read_bytes() != _serialized(value) or not _is_owned(output, identity):
+            raise ValueError(output_error)
+    except BaseException:
+        _unlink_if_owned(output, identity)
+        raise
+    return identity
 
 
 def capture(
@@ -218,15 +252,16 @@ def capture(
 
     require_unchanged_snapshot()
     data = {"schema_version": 1, "sampling": sampling, "cases": cases}
-    _write_exclusive(dataset, data)
-    predictions_written = False
+    dataset_identity = _write_exclusive(dataset, data)
+    predictions_identity = None
     try:
-        frozen = freeze(dataset, predictions)
-        predictions_written = True
-        if _digest(dataset) != frozen["dataset_sha256"]:
+        frozen, predictions_identity = _freeze_and_identity(dataset, predictions)
+        if _digest(dataset) != frozen["dataset_sha256"] or not _is_owned(dataset, dataset_identity):
             raise ValueError("dataset changed after deterministic predictions were frozen")
         prediction_bytes = predictions.read_bytes()
-        if prediction_bytes != _serialized(frozen):
+        if prediction_bytes != _serialized(frozen) or not _is_owned(
+            predictions, predictions_identity
+        ):
             raise ValueError("deterministic predictions changed during capture")
         require_unchanged_snapshot()
         return {
@@ -237,13 +272,17 @@ def capture(
             "predictions_sha256": hashlib.sha256(prediction_bytes).hexdigest(),
         }
     except BaseException:
-        if predictions_written:
-            predictions.unlink(missing_ok=True)
-        dataset.unlink(missing_ok=True)
+        if predictions_identity is not None:
+            _unlink_if_owned(predictions, predictions_identity)
+        _unlink_if_owned(dataset, dataset_identity)
         raise
 
 
 def freeze(dataset: Path, output: Path) -> dict[str, Any]:
+    return _freeze_and_identity(dataset, output)[0]
+
+
+def _freeze_and_identity(dataset: Path, output: Path) -> tuple[dict[str, Any], tuple[int, int]]:
     dataset_sha = _digest(dataset)
     data, cases = _dataset(dataset)
     if _digest(dataset) != dataset_sha:
@@ -276,8 +315,14 @@ def freeze(dataset: Path, output: Path) -> dict[str, Any]:
         frozen["cases"].append({"id": case["id"], "findings": findings})
     if _digest(dataset) != dataset_sha:
         raise ValueError("dataset changed while deterministic predictions were freezing")
-    _write_exclusive(output, frozen)
-    return frozen
+    identity = _publish_validated(
+        output,
+        frozen,
+        ((dataset, dataset_sha),),
+        "dataset changed while deterministic predictions were publishing",
+        "deterministic predictions changed during publication",
+    )
+    return frozen, identity
 
 
 def _validated_predictions(
@@ -413,7 +458,13 @@ def freeze_semantic(
     ):
         raise ValueError("study inputs changed while semantic advice was running")
     frozen["frozen_at"] = datetime.now(UTC).isoformat()
-    _write_exclusive(output, frozen)
+    _publish_validated(
+        output,
+        frozen,
+        ((dataset, dataset_sha), (predictions, predictions_sha)),
+        "study inputs changed while semantic advice was publishing",
+        "semantic predictions changed during publication",
+    )
     return frozen
 
 
@@ -612,7 +663,16 @@ def prepare_review(
     }
     if semantic_sha is not None:
         packet["semantic_predictions_sha256"] = semantic_sha
-    _write_exclusive(output, packet)
+    inputs = ((dataset, dataset_sha), (predictions, predictions_sha))
+    if semantic_predictions is not None:
+        inputs += ((semantic_predictions, semantic_sha),)
+    _publish_validated(
+        output,
+        packet,
+        inputs,
+        "study inputs changed while blind review was publishing",
+        "blind review packet changed during publication",
+    )
     return packet
 
 

@@ -160,7 +160,7 @@ def test_capture_rechecks_snapshot_after_freezing_predictions(
     repo = _capture_repo(tmp_path, separate_ledger=separate_ledger)
     dataset = tmp_path / "cases.json"
     predictions = tmp_path / "predictions.json"
-    original_freeze = study.freeze
+    original_freeze = study._freeze_and_identity
 
     def freeze_then_change(dataset_path: Path, predictions_path: Path):
         result = original_freeze(dataset_path, predictions_path)
@@ -181,7 +181,7 @@ def test_capture_rechecks_snapshot_after_freezing_predictions(
             )
         return result
 
-    monkeypatch.setattr(study, "freeze", freeze_then_change)
+    monkeypatch.setattr(study, "_freeze_and_identity", freeze_then_change)
     expected = {
         "code_commit": "code HEAD changed",
         "dirty_code": "code worktree changed",
@@ -206,13 +206,13 @@ def test_capture_failure_preserves_prediction_file_created_by_another_writer(
     repo = _capture_repo(tmp_path)
     dataset = tmp_path / "cases.json"
     predictions = tmp_path / "predictions.json"
-    original_freeze = study.freeze
+    original_freeze = study._freeze_and_identity
 
     def freeze_after_other_writer(dataset_path: Path, predictions_path: Path):
         predictions_path.write_text("other writer\n")
         return original_freeze(dataset_path, predictions_path)
 
-    monkeypatch.setattr(study, "freeze", freeze_after_other_writer)
+    monkeypatch.setattr(study, "_freeze_and_identity", freeze_after_other_writer)
     with pytest.raises(FileExistsError):
         capture(repo, "example/project", "All pairs", dataset, predictions)
     assert not dataset.exists()
@@ -226,7 +226,7 @@ def test_capture_rejects_evidence_changed_after_freeze(
     repo = _capture_repo(tmp_path)
     dataset = tmp_path / "cases.json"
     predictions = tmp_path / "predictions.json"
-    original_freeze = study.freeze
+    original_freeze = study._freeze_and_identity
 
     def freeze_then_change(dataset_path: Path, predictions_path: Path):
         result = original_freeze(dataset_path, predictions_path)
@@ -234,7 +234,7 @@ def test_capture_rejects_evidence_changed_after_freeze(
         path.write_text(path.read_text() + " ")
         return result
 
-    monkeypatch.setattr(study, "freeze", freeze_then_change)
+    monkeypatch.setattr(study, "_freeze_and_identity", freeze_then_change)
     expected = (
         "dataset changed after deterministic predictions"
         if changed_file == "dataset"
@@ -244,6 +244,35 @@ def test_capture_rejects_evidence_changed_after_freeze(
         capture(repo, "example/project", "All pairs", dataset, predictions)
     assert not dataset.exists()
     assert not predictions.exists()
+
+
+@pytest.mark.parametrize("changed_file", ["dataset", "predictions"])
+@pytest.mark.parametrize("same_bytes", [False, True])
+def test_capture_preserves_evidence_replaced_by_another_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_file: str, same_bytes: bool
+):
+    repo = _capture_repo(tmp_path)
+    dataset, predictions = tmp_path / "cases.json", tmp_path / "predictions.json"
+    original_freeze = study._freeze_and_identity
+    replacement: bytes | None = None
+
+    def freeze_then_replace(dataset_path: Path, predictions_path: Path):
+        nonlocal replacement
+        result = original_freeze(dataset_path, predictions_path)
+        path = dataset_path if changed_file == "dataset" else predictions_path
+        replacement = path.read_bytes() if same_bytes else b"other writer\n"
+        path.unlink()
+        path.write_bytes(replacement)
+        return result
+
+    monkeypatch.setattr(study, "_freeze_and_identity", freeze_then_replace)
+    with pytest.raises(ValueError, match="changed"):
+        capture(repo, "example/project", "All pairs", dataset, predictions)
+    replaced = dataset if changed_file == "dataset" else predictions
+    removed = predictions if changed_file == "dataset" else dataset
+    assert replacement is not None
+    assert replaced.read_bytes() == replacement
+    assert not removed.exists()
 
 
 def test_freeze_rejects_dataset_mutation_during_rule_detection(
@@ -267,6 +296,30 @@ def test_freeze_rejects_dataset_mutation_during_rule_detection(
         return original_detect(state)
 
     monkeypatch.setattr(study, "detect_conflicts", detect_after_dataset_change)
+    with pytest.raises(ValueError, match="dataset changed while deterministic predictions"):
+        freeze(dataset, predictions)
+    assert not predictions.exists()
+
+
+def test_freeze_rejects_dataset_change_during_publication(tmp_path: Path, monkeypatch):
+    dataset, predictions = tmp_path / "cases.json", tmp_path / "predictions.json"
+    dataset.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "sampling": "All prospective pairs",
+                "cases": [_case("pair-one", "a.py", "a.py")],
+            }
+        )
+    )
+    original_write = study._write_exclusive
+
+    def write_then_change(path: Path, value: dict):
+        identity = original_write(path, value)
+        dataset.write_text(dataset.read_text() + " ")
+        return identity
+
+    monkeypatch.setattr(study, "_write_exclusive", write_then_change)
     with pytest.raises(ValueError, match="dataset changed while deterministic predictions"):
         freeze(dataset, predictions)
     assert not predictions.exists()
@@ -412,6 +465,49 @@ def test_blind_review_packets_feed_scoring_without_exposing_predictions(tmp_path
         prepare_review(dataset, predictions, first, "carol")
     with pytest.raises(ValueError, match="reviewer must differ"):
         prepare_review(dataset, predictions, tmp_path / "alice.json", "alice")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["dataset", "predictions", "output_modified", "output_replaced", "output_replaced_same"],
+)
+def test_review_packet_publication_rechecks_inputs_and_preserves_other_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+):
+    dataset, predictions = _files(tmp_path, [_case("pair", "a.py", "a.py")])
+    output = tmp_path / "carol.json"
+    original_write = study._write_exclusive
+
+    def write_then_change(path: Path, value: dict):
+        identity = original_write(path, value)
+        if path == output:
+            if mutation in {"output_replaced", "output_replaced_same"}:
+                replacement = (
+                    output.read_bytes() if mutation == "output_replaced_same" else b"other writer\n"
+                )
+                output.unlink()
+                output.write_bytes(replacement)
+            elif mutation == "output_modified":
+                output.write_text("tampered\n")
+            else:
+                changed = dataset if mutation == "dataset" else predictions
+                changed.write_text(changed.read_text() + " ")
+        return identity
+
+    monkeypatch.setattr(study, "_write_exclusive", write_then_change)
+    expected = (
+        "blind review packet changed during publication"
+        if mutation in {"output_modified", "output_replaced", "output_replaced_same"}
+        else "study inputs changed while blind review was publishing"
+    )
+    with pytest.raises(ValueError, match=expected):
+        prepare_review(dataset, predictions, output, "carol")
+    if mutation == "output_replaced":
+        assert output.read_text() == "other writer\n"
+    elif mutation == "output_replaced_same":
+        assert output.read_bytes() == study._serialized(json.loads(output.read_text()))
+    else:
+        assert not output.exists()
 
 
 def test_prospective_score_exposes_false_positives_and_missed_semantic_conflicts(tmp_path):
@@ -591,6 +687,38 @@ def test_semantic_freeze_failure_leaves_no_prediction_artifact(tmp_path, monkeyp
 
     monkeypatch.setattr(DSHReviewer, "advise_conflict", change_input)
     with pytest.raises(ValueError, match="inputs changed"):
+        freeze_semantic(dataset, predictions, semantic, tmp_path / "private-dsh", "mock-model")
+    assert not semantic.exists()
+
+
+def test_semantic_freeze_rechecks_inputs_after_publication(tmp_path, monkeypatch):
+    from backbone_conductor.runtime import DSHReviewer
+
+    dataset, predictions = _files(tmp_path, [_case("pair", "a.py", "a.py")])
+    semantic = tmp_path / "semantic.json"
+
+    def advise(_self, _context):
+        return {
+            "verdict": "uncertain",
+            "rationale": "The original plans need human review",
+            "evidence": [],
+            "coordination": [],
+            "runtime": {"finish_reason": "completed"},
+        }
+
+    monkeypatch.setattr(DSHReviewer, "advise_conflict", advise)
+    original_write = study._write_exclusive
+
+    def write_then_change(path: Path, value: dict):
+        identity = original_write(path, value)
+        if path == semantic:
+            predictions.write_text(predictions.read_text() + " ")
+        return identity
+
+    monkeypatch.setattr(study, "_write_exclusive", write_then_change)
+    with pytest.raises(
+        ValueError, match="study inputs changed while semantic advice was publishing"
+    ):
         freeze_semantic(dataset, predictions, semantic, tmp_path / "private-dsh", "mock-model")
     assert not semantic.exists()
 
