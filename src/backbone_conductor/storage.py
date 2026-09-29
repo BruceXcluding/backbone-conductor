@@ -656,11 +656,11 @@ class GitStore:
             commits = []
             for row in history:
                 commit, *parents = row.split()
-                if len(parents) > 1:
+                if len(parents) == 2:
                     # A code merge can carry the first parent's metadata
                     # unchanged while its other parent has an older snapshot.
-                    # Full-history traversal includes that merge, but it is
-                    # not a new Backbone state mutation.
+                    # Keep the merge if the side has independent metadata:
+                    # silently discarding that state needs to fail the audit.
                     diff = self._git(
                         "diff-tree",
                         "--quiet",
@@ -672,10 +672,31 @@ class GitStore:
                         ".backbone",
                         check=False,
                     )
-                    if diff.returncode == 0:
-                        continue
-                    if diff.returncode != 1:
+                    if diff.returncode not in (0, 1):
                         raise StorageError("Could not compare metadata in a Git merge commit")
+                    if diff.returncode == 0:
+                        first_metadata = self._git(
+                            "log", "-1", "--format=%H", parents[0], "--", ".backbone"
+                        ).stdout.strip()
+                        side_metadata = self._git(
+                            "log", "-1", "--format=%H", parents[1], "--", ".backbone"
+                        ).stdout.strip()
+                        if not side_metadata or side_metadata == first_metadata:
+                            continue
+                        if first_metadata:
+                            ancestry = self._git(
+                                "merge-base",
+                                "--is-ancestor",
+                                side_metadata,
+                                first_metadata,
+                                check=False,
+                            )
+                            if ancestry.returncode == 0:
+                                continue
+                            if ancestry.returncode != 1:
+                                raise StorageError(
+                                    "Could not compare metadata ancestry in a Git merge"
+                                )
                 commits.append(commit)
             if not commits:
                 raise StorageError("Backbone has no metadata history")
