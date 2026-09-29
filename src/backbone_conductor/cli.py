@@ -291,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     reviewer.add_argument("--token-file", required=True, help="Private reviewer bearer-token file")
     reviewer.add_argument("--ca-file", help="CA certificate for a trusted HTTPS server")
     reviewer_actions = reviewer.add_subparsers(dest="action", required=True)
-    for action in ("whoami", "state", "intents", "tasks"):
+    for action in ("whoami", "state", "intents", "decisions", "conflicts", "tasks"):
         reviewer_actions.add_parser(action)
     reviewer_inspect = reviewer_actions.add_parser("inspect", help="Read a submitted task packet")
     reviewer_inspect.add_argument("task_id")
@@ -300,6 +300,23 @@ def build_parser() -> argparse.ArgumentParser:
     reviewer_intent.add_argument("--outcome", required=True, choices=["accepted", "rejected"])
     reviewer_intent.add_argument("--rationale", required=True)
     reviewer_intent.add_argument("--version", required=True, help="Version observed in state")
+    reviewer_revert = reviewer_actions.add_parser(
+        "revert-decision", help="Withdraw an accepted decision with an audit rationale"
+    )
+    reviewer_revert.add_argument("decision_id")
+    reviewer_revert.add_argument("--rationale", required=True)
+    reviewer_revert.add_argument("--version", required=True, help="Version observed in state")
+    reviewer_resolve = reviewer_actions.add_parser(
+        "resolve-conflict", help="Record a human arbitration decision"
+    )
+    reviewer_resolve.add_argument("conflict_id")
+    reviewer_resolve.add_argument(
+        "--action",
+        dest="resolution_action",
+        required=True,
+        choices=["accept_existing", "override_existing", "coordinate", "accept_risk"],
+    )
+    reviewer_resolve.add_argument("--rationale", required=True)
     reviewer_approve = reviewer_actions.add_parser(
         "approve", help="Record approval after the code has been merged with Git"
     )

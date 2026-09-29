@@ -109,6 +109,15 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(
         text=True,
     )
     url = f"https://127.0.0.1:{port}"
+    reviewer_command = [
+        "reviewer",
+        "--url",
+        url,
+        "--token-file",
+        str(reviewer_file),
+        "--ca-file",
+        str(certificate),
+    ]
     try:
         context = ssl.create_default_context(cafile=str(certificate))
         with httpx.Client(verify=context, trust_env=False, timeout=2) as client:
@@ -125,22 +134,95 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(
                 raise AssertionError("TLS server did not become healthy")
 
             assert client.get(f"{url}/state").status_code == 401
+            assert main([*reviewer_command, "whoami"]) == 0
+            assert json.loads(capsys.readouterr().out) == {"name": "carol", "role": "reviewer"}
+            service = Conductor(repo)
+            decision = service.log_decision(
+                {
+                    "author": "owner",
+                    "decision_type": "api",
+                    "summary": "Drop the old endpoint",
+                    "rationale": "Simpler interface",
+                }
+            )
+            service.transition_decision(decision["id"], "accepted")
+            assert main([*reviewer_command, "decisions"]) == 0
+            assert decision["id"] in {item["id"] for item in json.loads(capsys.readouterr().out)}
+            version = service.state()["version"]
             assert (
                 main(
                     [
-                        "reviewer",
-                        "--url",
-                        url,
-                        "--token-file",
-                        str(reviewer_file),
-                        "--ca-file",
-                        str(certificate),
-                        "whoami",
+                        *reviewer_command,
+                        "revert-decision",
+                        decision["id"],
+                        "--rationale",
+                        "Clients still need the endpoint",
+                        "--version",
+                        version,
                     ]
                 )
                 == 0
             )
-            assert json.loads(capsys.readouterr().out) == {"name": "carol", "role": "reviewer"}
+            reverted = json.loads(capsys.readouterr().out)
+            assert reverted["reversion"]["author"] == "carol"
+            assert reverted["reversion"]["reviewed_version"] == version
+            assert "Backbone-HTTP-Principal: carol" in git(repo, "log", "-1", "--format=%B")
+            assert (
+                main(
+                    [
+                        *reviewer_command,
+                        "revert-decision",
+                        decision["id"],
+                        "--rationale",
+                        "Stale retry",
+                        "--version",
+                        version,
+                    ]
+                )
+                == 1
+            )
+            assert "HTTP 422" in json.loads(capsys.readouterr().err)["error"]
+
+            first = service.create_intent(
+                {
+                    "author": "owner",
+                    "problem": "Replace the export API",
+                    "proposed_outcome": "New export format",
+                    "affected_paths": ["src/export.py"],
+                }
+            )
+            second = service.create_intent(
+                {
+                    "author": "alice",
+                    "problem": "Extend the export API",
+                    "proposed_outcome": "Old callers keep working",
+                    "affected_paths": ["src/export.py"],
+                }
+            )
+            assert main([*reviewer_command, "conflicts"]) == 0
+            conflicts = json.loads(capsys.readouterr().out)
+            overlap = next(
+                item
+                for item in conflicts
+                if set(item["parties"]) == {first["id"], second["id"]} and not item["resolved"]
+            )
+            assert (
+                main(
+                    [
+                        *reviewer_command,
+                        "resolve-conflict",
+                        overlap["id"],
+                        "--action",
+                        "coordinate",
+                        "--rationale",
+                        "Agree the API change order",
+                    ]
+                )
+                == 0
+            )
+            resolution = json.loads(capsys.readouterr().out)
+            assert resolution["decision"]["author"] == "carol"
+            assert service.state()["conflicts"][overlap["id"]]["resolved"]
             headers = {"Authorization": f"Bearer {token}"}
             assert client.get(f"{url}/state", headers=headers).status_code == 200
             response = client.post(

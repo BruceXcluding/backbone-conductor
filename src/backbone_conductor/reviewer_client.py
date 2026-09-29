@@ -122,6 +122,10 @@ def run_reviewer_command(args) -> dict | list:
             return request(client, "GET", "/state")
         if args.action == "intents":
             return request(client, "GET", "/intents")
+        if args.action == "decisions":
+            return request(client, "GET", "/decisions")
+        if args.action == "conflicts":
+            return request(client, "GET", "/conflicts")
         if args.action == "tasks":
             return request(client, "GET", "/tasks")
         if args.action == "inspect":
@@ -136,6 +140,28 @@ def run_reviewer_command(args) -> dict | list:
                     "outcome": args.outcome,
                     "rationale": args.rationale,
                     "expected_version": args.version,
+                },
+            )
+        if args.action == "revert-decision":
+            return request(
+                client,
+                "POST",
+                f"/decisions/{_identifier(args.decision_id)}/revert",
+                {
+                    "author": author,
+                    "rationale": args.rationale,
+                    "expected_version": args.version,
+                },
+            )
+        if args.action == "resolve-conflict":
+            return request(
+                client,
+                "POST",
+                f"/conflicts/{_identifier(args.conflict_id)}/resolve",
+                {
+                    "author": author,
+                    "action": args.resolution_action,
+                    "rationale": args.rationale,
                 },
             )
         if args.action == "approve":
