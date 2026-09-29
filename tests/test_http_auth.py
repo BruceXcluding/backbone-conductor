@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from backbone_conductor import auth as auth_module
 from backbone_conductor.api import create_app
 from backbone_conductor.auth import TokenAuth, create_token_file, rotate_principal_token
 from backbone_conductor.cli import main
@@ -922,6 +923,56 @@ def test_token_file_creation_is_private_and_does_not_store_plaintext(
         create_token_file(tmp_path / "duplicate.json", repo, "alice", ["alice"])
     with pytest.raises(ValueError, match="unique"):
         create_token_file(tmp_path / "duplicate-reviewer.json", repo, "owner", [], ["owner"])
+
+
+@pytest.mark.parametrize("same_bytes", [False, True])
+@pytest.mark.parametrize("validation_fails", [False, True])
+def test_token_file_creation_preserves_concurrent_replacement(
+    auth_repo: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    same_bytes: bool,
+    validation_fails: bool,
+) -> None:
+    repo, _ = auth_repo
+    output = tmp_path / "issued.json"
+    original_auth = TokenAuth
+    replacement: bytes | None = None
+
+    def validate_then_replace(path: Path, repository: Path):
+        nonlocal replacement
+        validated = original_auth(path, repository)
+        replacement = path.read_bytes() if same_bytes else b"other writer\n"
+        path.unlink()
+        path.write_bytes(replacement)
+        path.chmod(0o600)
+        if validation_fails:
+            raise ValueError("simulated validation failure")
+        return validated
+
+    monkeypatch.setattr(auth_module, "TokenAuth", validate_then_replace)
+    with pytest.raises(ValueError, match="validation failure|changed during creation"):
+        create_token_file(output, repo, "owner", [])
+    assert replacement is not None
+    assert output.read_bytes() == replacement
+
+
+def test_token_file_creation_rejects_in_place_change(
+    auth_repo: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _ = auth_repo
+    output = tmp_path / "issued.json"
+    original_auth = TokenAuth
+
+    def validate_then_modify(path: Path, repository: Path):
+        validated = original_auth(path, repository)
+        path.write_text("changed in place\n")
+        return validated
+
+    monkeypatch.setattr(auth_module, "TokenAuth", validate_then_modify)
+    with pytest.raises(ValueError, match="changed during creation"):
+        create_token_file(output, repo, "owner", [])
+    assert not output.exists()
 
 
 def test_http_tokens_rotate_without_restart_and_fail_closed(

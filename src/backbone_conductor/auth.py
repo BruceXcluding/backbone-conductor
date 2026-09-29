@@ -176,6 +176,15 @@ def _new_credential(principal: Principal) -> tuple[dict[str, str], dict[str, str
     return issued, digest
 
 
+def _matches_created_file(path: Path, descriptor: int) -> bool:
+    try:
+        current = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    original = os.fstat(descriptor)
+    return (current.st_dev, current.st_ino) == (original.st_dev, original.st_ino)
+
+
 def create_token_file(
     path: str | Path,
     repo: str | Path,
@@ -194,14 +203,25 @@ def create_token_file(
     _private_credential_directory(location.parent)
     issued, digests = _issue(admin, members, reviewers)
     descriptor = os.open(
-        location, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
+        location, os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600
     )
     try:
-        _write_digests(descriptor, digests)
+        _write_digests(os.dup(descriptor), digests)
         TokenAuth(location, repository)
+        expected = (json.dumps({"tokens": digests}, indent=2) + "\n").encode("utf-8")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        if (
+            not _matches_created_file(location, descriptor)
+            or os.read(descriptor, len(expected) + 1) != expected
+            or not _matches_created_file(location, descriptor)
+        ):
+            raise ValueError("HTTP credential file changed during creation")
     except BaseException:
-        location.unlink(missing_ok=True)
+        if _matches_created_file(location, descriptor):
+            location.unlink()
         raise
+    finally:
+        os.close(descriptor)
     return issued
 
 
