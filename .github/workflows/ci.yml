@@ -27,6 +27,7 @@ jobs:
       - run: uv run --no-sync python scripts/benchmark_audit_history.py --updates 12 --page-size 5
       - run: uv run --no-sync python examples/demo.py
       - run: uv run --no-sync python examples/two_agent_demo.py
+      - run: uv run --no-sync python examples/two_agent_demo.py --mcp
       - run: uv build
       - run: uv run --no-sync python scripts/check_release.py
   compose:

@@ -6,16 +6,53 @@ scripted review decision; real work still needs a person to review the code.
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import json
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
 from backbone_conductor.service import Conductor
 
 
-def run_demo(repo: Path) -> dict:
+async def member_calls(repo: Path, calls: list[tuple[str, str, dict]]) -> list[dict]:
+    """Use separate member-bound MCP processes; each phase can reconnect."""
+
+    async def call(member: str, tool: str, arguments: dict) -> dict:
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "backbone_conductor", "--repo", str(repo), "mcp", "--member", member],
+            env={"PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")},
+        )
+        async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+            await session.initialize()
+            available = {item.name for item in (await session.list_tools()).tools}
+            if tool not in available or available & {
+                "dispatch_task",
+                "review_intent",
+                "resolve_conflict",
+                "merge_task",
+            }:
+                raise RuntimeError(
+                    f"{member} has an unexpected MCP tool scope: {sorted(available)}"
+                )
+            result = await session.call_tool(tool, arguments)
+            if result.isError:
+                raise RuntimeError(f"{member} {tool} failed: {result.content}")
+            return json.loads(result.content[0].text)
+
+    return await asyncio.wait_for(
+        asyncio.gather(*(call(member, tool, args) for member, tool, args in calls)),
+        timeout=60,
+    )
+
+
+def run_demo(repo: Path, *, use_mcp: bool = False) -> dict:
     def git(*args: str) -> str:
         return subprocess.run(
             ["git", "-C", str(repo), *args],
@@ -58,8 +95,30 @@ def run_demo(repo: Path) -> dict:
             "affected_paths": ["client.py"],
         },
     )
+    if use_mcp:
+        created = asyncio.run(
+            member_calls(
+                repo,
+                [
+                    (
+                        plan["author"],
+                        "create_intent",
+                        {
+                            "intent_data": {
+                                key: value for key, value in plan.items() if key != "author"
+                            }
+                        },
+                    )
+                    for plan in plans
+                ],
+            )
+        )
+        if any(item["author"] != plan["author"] for plan, item in zip(plans, created, strict=True)):
+            raise RuntimeError("MCP member binding did not match the plans")
+    else:
+        for plan in plans:
+            conductor.create_intent(plan)
     for plan in plans:
-        conductor.create_intent(plan)
         conductor.review_intent(
             plan["id"],
             "accepted",
@@ -85,8 +144,19 @@ def run_demo(repo: Path) -> dict:
     for plan in plans:
         agent = plan["author"]
         task = conductor.dispatch_task(plan["id"], agent)
-        conductor.start_task(task["id"], agent)
         tasks[agent] = task
+    if use_mcp:
+        started = asyncio.run(
+            member_calls(
+                repo,
+                [(agent, "start_task", {"task_id": tasks[agent]["id"]}) for agent in tasks],
+            )
+        )
+        if any(item["status"] != "in_progress" for item in started):
+            raise RuntimeError("An MCP member task did not start")
+    else:
+        for agent, task in tasks.items():
+            conductor.start_task(task["id"], agent)
     base = git("rev-parse", "HEAD")
 
     changes = (
@@ -122,23 +192,35 @@ def run_demo(repo: Path) -> dict:
         branches[agent] = {"name": branch, "sha": git("rev-parse", "HEAD")}
         git("switch", "main")
 
-    submitted = {}
-    for plan in plans:
-        agent = plan["author"]
-        branch = branches[agent]
-        result = conductor.submit_artifact(
-            agent,
-            {
-                "intent_id": plan["id"],
-                "branch": branch["name"],
-                "commit_sha": branch["sha"],
-                "base_ref": "main",
-                "summary": f"Implement {plan['id']}",
-            },
+    artifact_payloads = {
+        plan["author"]: {
+            "intent_id": plan["id"],
+            "branch": branches[plan["author"]]["name"],
+            "commit_sha": branches[plan["author"]]["sha"],
+            "base_ref": "main",
+            "summary": f"Implement {plan['id']}",
+        }
+        for plan in plans
+    }
+    if use_mcp:
+        results = asyncio.run(
+            member_calls(
+                repo,
+                [
+                    (agent, "submit_artifact", {"artifact": artifact_payloads[agent]})
+                    for agent in artifact_payloads
+                ],
+            )
         )
+        submitted = dict(zip(artifact_payloads, results, strict=True))
+    else:
+        submitted = {
+            agent: conductor.submit_artifact(agent, payload)
+            for agent, payload in artifact_payloads.items()
+        }
+    for result in submitted.values():
         if not result["accepted"] or not result["requires_human_review"]:
             raise RuntimeError(f"Artifact was not ready for code review: {result}")
-        submitted[agent] = result
 
     decision_change_rejected = False
     for plan in plans:
@@ -215,6 +297,7 @@ def run_demo(repo: Path) -> dict:
             for agent in (plan["author"],)
         },
         "integrated_result": code,
+        "member_transport": "stdio MCP" if use_mcp else "direct Conductor API",
         "decision_change_without_rationale_rejected": decision_change_rejected,
         "audit": {"snapshot_ok": snapshot["ok"], "history_ok": history["ok"]},
         "review_note": (
@@ -225,5 +308,8 @@ def run_demo(repo: Path) -> dict:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--mcp", action="store_true", help="Use two member-bound MCP stdio clients")
+    args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="backbone-two-agent-demo-") as directory:
-        print(json.dumps(run_demo(Path(directory)), ensure_ascii=False, indent=2))
+        print(json.dumps(run_demo(Path(directory), use_mcp=args.mcp), ensure_ascii=False, indent=2))
