@@ -3,6 +3,8 @@
 > **实现状态**：本文保留原始对象设计。v0.1 可执行协议以 `src/backbone_conductor/models.py` 和 `backbone schema` 输出为准；新增 Task、Artifact、操作/路径声明、Git 提交锚点和检查结果。MCP 参数见 [MCP_API.md](MCP_API.md)。
 > v0.2 新增 Task `cancelled` 终态，以及取消后 Intent `in_progress → accepted`、分派前修订后重置为 draft、任务上下文 rebase。实际状态机仍以代码和 Schema 为准。
 > v0.16 新增带 `supersedes` 与 `change_reason` 的原子替代意图操作：已接受且无活跃任务的旧意图进入 `superseded`，新草稿须重新接受；有任务历史时不能原地修订。实际模型和状态机仍以代码和 Schema 为准。
+
+> v0.48 决策撤销使用带操作者、理由和观察版本的 `backbone revert DECISION_ID`，写入新的 Git 审计提交。这里的“撤销”不调用原生 `git revert` 回退快照，也不回滚已合并代码；旧式无理由状态切换被拒绝。
 > v0.17 新增 `Intent.reviews`：审查者对草稿接受或拒绝时，记录身份、理由、审阅前的 Backbone 版本与时间；修订后回到 draft，必须再次审查。管理员旧式直接状态切换仍可用，不能把它视为已有人类审查记录。
 > v0.5 在状态快照中增加可选 `merged_parent_version`，记录结构化元数据合并的另一侧审计版本；Git 双父提交仍是完整历史的权威证据。普通变更清空此字段。
 
@@ -58,6 +60,14 @@ class DecisionStatus(Enum):
 
 
 @dataclass
+class DecisionReversion:
+    author: str
+    rationale: str
+    reviewed_version: str
+    created_at: datetime
+
+
+@dataclass
 class Decision:
     """一个决策 = 架构/设计选择，带作者、理由、时间"""
 
@@ -69,6 +79,7 @@ class Decision:
     supersedes: Optional[str] = None
     related_intents: list[str] = field(default_factory=list)
     status: DecisionStatus = DecisionStatus.PROPOSED
+    reversion: Optional[DecisionReversion] = None
 ```
 
 ### 1.3 Conflict（冲突）
@@ -169,7 +180,7 @@ proposed ──accept──▶ accepted ──supersede──▶ superseded
 **审计能力**：
 - `git log` 查看谁在什么时候改变了什么
 - `git bisect` 定位导致冲突的决策
-- `git revert` 撤销错误决策
+- `backbone revert` 以新审计提交撤回错误决策，并保留撤销理由与原历史
 
 ---
 

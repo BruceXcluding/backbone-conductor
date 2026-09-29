@@ -17,9 +17,9 @@
 
 新仓库采用独立元数据分支时，在启动 MCP 服务的 `mcp` 子命令前加全局选项 `--ledger-branch backbone`；`--repo` 仍指向代码仓库。
 
-省略 `--member` 为本地管理员进程，额外暴露 dispatch_task、transition_intent、transition_decision、revise_intent、replace_intent、review_intent、cancel_task、detect_conflicts、resolve_conflict、inspect_task、merge_task、verify_audit_signatures、refresh_backbone、reconcile_backbone。`replace_intent` 接受 intent_id、字段 patch、author、reason 和 expected_version；旧意图须已接受且没有活跃任务。`review_intent` 接受 intent_id、accepted/rejected outcome、reviewer、rationale 和 expected_version；仅能审查他人草稿。`verify_audit_signatures` 只检查最近 limit 个元数据提交并返回有效、未签名和无效数量。不得将其当作远程认证服务。
+省略 `--member` 为本地管理员进程，额外暴露 dispatch_task、transition_intent、transition_decision、revert_decision、revise_intent、replace_intent、review_intent、cancel_task、detect_conflicts、resolve_conflict、inspect_task、merge_task、verify_audit_signatures、refresh_backbone、reconcile_backbone。`replace_intent` 接受 intent_id、字段 patch、author、reason 和 expected_version；旧意图须已接受且没有活跃任务。`review_intent` 接受 intent_id、accepted/rejected outcome、reviewer、rationale 和 expected_version；仅能审查他人草稿。`revert_decision` 需要 decision_id、author、rationale 和 expected_version，只能撤回已接受决策并留下审计证据。`verify_audit_signatures` 只检查最近 limit 个元数据提交并返回有效、未签名和无效数量。不得将其当作远程认证服务。
 
-`mcp --coordinator` 是单独的本地受限工具范围，只含 `get_coordination_state`、`create_intent`、`log_decision`、`detect_conflicts`、`dispatch_task` 和 `inspect_task`。创建的草稿意图与建议决策固定归属 `conductor-agent`；分派仍须事先由人接受意图。该范围不含 `review_intent`、`transition_intent`、`transition_decision`、`resolve_conflict`、`merge_task` 或远端同步；没有远程 HTTP 协调代理入口。可由 `backbone conductor` 的 DSH 运行器启动，运行前会核对精确工具列表及状态读取。它是本机 OS 账户内的工具限制，不是独立身份认证或进程隔离。
+`mcp --coordinator` 是单独的本地受限工具范围，只含 `get_coordination_state`、`create_intent`、`log_decision`、`detect_conflicts`、`dispatch_task` 和 `inspect_task`。创建的草稿意图与建议决策固定归属 `conductor-agent`；分派仍须事先由人接受意图。该范围不含 `review_intent`、`transition_intent`、`transition_decision`、`revert_decision`、`resolve_conflict`、`merge_task` 或远端同步；没有远程 HTTP 协调代理入口。可由 `backbone conductor` 的 DSH 运行器启动，运行前会核对精确工具列表及状态读取。它是本机 OS 账户内的工具限制，不是独立身份认证或进程隔离。
 
 工具 Schema 由 MCP tools/list 提供；领域 Schema 可由 `backbone schema` 或 HTTP `/schema` 获取。
 

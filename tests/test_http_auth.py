@@ -552,6 +552,63 @@ def test_reviewer_can_approve_integrated_work_but_not_manage_tasks(
     assert "Backbone-HTTP-Role: reviewer" in history
 
 
+def test_reviewer_can_revert_decision_with_bound_identity(auth_repo: tuple[Path, Path]) -> None:
+    repo, auth_file = auth_repo
+    service = Conductor(repo)
+    decision = service.log_decision(
+        {
+            "author": "owner",
+            "decision_type": "api",
+            "summary": "Remove the old endpoint",
+            "rationale": "Simpler interface",
+        }
+    )
+    service.transition_decision(decision["id"], "accepted")
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        path = f"/decisions/{decision['id']}/revert"
+        version = client.get("/state", headers=auth_header(CAROL_TOKEN)).json()["version"]
+        payload = {
+            "author": "carol",
+            "rationale": "Existing clients still depend on the endpoint",
+            "expected_version": version,
+        }
+        assert client.post(path, headers=auth_header(ALICE_TOKEN), json=payload).status_code == 403
+        assert (
+            client.post(
+                f"/decisions/{decision['id']}/transition",
+                headers=auth_header(CAROL_TOKEN),
+                json={"status": "reverted"},
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                path, headers=auth_header(CAROL_TOKEN), json={**payload, "author": "owner"}
+            ).status_code
+            == 403
+        )
+        assert (
+            client.post(
+                path,
+                headers=auth_header(CAROL_TOKEN),
+                json={**payload, "expected_version": "stale"},
+            ).status_code
+            == 422
+        )
+        reverted = client.post(path, headers=auth_header(CAROL_TOKEN), json=payload)
+        assert reverted.status_code == 200
+        assert reverted.json()["reversion"]["author"] == "carol"
+        assert reverted.json()["reversion"]["reviewed_version"] == version
+    history = subprocess.run(
+        ["git", "-C", str(repo), "log", "-1", "--format=%B"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "Backbone-HTTP-Principal: carol" in history
+    assert "Backbone-HTTP-Role: reviewer" in history
+
+
 def test_reviewer_can_arbitrate_with_bound_identity(auth_repo: tuple[Path, Path]) -> None:
     repo, auth_file = auth_repo
     with TestClient(create_app(repo, auth_file=auth_file)) as client:

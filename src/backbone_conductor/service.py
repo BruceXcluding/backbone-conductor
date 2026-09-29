@@ -14,6 +14,7 @@ from .models import (
     Artifact,
     BackboneState,
     Decision,
+    DecisionReversion,
     DecisionStatus,
     Intent,
     IntentReview,
@@ -297,8 +298,8 @@ class Conductor:
     def log_decision(self, data: dict) -> dict:
         decision = Decision.model_validate(data)
         _actor(decision.author)
-        if decision.status != DecisionStatus.PROPOSED:
-            raise ValueError("New decisions must be proposed; accept using a lifecycle action")
+        if decision.status != DecisionStatus.PROPOSED or decision.reversion is not None:
+            raise ValueError("New decisions must be proposed without reversion evidence")
 
         def change(state: BackboneState):
             if decision.id in state.decisions:
@@ -320,6 +321,8 @@ class Conductor:
 
     def transition_decision(self, decision_id: str, status: str) -> dict:
         target = DecisionStatus(status)
+        if target == DecisionStatus.REVERTED:
+            raise ValueError("Revert decisions with an audited author, rationale and version")
 
         def change(state: BackboneState):
             updated = transition_decision(state.decisions[decision_id], target)
@@ -333,6 +336,34 @@ class Conductor:
             return _dump(updated)
 
         return self.store.mutate(change, f"backbone: decision {decision_id} {target.value}")
+
+    def revert_decision(
+        self, decision_id: str, author: str, rationale: str, expected_version: str
+    ) -> dict:
+        """Withdraw an accepted decision in a new, version-bound audit commit."""
+        author = _actor(author)
+        if not rationale.strip():
+            raise ValueError("Decision reversion requires a rationale")
+        if not expected_version:
+            raise ValueError("Decision reversion requires an observed Backbone version")
+
+        def change(state: BackboneState):
+            if state.version != expected_version:
+                raise ValueError("Backbone changed; refresh the decision and retry")
+            current = state.decisions[decision_id]
+            if current.status != DecisionStatus.ACCEPTED:
+                raise ValueError("Only accepted decisions can be reverted")
+            updated = transition_decision(current, DecisionStatus.REVERTED)
+            updated.reversion = DecisionReversion(
+                author=author,
+                rationale=rationale,
+                reviewed_version=state.version,
+            )
+            state.decisions[decision_id] = updated
+            self._refresh(state)
+            return _dump(updated)
+
+        return self.store.mutate(change, f"backbone: decision {decision_id} reverted by {author}")
 
     def dispatch_task(
         self,

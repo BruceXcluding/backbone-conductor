@@ -126,6 +126,13 @@ class Intent(ProtocolModel):
     affected_paths: list[str] = Field(default_factory=list)
 
 
+class DecisionReversion(ProtocolModel):
+    author: Text
+    rationale: Text
+    reviewed_version: Text
+    created_at: AwareDatetime = Field(default_factory=utc_now)
+
+
 class Decision(ProtocolModel):
     id: Identifier = Field(default_factory=lambda: new_id("decision"))
     author: Text
@@ -138,7 +145,14 @@ class Decision(ProtocolModel):
     affected_symbols: list[Text] = Field(default_factory=list)
     removes_symbols: list[Text] = Field(default_factory=list)
     depends_on: list[Text] = Field(default_factory=list)
+    reversion: DecisionReversion | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_reversion(self) -> Decision:
+        if self.reversion is not None and self.status != DecisionStatus.REVERTED:
+            raise ValueError("Reversion evidence requires reverted decision status")
+        return self
 
 
 class Artifact(ProtocolModel):

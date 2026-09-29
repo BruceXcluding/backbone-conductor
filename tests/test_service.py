@@ -202,10 +202,93 @@ def test_decision_supersession_and_task_sync(project):
     )
     service.transition_decision(second["id"], "accepted")
     assert service.state()["decisions"][first["id"]]["status"] == "superseded"
-    service.transition_decision(second["id"], "reverted")
+    service.revert_decision(
+        second["id"], "owner", "The cache introduces stale reads", service.state()["version"]
+    )
     state = service.state()
+    assert state["decisions"][first["id"]]["status"] == "superseded"
     assert not service.check_backbone_sync("alice", state["version"])["changed"]
     assert task["id"] in state["tasks"]
+
+
+def test_decision_reversion_requires_reason_current_version_and_accepted_state(project):
+    service, repo = project
+    with pytest.raises(ValueError, match="Reversion evidence requires reverted"):
+        service.log_decision(
+            {
+                "author": "owner",
+                "decision_type": "storage",
+                "summary": "Forged history",
+                "rationale": "Invalid",
+                "reversion": {
+                    "author": "reviewer",
+                    "rationale": "Forged",
+                    "reviewed_version": "not-a-real-version",
+                },
+            }
+        )
+    decision = service.log_decision(
+        {
+            "author": "owner",
+            "decision_type": "storage",
+            "summary": "Use a cache",
+            "rationale": "Faster reads",
+        }
+    )
+    proposed_version = service.state()["version"]
+    with pytest.raises(ValueError, match="Only accepted"):
+        service.revert_decision(decision["id"], "reviewer", "Invalidated", proposed_version)
+    with pytest.raises(ValueError, match="audited author"):
+        service.transition_decision(decision["id"], "reverted")
+    service.transition_decision(decision["id"], "accepted")
+    accepted_version = service.state()["version"]
+    head = git(repo, "rev-parse", "HEAD")
+    with pytest.raises(ValueError, match="requires a rationale"):
+        service.revert_decision(decision["id"], "reviewer", " ", accepted_version)
+    with pytest.raises(ValueError, match="refresh the decision"):
+        service.revert_decision(decision["id"], "reviewer", "Changed plan", proposed_version)
+    assert git(repo, "rev-parse", "HEAD") == head
+    reverted = service.revert_decision(
+        decision["id"], "reviewer", "The cache is unsafe", accepted_version
+    )
+    assert reverted["status"] == "reverted"
+    assert reverted["reversion"]["author"] == "reviewer"
+    assert reverted["reversion"]["rationale"] == "The cache is unsafe"
+    assert reverted["reversion"]["reviewed_version"] == accepted_version
+    assert git(repo, "rev-parse", "HEAD") != head
+    assert "reverted by reviewer" in git(repo, "log", "-1", "--format=%s")
+    assert (
+        "The cache is unsafe"
+        in (repo / ".backbone" / "decisions" / f"{decision['id']}.md").read_text()
+    )
+    with pytest.raises(ValueError, match="Only accepted"):
+        service.revert_decision(decision["id"], "reviewer", "Again", service.state()["version"])
+
+
+def test_reverted_decision_requires_active_task_context_refresh(project):
+    service, repo = project
+    decision = service.log_decision(
+        {
+            "author": "owner",
+            "decision_type": "api",
+            "summary": "Use the old API",
+            "rationale": "Compatibility",
+        }
+    )
+    service.transition_decision(decision["id"], "accepted")
+    intent, task = assigned(service, affected_paths=["greeting.py"])
+    assert decision["id"] in task["decisions_at_fork"]
+    service.revert_decision(
+        decision["id"], "owner", "The old API is unsafe", service.state()["version"]
+    )
+    updates = service.check_backbone_sync("alice")
+    assert decision["id"] in updates["updates"][0]["withdrawn_decisions"]
+    feature(repo)
+    blocked = submission(service, intent)
+    assert not blocked["accepted"]
+    assert blocked["checks"]["context"]["status"] == "failed"
+    service.rebase_task(task["id"], "alice", service.state()["version"])
+    assert submission(service, intent)["accepted"]
 
 
 def test_advisory_semantic_review_and_stale_review_rejected(project, monkeypatch):

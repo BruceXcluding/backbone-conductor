@@ -61,6 +61,7 @@ def _reviewer_route(method: str, path: str) -> bool:
     if method == "POST":
         return (
             re.fullmatch(r"/intents/[^/]+/review", path) is not None
+            or re.fullmatch(r"/decisions/[^/]+/revert", path) is not None
             or re.fullmatch(r"/tasks/[^/]+/merge", path) is not None
             or re.fullmatch(r"/conflicts/[^/]+/resolve", path) is not None
         )
@@ -117,6 +118,11 @@ class IntentReplacement(IntentRevision):
 
 class IntentReviewAction(Approval):
     outcome: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    expected_version: str = Field(min_length=1)
+
+
+class DecisionRevertAction(Approval):
     rationale: str = Field(min_length=1)
     expected_version: str = Field(min_length=1)
 
@@ -358,6 +364,12 @@ def create_app(
     @app.post("/decisions/{decision_id}/transition")
     def transition_decision(decision_id: str, data: Transition) -> dict:
         return conductor.transition_decision(decision_id, data.status)
+
+    @app.post("/decisions/{decision_id}/revert")
+    def revert_decision(decision_id: str, data: DecisionRevertAction, request: Request) -> dict:
+        return conductor.revert_decision(
+            decision_id, actor(request, data.author), data.rationale, data.expected_version
+        )
 
     @app.get("/tasks")
     def tasks(request: Request, member_id: str | None = None) -> dict:

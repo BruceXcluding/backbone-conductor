@@ -113,6 +113,44 @@ def test_cli_replaces_accepted_intent_with_audited_draft(interface_repo: Path, c
     assert result["replacement"]["supersedes"] == original["id"]
 
 
+def test_cli_reverts_decision_with_reason_and_version(interface_repo: Path, capsys) -> None:
+    service = Conductor(interface_repo)
+    service.initialize()
+    decision = service.log_decision(
+        {
+            "author": "alice",
+            "decision_type": "api",
+            "summary": "Remove the old endpoint",
+            "rationale": "Simpler interface",
+        }
+    )
+    service.transition_decision(decision["id"], "accepted")
+    version = service.state()["version"]
+    prefix = ["--repo", str(interface_repo)]
+    assert main([*prefix, "decision", "transition", decision["id"], "reverted"]) == 1
+    assert "audited author" in json.loads(capsys.readouterr().err)["error"]
+    assert (
+        main(
+            [
+                *prefix,
+                "revert",
+                decision["id"],
+                "--author",
+                "bob",
+                "--rationale",
+                "Existing clients still need it",
+                "--version",
+                version,
+            ]
+        )
+        == 0
+    )
+    reverted = json.loads(capsys.readouterr().out)
+    assert reverted["status"] == "reverted"
+    assert reverted["reversion"]["reviewed_version"] == version
+    assert reverted["reversion"]["rationale"] == "Existing clients still need it"
+
+
 def test_cli_returns_read_only_semantic_conflict_advice(
     interface_repo: Path, tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -720,6 +758,7 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
                 "revise_intent",
                 "replace_intent",
                 "review_intent",
+                "revert_decision",
                 "verify_audit_signatures",
                 "cancel_task",
                 "refresh_backbone",
@@ -752,6 +791,7 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             "revise_intent",
             "replace_intent",
             "review_intent",
+            "revert_decision",
             "verify_audit_signatures",
             "cancel_task",
             "refresh_backbone",
@@ -790,6 +830,28 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             Conductor(interface_repo).state()["intents"][successors[0]["id"]]["status"]
             == "accepted"
         )
+        decision = Conductor(interface_repo).log_decision(
+            {
+                "author": "owner",
+                "decision_type": "api",
+                "summary": "Remove the old endpoint",
+                "rationale": "Simpler interface",
+            }
+        )
+        Conductor(interface_repo).transition_decision(decision["id"], "accepted")
+        version = Conductor(interface_repo).state()["version"]
+        await create_server(interface_repo).call_tool(
+            "revert_decision",
+            {
+                "decision_id": decision["id"],
+                "author": "carol",
+                "rationale": "Compatibility is still needed",
+                "expected_version": version,
+            },
+        )
+        reverted = Conductor(interface_repo).state()["decisions"][decision["id"]]
+        assert reverted["status"] == "reverted"
+        assert reverted["reversion"]["reviewed_version"] == version
 
     asyncio.run(check())
 
@@ -802,7 +864,16 @@ def test_coordinator_mcp_requires_human_acceptance_before_dispatch(interface_rep
         server = create_coordinator_server(interface_repo)
         names = {tool.name for tool in await server.list_tools()}
         assert names == COORDINATOR_TOOLS
-        assert not {"review_intent", "resolve_conflict", "merge_task", "transition_intent"} & names
+        assert (
+            not {
+                "review_intent",
+                "revert_decision",
+                "resolve_conflict",
+                "merge_task",
+                "transition_intent",
+            }
+            & names
+        )
         with pytest.raises(ToolError, match="human author"):
             await server.call_tool("create_intent", {"intent_data": intent_data()})
         data = intent_data()

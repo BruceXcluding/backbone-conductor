@@ -243,8 +243,15 @@ def create_server(
 
         @server.tool()
         def transition_decision(decision_id: str, status: str) -> dict:
-            """Administrator: accept, supersede, or revert a decision."""
+            """Administrator: accept or supersede a decision."""
             return conductor.transition_decision(decision_id, status)
+
+        @server.tool()
+        def revert_decision(
+            decision_id: str, author: str, rationale: str, expected_version: str
+        ) -> dict:
+            """Administrator: withdraw an accepted decision with version-bound evidence."""
+            return conductor.revert_decision(decision_id, author, rationale, expected_version)
 
         @server.tool()
         def detect_conflicts() -> dict:

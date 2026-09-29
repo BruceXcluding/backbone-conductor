@@ -130,6 +130,12 @@ def build_parser() -> argparse.ArgumentParser:
                 "--version", required=True, help="Backbone version observed before review"
             )
 
+    revert = commands.add_parser("revert", help="Withdraw an accepted decision with audit evidence")
+    revert.add_argument("decision_id")
+    revert.add_argument("--author", required=True)
+    revert.add_argument("--rationale", required=True)
+    revert.add_argument("--version", required=True, help="Backbone version observed before revert")
+
     tasks = commands.add_parser("task").add_subparsers(dest="action", required=True)
     dispatch = tasks.add_parser("dispatch", help="Assign an accepted intent to a member")
     dispatch.add_argument("intent_id")
@@ -539,6 +545,10 @@ def _run(args: argparse.Namespace) -> Any:
         return conductor.initialize()
     if args.command == "status":
         return conductor.state()
+    if args.command == "revert":
+        return conductor.revert_decision(
+            args.decision_id, args.author, args.rationale, args.version
+        )
     if args.command in {"intent", "decision"}:
         if args.action == "list":
             return list(conductor.state()[f"{args.command}s"].values())
