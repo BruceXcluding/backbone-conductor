@@ -317,6 +317,27 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
                 complete = reviewer_command("inspect", task_ids[name], "--full")
                 assert complete["diff"]["patch"] == inspection["diff"]["patch"]
                 assert complete["diff"]["truncated"] is False
+                if name == "alice":
+                    assert (
+                        main(
+                            [
+                                "reviewer",
+                                "--url",
+                                url,
+                                "--token-file",
+                                str(reviewer_token),
+                                "inspect",
+                                task_ids[name],
+                                "--full",
+                                "--format",
+                                "text",
+                            ]
+                        )
+                        == 0
+                    )
+                    rendered = capsys.readouterr().out
+                    assert "\n+def alice():\n" in rendered
+                    assert "Integrated target diff: pending Git merge." in rendered
 
             assert (
                 main(

@@ -116,6 +116,14 @@ def test_submitted_patch_is_visible_to_reviewer_but_not_member(
     assert "+def export():" in capsys.readouterr().out
     assert main(["--repo", str(repo), "task", "inspect", task["id"], "--full"]) == 0
     assert "+def export():" in capsys.readouterr().out
+    assert (
+        main(["--repo", str(repo), "task", "inspect", task["id"], "--full", "--format", "text"])
+        == 0
+    )
+    rendered = capsys.readouterr().out
+    assert "Submitted artifact diff" in rendered
+    assert "\n+def export():\n" in rendered
+    assert "Integrated target diff: pending Git merge." in rendered
 
 
 def test_http_authenticates_and_limits_member_to_own_tasks(auth_repo: tuple[Path, Path]) -> None:

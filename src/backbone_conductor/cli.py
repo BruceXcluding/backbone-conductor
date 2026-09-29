@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import stat
 import sys
+import unicodedata
 from itertools import chain
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,107 @@ def _json_file(filename: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("JSON input must be an object")
     return value
+
+
+def _visible(value: str, *, multiline: bool = False) -> str:
+    """Keep untrusted review content from emitting terminal controls."""
+    output = []
+    for character in value:
+        code = ord(character)
+        if character == "\n" and multiline:
+            output.append(character)
+        elif character == "\t" and multiline:
+            output.append(character)
+        elif (
+            code < 32
+            or 127 <= code <= 159
+            or unicodedata.category(character)
+            in {
+                "Cf",
+                "Zl",
+                "Zp",
+            }
+        ):
+            output.append(f"\\u{code:04x}" if code > 255 else f"\\x{code:02x}")
+        else:
+            output.append(character)
+    return "".join(output)
+
+
+def _format_inspection(packet: object) -> str:
+    """Render a review packet for humans while keeping JSON as the default CLI format."""
+    if not isinstance(packet, dict):
+        raise ValueError("Task inspection response is invalid")
+    task, git = packet.get("task"), packet.get("git")
+    if not isinstance(task, dict) or not isinstance(git, dict):
+        raise ValueError("Task inspection response is invalid")
+    required = ("base_sha", "artifact_sha", "target_sha", "integrated_into_target")
+    if (
+        any(key not in git for key in required)
+        or not all(isinstance(git[key], str) for key in required[:3])
+        or type(git["integrated_into_target"]) is not bool
+        or not isinstance(task.get("id"), str)
+        or not isinstance(packet.get("version"), str)
+    ):
+        raise ValueError("Task inspection response is invalid")
+
+    lines = [
+        f"Task: {_visible(task['id'])}",
+        f"Ledger version: {_visible(packet['version'])}",
+        f"Base commit: {_visible(git['base_sha'])}",
+        f"Artifact commit: {_visible(git['artifact_sha'])}",
+        f"Target commit: {_visible(git['target_sha'])}",
+        f"Integrated into target: {git['integrated_into_target']}",
+        "Review the full intent, decisions, and conflicts in the default JSON packet.",
+        "Terminal control characters in the patch are escaped for display.",
+    ]
+
+    def append_patch(title: str, value: object) -> None:
+        if not isinstance(value, dict):
+            raise ValueError("Task inspection response is invalid")
+        patch, digest, truncated = (
+            value.get("patch"),
+            value.get("sha256"),
+            value.get("truncated"),
+        )
+        if (
+            not isinstance(patch, str)
+            or not isinstance(digest, str)
+            or type(truncated) is not bool
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError("Task inspection response is invalid")
+        if not truncated and hashlib.sha256(patch.encode("utf-8")).hexdigest() != digest:
+            raise ValueError("Task inspection patch does not match its SHA-256")
+        lines.extend(
+            [
+                "",
+                f"=== {title}{' — TRUNCATED PREVIEW' if truncated else ''} ===",
+                f"Full patch SHA-256: {digest}",
+            ]
+        )
+        if truncated:
+            lines.append("Review the complete patch with --full or in a Git checkout.")
+        displayed = _visible(patch, multiline=True)
+        if displayed:
+            lines.append(displayed.removesuffix("\n"))
+
+    append_patch("Submitted artifact diff", packet.get("diff"))
+    target = packet.get("target_diff")
+    if git["integrated_into_target"]:
+        if not isinstance(target, dict) or (
+            target.get("base_sha") != git["base_sha"]
+            or target.get("target_sha") != git["target_sha"]
+            or target.get("changed_paths") != packet["diff"].get("changed_paths")
+        ):
+            raise ValueError("Task inspection target diff is not bound to the target commit")
+        append_patch("Integrated target paths versus base", target)
+    elif target is not None:
+        raise ValueError("Task inspection response is invalid")
+    else:
+        lines.extend(["", "Integrated target diff: pending Git merge."])
+    return "\n".join(lines)
 
 
 def _prompts_file(filename: str) -> list[str]:
@@ -155,6 +258,9 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("task_id")
     inspect.add_argument(
         "--full", action="store_true", help="Include the complete bounded Git patch"
+    )
+    inspect.add_argument(
+        "--format", choices=("json", "text"), default="json", help="Review packet output format"
     )
     fetch = tasks.add_parser("fetch", help="Fetch an assigned member's pushed code branch")
     fetch.add_argument("task_id")
@@ -319,6 +425,9 @@ def build_parser() -> argparse.ArgumentParser:
     reviewer_inspect.add_argument("task_id")
     reviewer_inspect.add_argument(
         "--full", action="store_true", help="Fetch and verify the complete bounded Git patch"
+    )
+    reviewer_inspect.add_argument(
+        "--format", choices=("json", "text"), default="json", help="Review packet output format"
     )
     reviewer_intent = reviewer_actions.add_parser("review-intent", help="Accept or reject a draft")
     reviewer_intent.add_argument("intent_id")
@@ -705,14 +814,23 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         result = _run(args)
+        rendered = None
+        if result is not None:
+            rendered = (
+                _format_inspection(result)
+                if args.command in ("task", "reviewer")
+                and args.action == "inspect"
+                and args.format == "text"
+                else json.dumps(result, ensure_ascii=False, indent=2)
+            )
     except (ValueError, KeyError, OSError, RuntimeError) as exc:
         message = str(exc.args[0]) if isinstance(exc, KeyError) else str(exc)
         print(json.dumps({"error": message}, ensure_ascii=False), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130
-    if result is not None:
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+    if rendered is not None:
+        print(rendered)
     if (args.command == "audit" and args.action == "verify") or (
         args.command == "reviewer" and args.action == "audit-verify"
     ):

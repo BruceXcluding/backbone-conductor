@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from backbone_conductor.cli import main
+from backbone_conductor.cli import _format_inspection, main
 from backbone_conductor.reviewer_client import (
     _private_token,
     _validated_audit_report,
@@ -130,3 +130,80 @@ def test_remote_full_patch_rejects_truncation_or_hash_mismatch() -> None:
     ):
         with pytest.raises(ValueError, match="invalid full review patch"):
             _validated_full_patch(bad)
+
+
+def test_text_inspection_shows_patch_lines_and_marks_unverified_preview() -> None:
+    patch = "diff --git a/a b/a\n+one\n+two\n"
+    digest = hashlib.sha256(patch.encode()).hexdigest()
+    packet = {
+        "version": "v1",
+        "task": {"id": "task-1"},
+        "git": {
+            "base_sha": "a" * 40,
+            "artifact_sha": "b" * 40,
+            "target_sha": "c" * 40,
+            "integrated_into_target": False,
+        },
+        "diff": {
+            "patch": patch,
+            "truncated": False,
+            "sha256": digest,
+            "changed_paths": ["a"],
+        },
+        "target_diff": None,
+    }
+    rendered = _format_inspection(packet)
+    assert "+one\n+two" in rendered
+    assert f"Full patch SHA-256: {digest}" in rendered
+    assert "Integrated target diff: pending Git merge." in rendered
+    assert "TRUNCATED PREVIEW" not in rendered
+
+    preview = {**packet, "diff": {**packet["diff"], "patch": patch[:10], "truncated": True}}
+    rendered = _format_inspection(preview)
+    assert "TRUNCATED PREVIEW" in rendered
+    assert "Review the complete patch with --full" in rendered
+
+    integrated = {
+        **packet,
+        "git": {**packet["git"], "integrated_into_target": True},
+        "target_diff": {
+            **packet["diff"],
+            "base_sha": "a" * 40,
+            "target_sha": "c" * 40,
+        },
+    }
+    assert "Integrated target paths versus base" in _format_inspection(integrated)
+    with pytest.raises(ValueError, match="SHA-256"):
+        _format_inspection({**packet, "diff": {**packet["diff"], "patch": patch[:-1]}})
+    with pytest.raises(ValueError, match="not bound"):
+        _format_inspection(
+            {
+                **integrated,
+                "target_diff": {**integrated["target_diff"], "changed_paths": ["other"]},
+            }
+        )
+
+
+def test_text_inspection_escapes_terminal_controls_in_patch() -> None:
+    patch = "diff --git a/a b/a\n+\x1b[31m\u202eevil\u2028\n"
+    packet = {
+        "version": "v1",
+        "task": {"id": "task-1"},
+        "git": {
+            "base_sha": "a" * 40,
+            "artifact_sha": "b" * 40,
+            "target_sha": "c" * 40,
+            "integrated_into_target": False,
+        },
+        "diff": {
+            "patch": patch,
+            "truncated": False,
+            "sha256": hashlib.sha256(patch.encode()).hexdigest(),
+            "changed_paths": ["a"],
+        },
+        "target_diff": None,
+    }
+    rendered = _format_inspection(packet)
+    assert "\\x1b[31m\\u202eevil\\u2028" in rendered
+    assert "\x1b" not in rendered
+    assert "\u202e" not in rendered
