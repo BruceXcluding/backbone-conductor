@@ -269,6 +269,25 @@ def test_history_verification_accepts_complete_normal_chain(repo: Path, capsys):
     assert summary["invalid_commits"] == []
 
 
+def test_history_verification_ignores_code_merge_with_unchanged_first_parent_metadata(repo: Path):
+    store = GitStore(repo)
+    store.init()
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "switch", "-c", "feature/code", base)
+    (repo / "feature.py").write_text("value = 1\n")
+    git(repo, "add", "feature.py")
+    git(repo, "commit", "-m", "Implement code feature")
+    git(repo, "switch", "main")
+    store.mutate(lambda state: state.sessions.update({"later": {"value": 2}}), "new metadata")
+    git(repo, "merge", "--no-ff", "--no-edit", "feature/code")
+    code_merge = git(repo, "rev-parse", "HEAD")
+
+    report = store.verify_audit_history(limit=10)
+    assert report["ok"]
+    assert report["total_metadata_commits"] == 2
+    assert code_merge not in {entry["commit"] for entry in report["commits"]}
+
+
 def test_history_verification_pages_and_aggregates_without_losing_older_failures(
     repo: Path, capsys
 ):
@@ -799,7 +818,9 @@ def test_reconcile_disjoint_metadata_keeps_both_parents_and_regenerates_conflict
     assert merged.parent_version == inspection["local_version"]
     assert merged.merged_parent_version == inspection["remote_version"]
     assert second.verify_current_snapshot()["ok"]
-    assert second.verify_audit_history(limit=20)["ok"]
+    history = second.verify_audit_history(limit=20)
+    assert history["ok"]
+    assert {result["commit"], *result["parents"]} <= {item["commit"] for item in history["commits"]}
     assert result["version"] == result["commit"] == merged.version
     assert any(not conflict.resolved for conflict in merged.conflicts.values())
     assert git(second.root, "status", "--porcelain") == ""

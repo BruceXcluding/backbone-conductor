@@ -650,9 +650,33 @@ class GitStore:
                 raise StorageError("Backbone has no Git history")
             if expected_head is not None and head != expected_head:
                 raise StorageError("Git HEAD changed between history pages; restart verification")
-            commits = self._git(
-                "rev-list", "--full-history", head, "--", ".backbone"
+            history = self._git(
+                "rev-list", "--full-history", "--parents", head, "--", ".backbone"
             ).stdout.splitlines()
+            commits = []
+            for row in history:
+                commit, *parents = row.split()
+                if len(parents) > 1:
+                    # A code merge can carry the first parent's metadata
+                    # unchanged while its other parent has an older snapshot.
+                    # Full-history traversal includes that merge, but it is
+                    # not a new Backbone state mutation.
+                    diff = self._git(
+                        "diff-tree",
+                        "--quiet",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        parents[0],
+                        commit,
+                        "--",
+                        ".backbone",
+                        check=False,
+                    )
+                    if diff.returncode == 0:
+                        continue
+                    if diff.returncode != 1:
+                        raise StorageError("Could not compare metadata in a Git merge commit")
+                commits.append(commit)
             if not commits:
                 raise StorageError("Backbone has no metadata history")
             if offset >= len(commits):
