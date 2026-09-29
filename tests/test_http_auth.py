@@ -121,6 +121,8 @@ def test_submitted_patch_is_visible_to_reviewer_but_not_member(
         == 0
     )
     rendered = capsys.readouterr().out
+    assert "Problem:\n  Add an export function" in rendered
+    assert "Proposed outcome:\n  Exports are available" in rendered
     assert "Submitted artifact diff" in rendered
     assert "\n+def export():\n" in rendered
     assert "Integrated target diff: pending Git merge." in rendered

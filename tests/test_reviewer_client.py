@@ -132,27 +132,82 @@ def test_remote_full_patch_rejects_truncation_or_hash_mismatch() -> None:
             _validated_full_patch(bad)
 
 
-def test_text_inspection_shows_patch_lines_and_marks_unverified_preview() -> None:
-    patch = "diff --git a/a b/a\n+one\n+two\n"
-    digest = hashlib.sha256(patch.encode()).hexdigest()
-    packet = {
+def _inspection_packet(patch: str) -> dict:
+    return {
         "version": "v1",
-        "task": {"id": "task-1"},
+        "task": {
+            "id": "task-1",
+            "status": "submitted",
+            "member_id": "alice",
+            "base_ref": "main",
+            "spec": "Implement the export",
+            "constraints": ["Keep the API stable"],
+            "forbidden_paths": ["secrets/"],
+            "artifact": {
+                "branch": "feature/export",
+                "summary": "Added export function",
+                "changed_paths": ["a"],
+            },
+        },
+        "intent": {
+            "id": "intent-1",
+            "status": "in_progress",
+            "author": "owner",
+            "problem": "Need an export\nfunction",
+            "proposed_outcome": "Export records",
+            "affected_paths": ["a"],
+            "affected_symbols": ["export"],
+            "constraints": ["Preserve input order"],
+        },
         "git": {
             "base_sha": "a" * 40,
             "artifact_sha": "b" * 40,
             "target_sha": "c" * 40,
+            "branch_unchanged": True,
             "integrated_into_target": False,
+            "net_changed_paths": [],
+            "divergent_paths": [],
         },
+        "decision_delta": {"new_decisions": ["decision-2"], "withdrawn_decisions": []},
+        "accepted_decisions": [
+            {
+                "id": "decision-2",
+                "decision_type": "api_design",
+                "summary": "Keep old API",
+                "rationale": "Clients depend on it",
+            }
+        ],
+        "blocking_conflicts": [
+            {
+                "id": "conflict-1",
+                "severity": "blocking",
+                "conflict_type": "decision_conflict",
+                "rule": "incompatible_api",
+                "parties": ["intent-1", "decision-2"],
+                "evidence": {"reason": "API mismatch"},
+            }
+        ],
         "diff": {
             "patch": patch,
             "truncated": False,
-            "sha256": digest,
+            "sha256": hashlib.sha256(patch.encode()).hexdigest(),
             "changed_paths": ["a"],
         },
         "target_diff": None,
     }
+
+
+def test_text_inspection_shows_context_patch_and_truncation() -> None:
+    patch = "diff --git a/a b/a\n+one\n+two\n"
+    digest = hashlib.sha256(patch.encode()).hexdigest()
+    packet = _inspection_packet(patch)
     rendered = _format_inspection(packet)
+    assert "Problem:\n  Need an export\n  function" in rendered
+    assert "Task constraints: Keep the API stable" in rendered
+    assert "New accepted decisions since fork: decision-2" in rendered
+    assert "decision-2 [api_design]" in rendered
+    assert "Blocking conflicts (1):" in rendered
+    assert 'Evidence: {"reason": "API mismatch"}' in rendered
     assert "+one\n+two" in rendered
     assert f"Full patch SHA-256: {digest}" in rendered
     assert "Integrated target diff: pending Git merge." in rendered
@@ -182,28 +237,18 @@ def test_text_inspection_shows_patch_lines_and_marks_unverified_preview() -> Non
                 "target_diff": {**integrated["target_diff"], "changed_paths": ["other"]},
             }
         )
+    with pytest.raises(ValueError, match="response is invalid"):
+        _format_inspection({**packet, "intent": None})
 
 
 def test_text_inspection_escapes_terminal_controls_in_patch() -> None:
     patch = "diff --git a/a b/a\n+\x1b[31m\u202eevil\u2028\n"
-    packet = {
-        "version": "v1",
-        "task": {"id": "task-1"},
-        "git": {
-            "base_sha": "a" * 40,
-            "artifact_sha": "b" * 40,
-            "target_sha": "c" * 40,
-            "integrated_into_target": False,
-        },
-        "diff": {
-            "patch": patch,
-            "truncated": False,
-            "sha256": hashlib.sha256(patch.encode()).hexdigest(),
-            "changed_paths": ["a"],
-        },
-        "target_diff": None,
-    }
+    packet = _inspection_packet(patch)
     rendered = _format_inspection(packet)
     assert "\\x1b[31m\\u202eevil\\u2028" in rendered
     assert "\x1b" not in rendered
     assert "\u202e" not in rendered
+    altered = {**packet, "intent": {**packet["intent"], "problem": "Bad \x1b[31m title"}}
+    rendered = _format_inspection(altered)
+    assert "Bad \\x1b[31m title" in rendered
+    assert "\x1b" not in rendered

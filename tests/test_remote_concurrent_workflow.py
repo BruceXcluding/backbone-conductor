@@ -336,6 +336,8 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
                         == 0
                     )
                     rendered = capsys.readouterr().out
+                    assert "Problem:\n  Add alice's function" in rendered
+                    assert "Intent: intent-alice (in_progress)" in rendered
                     assert "\n+def alice():\n" in rendered
                     assert "Integrated target diff: pending Git merge." in rendered
 

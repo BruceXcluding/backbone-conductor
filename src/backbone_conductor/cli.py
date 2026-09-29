@@ -54,29 +54,107 @@ def _format_inspection(packet: object) -> str:
     """Render a review packet for humans while keeping JSON as the default CLI format."""
     if not isinstance(packet, dict):
         raise ValueError("Task inspection response is invalid")
-    task, git = packet.get("task"), packet.get("git")
-    if not isinstance(task, dict) or not isinstance(git, dict):
+    task, intent, git = packet.get("task"), packet.get("intent"), packet.get("git")
+    if not all(isinstance(value, dict) for value in (task, intent, git)):
         raise ValueError("Task inspection response is invalid")
+
+    def field(source: dict, key: str) -> str:
+        value = source.get(key)
+        if not isinstance(value, str):
+            raise ValueError("Task inspection response is invalid")
+        return _visible(value)
+
+    def items(source: dict, key: str) -> list[str]:
+        value = source.get(key)
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError("Task inspection response is invalid")
+        return [_visible(item) for item in value]
+
+    def line_items(label: str, values: list[str]) -> str:
+        return f"{label}: {', '.join(values) if values else '(none)'}"
+
+    def prose(label: str, source: dict, key: str, *, indent: str = "") -> str:
+        value = source.get(key)
+        if not isinstance(value, str):
+            raise ValueError("Task inspection response is invalid")
+        prefix = f"{indent}  "
+        display = _visible(value, multiline=True).replace("\n", "\n" + prefix)
+        return f"{indent}{label}:\n{prefix}{display or '(none)'}"
+
     required = ("base_sha", "artifact_sha", "target_sha", "integrated_into_target")
     if (
         any(key not in git for key in required)
         or not all(isinstance(git[key], str) for key in required[:3])
         or type(git["integrated_into_target"]) is not bool
-        or not isinstance(task.get("id"), str)
+        or type(git.get("branch_unchanged")) is not bool
         or not isinstance(packet.get("version"), str)
+    ):
+        raise ValueError("Task inspection response is invalid")
+    artifact = task.get("artifact")
+    delta = packet.get("decision_delta")
+    decisions = packet.get("accepted_decisions")
+    blockers = packet.get("blocking_conflicts")
+    if (
+        not isinstance(artifact, dict)
+        or not isinstance(delta, dict)
+        or not isinstance(decisions, list)
+        or not isinstance(blockers, list)
+        or any(not isinstance(item, dict) for item in chain(decisions, blockers))
+        or any(not isinstance(item.get("evidence"), dict) for item in blockers)
     ):
         raise ValueError("Task inspection response is invalid")
 
     lines = [
-        f"Task: {_visible(task['id'])}",
+        f"Task: {field(task, 'id')} ({field(task, 'status')})",
         f"Ledger version: {_visible(packet['version'])}",
         f"Base commit: {_visible(git['base_sha'])}",
         f"Artifact commit: {_visible(git['artifact_sha'])}",
         f"Target commit: {_visible(git['target_sha'])}",
+        f"Artifact branch unchanged: {git['branch_unchanged']}",
         f"Integrated into target: {git['integrated_into_target']}",
-        "Review the full intent, decisions, and conflicts in the default JSON packet.",
-        "Terminal control characters in the patch are escaped for display.",
+        line_items("Net changed target paths", items(git, "net_changed_paths")),
+        line_items("Divergent target paths", items(git, "divergent_paths")),
+        "The default JSON packet contains all fields and structured evidence.",
+        "Terminal control characters in review content are escaped for display.",
+        "",
+        "=== Review context ===",
+        f"Intent: {field(intent, 'id')} ({field(intent, 'status')}) by {field(intent, 'author')}",
+        prose("Problem", intent, "problem"),
+        prose("Proposed outcome", intent, "proposed_outcome"),
+        line_items("Affected paths", items(intent, "affected_paths")),
+        line_items("Affected symbols", items(intent, "affected_symbols")),
+        line_items("Intent constraints", items(intent, "constraints")),
+        f"Member: {field(task, 'member_id')}",
+        f"Target branch: {field(task, 'base_ref')}",
+        prose("Task specification", task, "spec"),
+        line_items("Task constraints", items(task, "constraints")),
+        line_items("Forbidden paths", items(task, "forbidden_paths")),
+        f"Artifact branch: {field(artifact, 'branch')}",
+        prose("Artifact summary", artifact, "summary"),
+        line_items("Artifact paths", items(artifact, "changed_paths")),
+        line_items("New accepted decisions since fork", items(delta, "new_decisions")),
+        line_items("Withdrawn decisions since fork", items(delta, "withdrawn_decisions")),
+        f"Accepted decisions ({len(decisions)}):",
     ]
+    for decision in decisions:
+        lines.extend(
+            [
+                f"  {field(decision, 'id')} [{field(decision, 'decision_type')}]",
+                prose("Summary", decision, "summary", indent="  "),
+                prose("Rationale", decision, "rationale", indent="  "),
+            ]
+        )
+    lines.append(f"Blocking conflicts ({len(blockers)}):")
+    for conflict in blockers:
+        lines.extend(
+            [
+                f"  {field(conflict, 'id')} [{field(conflict, 'severity')}, "
+                f"{field(conflict, 'conflict_type')}]",
+                f"    Rule: {field(conflict, 'rule')}",
+                f"    Parties: {', '.join(items(conflict, 'parties'))}",
+                f"    Evidence: {_visible(json.dumps(conflict.get('evidence'), ensure_ascii=False, sort_keys=True))}",
+            ]
+        )
 
     def append_patch(title: str, value: object) -> None:
         if not isinstance(value, dict):
