@@ -208,6 +208,16 @@ def build_parser() -> argparse.ArgumentParser:
     dsh_prompt = dsh.add_mutually_exclusive_group(required=True)
     dsh_prompt.add_argument("--prompt")
     dsh_prompt.add_argument("--prompt-file", help="UTF-8 prompt file")
+    coordinator = commands.add_parser(
+        "conductor", help="Run a limited DSH coordination agent with Backbone MCP"
+    )
+    coordinator.add_argument("--dsh-home", required=True, help="Private DSH home outside the repo")
+    coordinator.add_argument("--model", required=True)
+    coordinator.add_argument("--provider", default="deepseek-official")
+    coordinator.add_argument("--session-id", help="Continue this repository's coordinator session")
+    coordinator_prompt = coordinator.add_mutually_exclusive_group(required=True)
+    coordinator_prompt.add_argument("--prompt")
+    coordinator_prompt.add_argument("--prompt-file", help="UTF-8 prompt file")
 
     reviewer = commands.add_parser(
         "reviewer", help="Review through an authenticated HTTP server without a local Git clone"
@@ -279,7 +289,9 @@ def build_parser() -> argparse.ArgumentParser:
     revoke_principal.add_argument("--file", required=True, help="Existing private token file")
     revoke_principal.add_argument("--name", required=True, help="Principal to revoke")
     mcp = commands.add_parser("mcp", help="Run the MCP server over stdio")
-    mcp.add_argument("--member", help="Bind member operations and omit administrator tools")
+    mcp_scope = mcp.add_mutually_exclusive_group()
+    mcp_scope.add_argument("--member", help="Bind member operations and omit administrator tools")
+    mcp_scope.add_argument("--coordinator", action="store_true", help="Expose limited agent tools")
     return parser
 
 
@@ -379,12 +391,24 @@ def _run(args: argparse.Namespace) -> Any:
             "detail": "Save these plaintext tokens now; only SHA-256 digests are stored in the file.",
         }
     if args.command == "mcp":
-        from .mcp_server import create_server
+        from .mcp_server import create_coordinator_server, create_server
 
-        create_server(args.repo, member_id=args.member, ledger_branch=args.ledger_branch).run(
-            transport="stdio"
+        server = (
+            create_coordinator_server(args.repo, ledger_branch=args.ledger_branch)
+            if args.coordinator
+            else create_server(args.repo, member_id=args.member, ledger_branch=args.ledger_branch)
         )
+        server.run(transport="stdio")
         return None
+    if args.command == "conductor":
+        from .dsh_agent import DSHCoordinatorRunner
+
+        prompt = (
+            Path(args.prompt_file).read_text(encoding="utf-8") if args.prompt_file else args.prompt
+        )
+        return DSHCoordinatorRunner(
+            args.repo, args.dsh_home, args.model, args.provider, ledger_branch=args.ledger_branch
+        ).run(prompt, session_id=args.session_id)
     if args.command == "dsh":
         from .dsh_agent import DSHMemberRunner, DSHRemoteMemberRunner
 

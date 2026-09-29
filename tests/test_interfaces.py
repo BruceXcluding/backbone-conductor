@@ -17,7 +17,11 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from backbone_conductor.api import create_app
 from backbone_conductor.cli import main
-from backbone_conductor.mcp_server import create_server
+from backbone_conductor.mcp_server import (
+    COORDINATOR_TOOLS,
+    create_coordinator_server,
+    create_server,
+)
 from backbone_conductor.service import Conductor
 
 SOURCE_ROOT = str(Path(__file__).resolve().parents[1] / "src")
@@ -192,6 +196,43 @@ def test_cli_runs_member_scoped_dsh_entry_with_prompt_file(
         "prompt": "Read my task before coding",
     }
     assert json.loads(capsys.readouterr().out)["session_id"] == "session-1"
+
+
+def test_cli_runs_limited_coordinator_entry(
+    interface_repo: Path, tmp_path: Path, monkeypatch, capsys
+):
+    from backbone_conductor.dsh_agent import DSHCoordinatorRunner
+
+    Conductor(interface_repo).initialize()
+    observed = {}
+
+    def run(self, prompt, *, session_id=None):
+        observed.update(repo=self.repo, prompt=prompt, session_id=session_id)
+        return {"final_response": "Draft prepared", "session_id": "session-1"}
+
+    monkeypatch.setattr(DSHCoordinatorRunner, "run", run)
+    assert (
+        main(
+            [
+                "--repo",
+                str(interface_repo),
+                "conductor",
+                "--dsh-home",
+                str(tmp_path / "private-dsh-home"),
+                "--model",
+                "test-model",
+                "--prompt",
+                "Summarize the current intents",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "repo": interface_repo,
+        "prompt": "Summarize the current intents",
+        "session_id": None,
+    }
+    assert json.loads(capsys.readouterr().out)["final_response"] == "Draft prepared"
 
 
 def test_cli_routes_remote_dsh_without_a_local_ledger(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -486,6 +527,39 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             Conductor(interface_repo).state()["intents"][successors[0]["id"]]["status"]
             == "accepted"
         )
+
+    asyncio.run(check())
+
+
+def test_coordinator_mcp_requires_human_acceptance_before_dispatch(interface_repo: Path) -> None:
+    conductor = Conductor(interface_repo)
+    conductor.initialize()
+
+    async def check() -> None:
+        server = create_coordinator_server(interface_repo)
+        names = {tool.name for tool in await server.list_tools()}
+        assert names == COORDINATOR_TOOLS
+        assert not {"review_intent", "resolve_conflict", "merge_task", "transition_intent"} & names
+        with pytest.raises(ToolError, match="human author"):
+            await server.call_tool("create_intent", {"intent_data": intent_data()})
+        data = intent_data()
+        data.pop("author")
+        response = await server.call_tool("create_intent", {"intent_data": data})
+        created = json.loads(response[0].text)
+        assert created["author"] == "conductor-agent"
+        assert created["status"] == "draft"
+        with pytest.raises(ToolError):
+            await server.call_tool(
+                "dispatch_task", {"intent_id": created["id"], "member_id": "alice"}
+            )
+        conductor.review_intent(
+            created["id"], "accepted", "owner", "Scope reviewed", conductor.state()["version"]
+        )
+        response = await server.call_tool(
+            "dispatch_task", {"intent_id": created["id"], "member_id": "alice"}
+        )
+        dispatched = json.loads(response[0].text)
+        assert dispatched["member_id"] == "alice"
 
     asyncio.run(check())
 

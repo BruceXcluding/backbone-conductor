@@ -11,7 +11,11 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from backbone_conductor.dsh_agent import DSHMemberRunner, DSHRemoteMemberRunner
+from backbone_conductor.dsh_agent import (
+    DSHCoordinatorRunner,
+    DSHMemberRunner,
+    DSHRemoteMemberRunner,
+)
 from backbone_conductor.runtime import DSHReviewer, _review_patch
 from backbone_conductor.service import Conductor
 
@@ -492,6 +496,118 @@ def test_installed_sdk_starts_member_mcp_without_model_call(tmp_path: Path) -> N
     runner = DSHMemberRunner(repo, workspace, tmp_path / "dsh-home", "alice", "placeholder")
     patch = tmp_path / "backbone.patch.yml"
     patch.write_text(json.dumps(runner.member_patch()))
+    harness = DeepSeekHarness(
+        dsh_home=str(runner.home),
+        cwd=str(workspace),
+        profile="sdk-minimal",
+        patches=(str(patch),),
+        provider="deepseek-official",
+        model="placeholder",
+        initialize_timeout_seconds=30,
+    )
+    try:
+        harness.start()
+        assert any("ListToolsRequest" in line for line in harness.client._stderr_lines)
+    finally:
+        harness.close()
+
+
+def test_coordinator_runner_preflight_and_limited_patch(tmp_path: Path) -> None:
+    repo = initialized_repo(tmp_path)
+    runner = DSHCoordinatorRunner(repo, tmp_path / "private-dsh-home", "placeholder")
+    workspace = tmp_path / "ephemeral-workspace"
+    workspace.mkdir()
+    patch = runner.coordinator_patch(workspace)
+    assert patch[0]["config"] == {"mode": "read-only", "workspaceRoot": str(workspace)}
+    assert patch[1:3] == [
+        {"id": "persistent-bash", "disabled": True},
+        {"id": "persistent-pwsh", "disabled": True},
+    ]
+    assert patch[3]["insert"][0]["config"]["args"][-2:] == ["mcp", "--coordinator"]
+    runner._preflight_mcp(patch)
+    with pytest.raises(ValueError, match="different coordinator repository"):
+        runner.run("Read state", session_id="foreign-session")
+
+
+def test_coordinator_runner_rejects_elevated_scope_and_public_home(tmp_path: Path) -> None:
+    repo = initialized_repo(tmp_path)
+    public_home = tmp_path / "public-home"
+    public_home.mkdir(mode=0o755)
+    with pytest.raises(ValueError, match="0700"):
+        DSHCoordinatorRunner(repo, public_home, "placeholder")
+    with pytest.raises(ValueError, match="outside the repository"):
+        DSHCoordinatorRunner(repo, repo / "home", "placeholder")
+    runner = DSHCoordinatorRunner(repo, tmp_path / "private-home", "placeholder")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    patch = runner.coordinator_patch(workspace)
+    patch[3]["insert"][0]["config"]["args"] = patch[3]["insert"][0]["config"]["args"][:-1]
+    with pytest.raises(ValueError, match="preflight failed"):
+        runner._preflight_mcp(patch)
+
+
+def test_coordinator_runner_closes_sdk_and_removes_patch(tmp_path: Path, monkeypatch) -> None:
+    repo = initialized_repo(tmp_path)
+    runner = DSHCoordinatorRunner(repo, tmp_path / "private-dsh-home", "chosen-model")
+    observed = SimpleNamespace(closed=False)
+
+    class Harness:
+        def __init__(self, **options):
+            observed.options = options
+            observed.patch_path = Path(options["patches"][0])
+            observed.patch = json.loads(observed.patch_path.read_text())
+            observed.patch_mode = observed.patch_path.stat().st_mode & 0o777
+
+        def run(self, prompt, *, session_id):
+            observed.prompt = prompt
+            return SimpleNamespace(
+                session_id=session_id,
+                finish_reason="completed",
+                final_response="Draft intent proposed",
+            )
+
+        def close(self):
+            observed.closed = True
+
+    module = ModuleType("deepseek_harness")
+    module.DeepSeekHarness = Harness
+    monkeypatch.setitem(sys.modules, "deepseek_harness", module)
+    result = runner.run("Check current coordination state")
+    assert result["session_id"].startswith(runner.session_prefix)
+    assert result["final_response"] == "Draft intent proposed"
+    assert result["elapsed_ms"] >= 0
+    assert observed.closed
+    assert observed.patch_mode == 0o600
+    assert not observed.patch_path.exists()
+    assert observed.options["cwd"] != str(repo)
+    assert observed.options["env"]["DSH_SYSTEM_PROMPT"].startswith(
+        "You are a limited Backbone coordination agent"
+    )
+
+
+def test_installed_sdk_starts_coordinator_mcp_without_model_call(tmp_path: Path) -> None:
+    if os.environ.get("BACKBONE_REQUIRE_DSH_MCP") != "1":
+        pytest.skip("set BACKBONE_REQUIRE_DSH_MCP=1 for the installed SDK startup check")
+    from deepseek_harness import DeepSeekHarness
+
+    repo = initialized_repo(tmp_path)
+    runner = DSHCoordinatorRunner(repo, tmp_path / "private-dsh-home", "placeholder")
+    workspace = tmp_path / "ephemeral-workspace"
+    workspace.mkdir()
+    patch = tmp_path / "coordinator.patch.yml"
+    patch.write_text(json.dumps(runner.coordinator_patch(workspace)))
+    executable = Path(sys.executable).with_name("dsh")
+    effective = subprocess.run(
+        [str(executable), "--profile", "sdk-minimal", "--patch", str(patch), "--dump-config"],
+        env={**os.environ, "DSH_HOME": str(runner.home)},
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    rows = {section.splitlines()[0]: section for section in effective.split("- id: ")[1:]}
+    assert "mode: read-only" in rows["sandbox-policy"]
+    for tool in ("persistent-bash", "persistent-pwsh"):
+        assert "disabled: true" in rows[tool]
     harness = DeepSeekHarness(
         dsh_home=str(runner.home),
         cwd=str(workspace),

@@ -20,6 +20,19 @@ uv run backbone --repo /absolute/project review-stats \
 
 需在本地配置 provider 凭据，不写入 Git。审查会向该 provider 发送任务和代码 diff；结果只作建议。补丁禁用默认 shell，但指定的 DSH home 若有自定义补丁，仍可能装载其他工具；请使用专用 home 和适当的运行账户。一次性目录与只读工具策略不限制 Harness 进程自身的 OS 权限或向 provider 发送数据。
 
+## 受限协调代理
+
+`backbone conductor` 在本地仓库启动 DSH `sdk-minimal`，以一次性只读工作目录和私有补丁连接 `backbone mcp --coordinator`。该 MCP 服务**只**公开读取完整协调状态、创建 `conductor-agent` 作者的草稿意图、提出同作者的建议决策、检测确定性冲突、分派已接受意图、读取固定提交审查包六项工具。意图接受、决策接受、冲突仲裁、任务合并审批及远端同步均不在工具列表中；运行前独立 MCP 握手要求精确工具集合并读取状态，若权限扩大则拒绝启动模型。DSH 补丁禁用默认持久 shell，并将文件策略设为只读。模型不能通过这些工具完成需要人类审查的状态转换。
+
+```sh
+uv sync --locked --extra dsh
+uv run backbone --repo /absolute/project conductor \
+  --dsh-home /absolute/private-coordinator-home --model YOUR_MODEL \
+  --prompt "读取当前状态，提出待人审查的计划并分派已接受工作"
+```
+
+可用 `--ledger-branch backbone` 指定独立元数据分支，用 `--session-id` 继续同一仓库的协调会话。DSH home 必须在仓库外，由当前用户持有且仅当前用户可访问（0700）；会话日志在该 home 中。调用模型时，协调状态和由 `inspect_task` 读取的代码审查包可能发送给所配置的 provider。MCP 子进程仍以运行者的 OS 权限访问本地仓库，DSH 工具策略不是 OS 隔离；专用 home 若装有额外插件，还需单独审查其能力。请以专用运行账户和合适的 Git 文件权限运行。正式 SDK 的配置和启动、MCP 工具发现均经过无模型测试；没有进行付费模型回合，因此尚未验证实际模型的协调质量。
+
 ## 成员代理接入
 
 `backbone dsh` 使用同一可选 SDK 的 `sdk-minimal` profile，在临时补丁中装载 `@deepseek-ai/dsh-mcp-client`，启动绑定 `--member` 的 Backbone stdio MCP 服务。调用模型前，Python 端另起一次 MCP 连接，核对初始化、工具列表、成员上下文，并拒绝管理员工具泄露。`--workspace` 必须是与协调仓库分开的现存目录，`--dsh-home` 必须位于两者之外；补丁把 DSH 工具写入策略设为 `workspace-write`，并在系统提示中要求通过 MCP 操作协调元数据。独立元数据分支可在 `dsh` 子命令前传入 `--ledger-branch backbone`。
@@ -44,6 +57,6 @@ uv run backbone dsh --member alice \
   --model YOUR_MODEL --prompt-file /absolute/task-prompt.txt
 ```
 
-SDK 接口、结构化输出、错误清理和成功审查指标经过无模型测试；审查专用补丁经有效配置输出和真实 SDK 无模型启动验证。本地 stdio 成员 MCP 通过 SDK 无模型启动及工具发现验证；远程 HTTP/HTTPS 通过独立 Python MCP 握手、成员工具发现和 SDK 无模型启动验证，尚未从 DSH 自身确认远程工具调用。真实模型调用、token 用量与费用尚未验证。当前 SDK `RunResult` 未提供稳定的用量/费用字段，因此不推算费用。更完整的原生 DSH 插件组合、工作内存和多 Agent 调度插件仍待实现。
+SDK 接口、结构化输出、错误清理和成功审查指标经过无模型测试；审查专用补丁经有效配置输出和真实 SDK 无模型启动验证。本地 stdio 成员与受限协调 MCP 均通过 SDK 无模型启动及工具发现验证；远程 HTTP/HTTPS 通过独立 Python MCP 握手、成员工具发现和 SDK 无模型启动验证，尚未从 DSH 自身确认远程工具调用。真实模型调用、token 用量与费用尚未验证。当前 SDK `RunResult` 未提供稳定的用量/费用字段，因此不推算费用。更完整的原生 DSH 插件组合、工作内存和多 Agent 调度插件仍待实现。
 
 依据：[DSH 官方 Python SDK](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md)、[SDK 入门](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/python-sdk.md)、[DSH MCP 客户端](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)。MCP 服务端使用 [官方 MCP Python SDK v1](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x)，固定 `<2` 避免主版本 API 变化。
