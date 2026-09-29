@@ -108,7 +108,13 @@ def test_submitted_patch_is_visible_to_reviewer_but_not_member(
             response = client.get(route, headers=auth_header(token))
             assert response.status_code == 200, response.text
             assert "+def export():" in response.json()["diff"]["patch"]
+            complete = client.get(route, params={"full_patch": "true"}, headers=auth_header(token))
+            assert complete.status_code == 200, complete.text
+            assert complete.json()["diff"]["truncated"] is False
+            assert complete.json()["diff"]["patch"] == response.json()["diff"]["patch"]
     assert main(["--repo", str(repo), "task", "inspect", task["id"]]) == 0
+    assert "+def export():" in capsys.readouterr().out
+    assert main(["--repo", str(repo), "task", "inspect", task["id"], "--full"]) == 0
     assert "+def export():" in capsys.readouterr().out
 
 

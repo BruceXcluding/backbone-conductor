@@ -812,7 +812,7 @@ class Conductor:
             "model_advice": advice,
         }
 
-    def inspect_task(self, task_id: str) -> dict:
+    def inspect_task(self, task_id: str, *, full_patch: bool = False) -> dict:
         """Build a read-only packet pinned to the artifact's checked Git commits."""
         state = self.store.read()
         task = state.tasks[task_id]
@@ -832,7 +832,7 @@ class Conductor:
         patch_bytes = patch.encode("utf-8")
         if len(patch_bytes) > 1_000_000:
             raise ValueError("Artifact diff exceeds the 1 MB review limit; split the task")
-        preview_limit = 131_072
+        preview_limit = 1_000_000 if full_patch else 131_072
         preview = patch_bytes[:preview_limit].decode("utf-8", errors="ignore")
         try:
             branch_sha = self._commit(artifact.branch)

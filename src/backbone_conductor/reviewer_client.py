@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import ssl
@@ -111,6 +112,32 @@ def _validated_audit_report(report: object, limit: int) -> dict:
     return report
 
 
+def _validated_full_patch(packet: object) -> dict:
+    """Reject an incomplete or internally inconsistent remote review patch."""
+    error = ValueError("Reviewer server returned an invalid full review patch")
+    if not isinstance(packet, dict):
+        raise error
+    diff = packet.get("diff")
+    if not isinstance(diff, dict):
+        raise error
+    patch = diff.get("patch")
+    digest = diff.get("sha256")
+    if not isinstance(patch, str) or not isinstance(digest, str):
+        raise error
+    try:
+        patch_bytes = patch.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise error from exc
+    if (
+        diff.get("truncated") is not False
+        or len(patch_bytes) > 1_000_000
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        or hashlib.sha256(patch_bytes).hexdigest() != digest
+    ):
+        raise error
+    return packet
+
+
 def run_reviewer_command(args) -> dict | list:
     """Call the reviewer HTTP API once, binding write authors to its token identity."""
     origin = _server_url(args.url)
@@ -196,7 +223,13 @@ def run_reviewer_command(args) -> dict | list:
             report = request(client, "GET", "/audit/verify", params={"limit": args.limit})
             return _validated_audit_report(report, args.limit)
         if args.action == "inspect":
-            return request(client, "GET", f"/tasks/{_identifier(args.task_id)}/inspection")
+            packet = request(
+                client,
+                "GET",
+                f"/tasks/{_identifier(args.task_id)}/inspection",
+                params={"full_patch": True} if args.full else None,
+            )
+            return _validated_full_patch(packet) if args.full else packet
         if args.action == "review-intent":
             return request(
                 client,

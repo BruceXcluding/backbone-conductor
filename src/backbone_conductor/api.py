@@ -390,8 +390,8 @@ def create_app(
         return visible_task(request, task_id)
 
     @app.get("/tasks/{task_id}/inspection")
-    def task_inspection(task_id: str) -> dict:
-        return conductor.inspect_task(task_id)
+    def task_inspection(task_id: str, full_patch: bool = False) -> dict:
+        return conductor.inspect_task(task_id, full_patch=full_patch)
 
     @app.post("/tasks/{task_id}/start")
     def start_task(task_id: str, data: Member, request: Request) -> dict:

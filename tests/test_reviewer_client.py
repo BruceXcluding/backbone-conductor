@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,11 @@ from pathlib import Path
 import pytest
 
 from backbone_conductor.cli import main
-from backbone_conductor.reviewer_client import _private_token, _validated_audit_report
+from backbone_conductor.reviewer_client import (
+    _private_token,
+    _validated_audit_report,
+    _validated_full_patch,
+)
 
 
 def test_reviewer_cli_requires_https_for_non_loopback(tmp_path: Path, capsys) -> None:
@@ -74,3 +79,23 @@ def test_remote_audit_report_rejects_inconsistent_signature_counts() -> None:
     ):
         with pytest.raises(ValueError, match="invalid audit report"):
             _validated_audit_report(bad, 1)
+
+
+def test_remote_full_patch_rejects_truncation_or_hash_mismatch() -> None:
+    patch = "diff --git a/a b/a\n+é\n"
+    packet = {
+        "diff": {
+            "patch": patch,
+            "truncated": False,
+            "sha256": hashlib.sha256(patch.encode()).hexdigest(),
+        }
+    }
+    assert _validated_full_patch(packet) == packet
+    for bad in (
+        {"diff": {**packet["diff"], "patch": patch[:-1]}},
+        {"diff": {**packet["diff"], "truncated": True}},
+        {"diff": {**packet["diff"], "sha256": "0" * 64}},
+        {"diff": {**packet["diff"], "patch": "x" * 1_000_001}},
+    ):
+        with pytest.raises(ValueError, match="invalid full review patch"):
+            _validated_full_patch(bad)

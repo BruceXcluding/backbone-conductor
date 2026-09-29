@@ -314,6 +314,9 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
                 inspections[name] = inspection
                 assert f"+def {name}():" in inspection["diff"]["patch"]
                 assert inspection["git"]["integrated_into_target"] is False
+                complete = reviewer_command("inspect", task_ids[name], "--full")
+                assert complete["diff"]["patch"] == inspection["diff"]["patch"]
+                assert complete["diff"]["truncated"] is False
 
             assert (
                 main(

@@ -153,6 +153,9 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--member", required=True)
     inspect = tasks.add_parser("inspect", help="Inspect the submitted code review packet")
     inspect.add_argument("task_id")
+    inspect.add_argument(
+        "--full", action="store_true", help="Include the complete bounded Git patch"
+    )
     fetch = tasks.add_parser("fetch", help="Fetch an assigned member's pushed code branch")
     fetch.add_argument("task_id")
     fetch.add_argument("--member", required=True)
@@ -314,6 +317,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reviewer_inspect = reviewer_actions.add_parser("inspect", help="Read a submitted task packet")
     reviewer_inspect.add_argument("task_id")
+    reviewer_inspect.add_argument(
+        "--full", action="store_true", help="Fetch and verify the complete bounded Git patch"
+    )
     reviewer_intent = reviewer_actions.add_parser("review-intent", help="Accept or reject a draft")
     reviewer_intent.add_argument("intent_id")
     reviewer_intent.add_argument("--outcome", required=True, choices=["accepted", "rejected"])
@@ -619,7 +625,7 @@ def _run(args: argparse.Namespace) -> Any:
         if args.action == "start":
             return conductor.start_task(args.task_id, args.member)
         if args.action == "inspect":
-            return conductor.inspect_task(args.task_id)
+            return conductor.inspect_task(args.task_id, full_patch=args.full)
         if args.action == "fetch":
             return conductor.fetch_artifact_branch(
                 args.task_id, args.member, args.branch, args.expected_sha, args.remote

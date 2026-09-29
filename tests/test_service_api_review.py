@@ -238,6 +238,8 @@ def test_review_packet_bounds_remote_patch_size(audit_project, line_count, too_l
     if too_large:
         with pytest.raises(ValueError, match="1 MB review limit"):
             service.inspect_task(task["id"])
+        with pytest.raises(ValueError, match="1 MB review limit"):
+            service.inspect_task(task["id"], full_patch=True)
     else:
         packet = service.inspect_task(task["id"])
         assert packet["diff"]["truncated"] is True
@@ -259,6 +261,11 @@ def test_review_packet_bounds_remote_patch_size(audit_project, line_count, too_l
             text=True,
         ).stdout
         assert packet["diff"]["sha256"] == hashlib.sha256(full.encode()).hexdigest()
+        complete = service.inspect_task(task["id"], full_patch=True)
+        assert complete["diff"]["patch"] == full
+        assert complete["diff"]["truncated"] is False
+        assert complete["diff"]["sha256"] == packet["diff"]["sha256"]
+        assert complete["version"] == packet["version"]
 
 
 def test_global_dependency_conflict_blocks_artifact_until_human_arbitration(audit_project):
