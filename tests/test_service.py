@@ -170,16 +170,34 @@ def test_arbitration_is_audited_and_new_evidence_is_not_waived(project):
     result = submission(service, intent)
     assert not result["accepted"]
     conflict = next(c for c in result["conflicts"] if c["severity"] != "advisory")
+    stale_version = service.state()["version"]
+    service.log_decision(
+        {
+            "author": "owner",
+            "decision_type": "process",
+            "summary": "Review schedule",
+            "rationale": "Plan",
+        }
+    )
+    with pytest.raises(ValueError, match="Backbone changed"):
+        service.resolve_conflict(
+            conflict["id"], "owner", "coordinate", "Stale review", stale_version
+        )
+    assert not service.state()["conflicts"][conflict["id"]]["resolved"]
+    version = service.state()["version"]
     resolution = service.resolve_conflict(
-        conflict["id"], "owner", "coordinate", "Keep compatibility until next release"
+        conflict["id"], "owner", "coordinate", "Keep compatibility until next release", version
     )
     assert resolution["decision"]["status"] == "accepted"
+    assert resolution["conflict"]["resolution"]["reviewed_version"] == version
     assert not submission(service, intent)["accepted"]
     service.rebase_task(task["id"], "alice", service.state()["version"])
     assert submission(service, intent)["accepted"]
     assert service.detect_conflicts()["blocking"] == 0
     with pytest.raises(ValueError, match="already resolved"):
-        service.resolve_conflict(conflict["id"], "owner", "coordinate", "Again")
+        service.resolve_conflict(
+            conflict["id"], "owner", "coordinate", "Again", service.state()["version"]
+        )
 
 
 def test_decision_supersession_and_task_sync(project):

@@ -206,6 +206,30 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(
                 for item in conflicts
                 if set(item["parties"]) == {first["id"], second["id"]} and not item["resolved"]
             )
+            stale_version = service.state()["version"]
+            service.log_decision(
+                {
+                    "author": "owner",
+                    "decision_type": "process",
+                    "summary": "Schedule review",
+                    "rationale": "Plan",
+                }
+            )
+            stale_command = [
+                *reviewer_command,
+                "resolve-conflict",
+                overlap["id"],
+                "--action",
+                "coordinate",
+                "--rationale",
+                "Agree the API change order",
+                "--version",
+                stale_version,
+            ]
+            assert main(stale_command) == 1
+            assert "HTTP 422" in json.loads(capsys.readouterr().err)["error"]
+            assert not service.state()["conflicts"][overlap["id"]]["resolved"]
+            version = service.state()["version"]
             assert (
                 main(
                     [
@@ -216,12 +240,15 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(
                         "coordinate",
                         "--rationale",
                         "Agree the API change order",
+                        "--version",
+                        version,
                     ]
                 )
                 == 0
             )
             resolution = json.loads(capsys.readouterr().out)
             assert resolution["decision"]["author"] == "carol"
+            assert resolution["conflict"]["resolution"]["reviewed_version"] == version
             assert service.state()["conflicts"][overlap["id"]]["resolved"]
             headers = {"Authorization": f"Bearer {token}"}
             assert client.get(f"{url}/state", headers=headers).status_code == 200

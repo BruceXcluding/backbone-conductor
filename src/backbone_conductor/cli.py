@@ -197,6 +197,7 @@ def build_parser() -> argparse.ArgumentParser:
     resolve.add_argument("--author", required=True)
     resolve.add_argument("--action", dest="resolution_action", required=True)
     resolve.add_argument("--rationale", required=True)
+    resolve.add_argument("--version", required=True, help="Version observed in state")
 
     sync = commands.add_parser("sync", help="Synchronize with the configured Git remote")
     sync.add_argument("--remote", default="origin")
@@ -317,6 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["accept_existing", "override_existing", "coordinate", "accept_risk"],
     )
     reviewer_resolve.add_argument("--rationale", required=True)
+    reviewer_resolve.add_argument("--version", required=True, help="Version observed in state")
     reviewer_approve = reviewer_actions.add_parser(
         "approve", help="Record approval after the code has been merged with Git"
     )
@@ -631,7 +633,11 @@ def _run(args: argparse.Namespace) -> Any:
                 args.provider,
             )
         return conductor.resolve_conflict(
-            args.conflict_id, args.author, args.resolution_action, args.rationale
+            args.conflict_id,
+            args.author,
+            args.resolution_action,
+            args.rationale,
+            args.version,
         )
     if args.command == "sync":
         return conductor.sync(args.remote, args.branch)

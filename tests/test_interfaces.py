@@ -151,6 +151,44 @@ def test_cli_reverts_decision_with_reason_and_version(interface_repo: Path, caps
     assert reverted["reversion"]["rationale"] == "Existing clients still need it"
 
 
+def test_cli_resolves_conflict_against_observed_version(interface_repo: Path, capsys) -> None:
+    service = Conductor(interface_repo)
+    service.initialize()
+    service.create_intent({**intent_data(), "id": "intent-left"})
+    service.create_intent(
+        {
+            **intent_data(),
+            "id": "intent-right",
+            "author": "bob",
+            "problem": "Competing export change",
+        }
+    )
+    conflict = next(item for item in service.state()["conflicts"].values() if not item["resolved"])
+    version = service.state()["version"]
+    assert (
+        main(
+            [
+                "--repo",
+                str(interface_repo),
+                "conflict",
+                "resolve",
+                conflict["id"],
+                "--author",
+                "owner",
+                "--action",
+                "coordinate",
+                "--rationale",
+                "Agree compatible scopes",
+                "--version",
+                version,
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["conflict"]["resolution"]["reviewed_version"] == version
+
+
 def test_cli_returns_read_only_semantic_conflict_advice(
     interface_repo: Path, tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -781,7 +819,8 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
         await server.call_tool("create_intent", {"intent_data": data})
         state = Conductor(interface_repo).state()
         assert next(iter(state["intents"].values()))["author"] == "alice"
-        admin_names = {tool.name for tool in await create_server(interface_repo).list_tools()}
+        admin_tools = await create_server(interface_repo).list_tools()
+        admin_names = {tool.name for tool in admin_tools}
         assert {
             "dispatch_task",
             "transition_intent",
@@ -797,6 +836,8 @@ def test_mcp_member_binding_hides_admin_and_rejects_spoofing(interface_repo: Pat
             "refresh_backbone",
             "reconcile_backbone",
         } <= admin_names
+        resolve_tool = next(tool for tool in admin_tools if tool.name == "resolve_conflict")
+        assert "expected_version" in resolve_tool.inputSchema["required"]
         await create_server(interface_repo).call_tool("verify_audit_signatures", {"limit": 1})
         intent_id = next(iter(state["intents"]))
         Conductor(interface_repo).transition_intent(intent_id, "accepted")

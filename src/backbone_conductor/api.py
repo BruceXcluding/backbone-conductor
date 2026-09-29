@@ -138,6 +138,7 @@ class TaskRebase(Member):
 class Resolution(Approval):
     action: str = Field(min_length=1)
     rationale: str = Field(min_length=1)
+    expected_version: str = Field(min_length=1)
 
 
 class Sync(Action):
@@ -460,7 +461,11 @@ def create_app(
     @app.post("/conflicts/{conflict_id}/resolve")
     def resolve_conflict(conflict_id: str, data: Resolution, request: Request) -> dict:
         return conductor.resolve_conflict(
-            conflict_id, actor(request, data.author), data.action, data.rationale
+            conflict_id,
+            actor(request, data.author),
+            data.action,
+            data.rationale,
+            data.expected_version,
         )
 
     @app.get("/sync")

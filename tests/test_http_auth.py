@@ -637,20 +637,59 @@ def test_reviewer_can_arbitrate_with_bound_identity(auth_repo: tuple[Path, Path]
         conflicts = client.get("/conflicts", headers=auth_header(CAROL_TOKEN)).json()
         assert conflicts
         conflict_id = conflicts[0]["id"]
+        stale_version = client.get("/state", headers=auth_header(CAROL_TOKEN)).json()["version"]
         spoof = client.post(
             f"/conflicts/{conflict_id}/resolve",
             headers=auth_header(CAROL_TOKEN),
-            json={"author": "owner", "action": "coordinate", "rationale": "Reviewed both scopes"},
+            json={
+                "author": "owner",
+                "action": "coordinate",
+                "rationale": "Reviewed both scopes",
+                "expected_version": stale_version,
+            },
         )
         assert spoof.status_code == 403
-        resolved = client.post(
+        missing_version = client.post(
             f"/conflicts/{conflict_id}/resolve",
             headers=auth_header(CAROL_TOKEN),
             json={"author": "carol", "action": "coordinate", "rationale": "Reviewed both scopes"},
         )
+        assert missing_version.status_code == 422
+        Conductor(repo).log_decision(
+            {
+                "author": "owner",
+                "decision_type": "process",
+                "summary": "Schedule review",
+                "rationale": "Plan",
+            }
+        )
+        stale = client.post(
+            f"/conflicts/{conflict_id}/resolve",
+            headers=auth_header(CAROL_TOKEN),
+            json={
+                "author": "carol",
+                "action": "coordinate",
+                "rationale": "Reviewed both scopes",
+                "expected_version": stale_version,
+            },
+        )
+        assert stale.status_code == 422
+        assert not Conductor(repo).state()["conflicts"][conflict_id]["resolved"]
+        version = client.get("/state", headers=auth_header(CAROL_TOKEN)).json()["version"]
+        resolved = client.post(
+            f"/conflicts/{conflict_id}/resolve",
+            headers=auth_header(CAROL_TOKEN),
+            json={
+                "author": "carol",
+                "action": "coordinate",
+                "rationale": "Reviewed both scopes",
+                "expected_version": version,
+            },
+        )
         assert resolved.status_code == 200, resolved.text
         assert resolved.json()["decision"]["author"] == "carol"
         assert resolved.json()["conflict"]["resolved"] is True
+        assert resolved.json()["conflict"]["resolution"]["reviewed_version"] == version
     latest = subprocess.run(
         ["git", "-C", str(repo), "log", "-1", "--format=%B", "--", ".backbone"],
         check=True,

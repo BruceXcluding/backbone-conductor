@@ -306,3 +306,9 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 日期：2026-09-29。无协调仓库的审查者 CLI 增加 `decisions`、`conflicts`、`revert-decision` 和 `resolve-conflict`，对应已有审查者 HTTP 权限。写入操作继续通过 `/whoami` 核对审查者令牌，将 Git 审计作者绑定到服务端 principal；决策撤销要求观察版本与理由，冲突裁决要求精确的未解决冲突 ID、动作与理由。真实本机 HTTPS 服务测试覆盖可信证书、撤销审计身份、过期版本拒绝和冲突裁决，未由不同自然人执行远程验收。
 
 强制执行真实 HTTP/HTTPS 的本机完整套件 **367 passed、6 skipped，覆盖率 89.41%**；显式启用的 DSH SDK 专项套件 **8 passed**。Ruff、离线锁文件检查、24/24 合成规则评测、四例历史 Git 合并回放、十客户端 MCP 并发完整性、示例和 0.49.0 wheel/sdist 归档检查通过；wheel 已在仓库外独立导入。未调用在线付费模型，未上传 PyPI。
+
+## v0.50 版本绑定的冲突裁决
+
+日期：2026-09-29。`resolve_conflict` 现在要求非空的 `expected_version`，在 GitStore 事务中与当前账本版本核对，并将 `reviewed_version` 写入冲突裁决记录。账本自审查后发生任何变更时，即使冲突 ID 仍未解决，也拒绝过期裁决；审查者须重新读取状态与冲突证据。此要求覆盖本地 CLI、远程 HTTPS 审查者 CLI、HTTP 和管理员 MCP；旧客户端省略该字段会被拒绝。测试覆盖过期请求不改变冲突、身份绑定、缺少版本的 HTTP 请求，以及有效裁决的审计版本。
+
+强制执行真实 HTTP/HTTPS 的本机完整套件 **368 passed、6 skipped，覆盖率 89.43%**；显式启用的 DSH SDK 专项套件 **8 passed**。Ruff、离线锁文件检查、24/24 合成规则评测、四例历史 Git 合并回放、十客户端 MCP 并发完整性、示例和 0.50.0 wheel/sdist 归档检查通过；wheel 已在仓库外独立导入。未调用在线付费模型，未上传 PyPI。

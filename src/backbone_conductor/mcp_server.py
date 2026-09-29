@@ -264,9 +264,13 @@ def create_server(
             return conductor.verify_audit_signatures(limit)
 
         @server.tool()
-        def resolve_conflict(conflict_id: str, author: str, action: str, rationale: str) -> dict:
-            """Administrator: record an explicit human arbitration with its rationale."""
-            return conductor.resolve_conflict(conflict_id, author, action, rationale)
+        def resolve_conflict(
+            conflict_id: str, author: str, action: str, rationale: str, expected_version: str
+        ) -> dict:
+            """Administrator: arbitrate against the observed Backbone version."""
+            return conductor.resolve_conflict(
+                conflict_id, author, action, rationale, expected_version
+            )
 
         @server.tool()
         def merge_task(

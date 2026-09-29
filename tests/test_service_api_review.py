@@ -293,7 +293,13 @@ def test_global_dependency_conflict_blocks_artifact_until_human_arbitration(audi
         for value in service.state()["conflicts"].values()
         if value["rule"] == "dependency_conflict"
     )
-    service.resolve_conflict(conflict["id"], "owner", "accept_risk", "Staged migration is reviewed")
+    service.resolve_conflict(
+        conflict["id"],
+        "owner",
+        "accept_risk",
+        "Staged migration is reviewed",
+        service.state()["version"],
+    )
     assert not service.submit_artifact("alice", artifact)["accepted"]
     service.rebase_task(task["id"], "alice", service.state()["version"])
     assert service.submit_artifact("alice", artifact)["accepted"]

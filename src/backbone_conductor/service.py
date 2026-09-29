@@ -878,14 +878,20 @@ class Conductor:
             "requires_human_review": True,
         }
 
-    def resolve_conflict(self, conflict_id: str, author: str, action: str, rationale: str) -> dict:
+    def resolve_conflict(
+        self, conflict_id: str, author: str, action: str, rationale: str, expected_version: str
+    ) -> dict:
         author = _actor(author)
         if action not in {"accept_existing", "override_existing", "coordinate", "accept_risk"}:
             raise ValueError("Unknown arbitration action")
         if not rationale.strip():
             raise ValueError("A human arbitration rationale is required")
+        if not expected_version:
+            raise ValueError("Conflict resolution requires an observed Backbone version")
 
         def change(state: BackboneState):
+            if state.version != expected_version:
+                raise ValueError("Backbone changed; refresh the conflict and retry")
             conflict = state.conflicts[conflict_id]
             if conflict.resolved:
                 raise ValueError("Conflict is already resolved")
@@ -906,6 +912,7 @@ class Conductor:
                 "author": author,
                 "rationale": rationale,
                 "decision_id": decision.id,
+                "reviewed_version": state.version,
             }
             return {"conflict": _dump(conflict), "decision": _dump(decision)}
 

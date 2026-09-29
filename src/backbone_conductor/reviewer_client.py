@@ -162,6 +162,7 @@ def run_reviewer_command(args) -> dict | list:
                     "author": author,
                     "action": args.resolution_action,
                     "rationale": args.rationale,
+                    "expected_version": args.version,
                 },
             )
         if args.action == "approve":
