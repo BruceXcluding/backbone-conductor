@@ -825,7 +825,9 @@ class Conductor:
         ):
             raise ValueError("Only a successfully submitted task has a code review packet")
         revision = f"{artifact.base_sha}...{artifact.commit_sha}"
-        diff = self._git("diff", "--no-ext-diff", "--no-color", "--binary", revision, "--")
+        diff = self._git(
+            "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", revision, "--"
+        )
         if diff.returncode:
             raise ValueError("Could not read the submitted Git diff")
         patch = diff.stdout
@@ -846,6 +848,37 @@ class Conductor:
         net_paths, divergent_paths = (
             self._integration_paths(artifact, target_sha) if integrated else ([], [])
         )
+        target_diff = None
+        if integrated:
+            result = self._git(
+                "--literal-pathspecs",
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--no-renames",
+                "--binary",
+                artifact.base_sha,
+                target_sha,
+                "--",
+                *artifact.changed_paths,
+            )
+            if result.returncode:
+                raise ValueError("Could not read the integrated target diff")
+            target_bytes = result.stdout.encode("utf-8")
+            if full_patch and len(target_bytes) > 1_000_000:
+                raise ValueError(
+                    "Integrated target diff exceeds the 1 MB review limit; inspect in a Git checkout"
+                )
+            target_preview = target_bytes[:preview_limit].decode("utf-8", errors="ignore")
+            target_diff = {
+                "base_sha": artifact.base_sha,
+                "target_sha": target_sha,
+                "changed_paths": artifact.changed_paths,
+                "patch": target_preview,
+                "truncated": len(target_bytes) > preview_limit,
+                "sha256": hashlib.sha256(target_bytes).hexdigest(),
+            }
         blockers = self._blockers(state, task.intent_id, task_id)
         return {
             "version": state.version,
@@ -875,6 +908,7 @@ class Conductor:
                 "sha256": hashlib.sha256(patch_bytes).hexdigest(),
                 "changed_paths": artifact.changed_paths,
             },
+            "target_diff": target_diff,
             "requires_human_review": True,
         }
 

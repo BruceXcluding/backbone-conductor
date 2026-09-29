@@ -121,6 +121,13 @@ def test_divergent_integrated_content_requires_review_reason(audit_project):
     assert packet["git"]["integrated_into_target"] is True
     assert packet["git"]["net_changed_paths"] == ["database.py"]
     assert packet["git"]["divergent_paths"] == ["database.py"]
+    target_diff = packet["target_diff"]
+    assert target_diff["base_sha"] == submitted["artifact"]["base_sha"]
+    assert target_diff["target_sha"] == target_sha
+    assert target_diff["changed_paths"] == ["database.py"]
+    assert "+DATABASE = {'reviewed': True}" in target_diff["patch"]
+    assert target_diff["sha256"] == hashlib.sha256(target_diff["patch"].encode()).hexdigest()
+    assert target_diff["truncated"] is False
     with pytest.raises(ValueError, match="explicit review rationale"):
         service.merge_task(task["id"], "reviewer", **approval_anchor(service, task["id"]))
     merged = service.merge_task(
@@ -202,6 +209,7 @@ def test_review_packet_is_pinned_to_submitted_diff_and_read_only(audit_project):
     assert packet["git"]["artifact_sha"] == pinned_sha
     assert packet["git"]["branch_unchanged"] is True
     assert packet["git"]["integrated_into_target"] is False
+    assert packet["target_diff"] is None
     assert packet["diff"]["changed_paths"] == ["database.py"]
     assert "+DATABASE = {}" in packet["diff"]["patch"]
     assert packet["diff"]["truncated"] is False
@@ -266,6 +274,52 @@ def test_review_packet_bounds_remote_patch_size(audit_project, line_count, too_l
         assert complete["diff"]["truncated"] is False
         assert complete["diff"]["sha256"] == packet["diff"]["sha256"]
         assert complete["version"] == packet["version"]
+
+
+def test_integrated_target_diff_over_limit_keeps_preview_and_review_anchors(audit_project):
+    service, repo = audit_project
+    _intent, task, artifact = prepare_artifact(service, repo)
+    assert service.submit_artifact("alice", artifact)["accepted"]
+    git(repo, "merge", "--no-edit", "feature/database")
+    (repo / "database.py").write_text(
+        "DATABASE = {\n"
+        + "".join(f"    'entry-{index:06d}': {index},\n" for index in range(60_000))
+        + "}\n"
+    )
+    git(repo, "add", "database.py")
+    git(repo, "commit", "-m", "Expand integrated database")
+    packet = service.inspect_task(task["id"])
+    assert packet["git"]["integrated_into_target"] is True
+    assert packet["target_diff"]["truncated"] is True
+    assert len(packet["target_diff"]["patch"].encode()) <= 131_072
+    assert packet["version"] == service.state()["version"]
+    assert packet["git"]["target_sha"] == git(repo, "rev-parse", "HEAD")
+    with pytest.raises(ValueError, match="Integrated target diff exceeds the 1 MB"):
+        service.inspect_task(task["id"], full_patch=True)
+
+
+def test_review_diffs_ignore_configured_textconv(audit_project):
+    service, repo = audit_project
+    _intent, task, artifact = prepare_artifact(service, repo)
+    assert service.submit_artifact("alice", artifact)["accepted"]
+    git(repo, "merge", "--no-edit", "feature/database")
+    (repo / ".git/info/attributes").write_text("database.py diff=display\n")
+    git(repo, "config", "diff.display.textconv", "sed s/DATABASE/CONVERTED/g")
+    packet = service.inspect_task(task["id"], full_patch=True)
+    assert packet["git"]["integrated_into_target"] is True
+    for field in ("diff", "target_diff"):
+        assert "+DATABASE = {}" in packet[field]["patch"]
+        assert "CONVERTED" not in packet[field]["patch"]
+    display_diff = git(
+        repo,
+        "diff",
+        "--textconv",
+        packet["git"]["base_sha"],
+        packet["git"]["target_sha"],
+        "--",
+        "database.py",
+    )
+    assert "+CONVERTED = {}" in display_diff
 
 
 def test_global_dependency_conflict_blocks_artifact_until_human_arbitration(audit_project):

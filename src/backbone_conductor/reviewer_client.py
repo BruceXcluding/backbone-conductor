@@ -113,27 +113,45 @@ def _validated_audit_report(report: object, limit: int) -> dict:
 
 
 def _validated_full_patch(packet: object) -> dict:
-    """Reject an incomplete or internally inconsistent remote review patch."""
+    """Reject incomplete artifact and integrated-target patches from a remote packet."""
     error = ValueError("Reviewer server returned an invalid full review patch")
     if not isinstance(packet, dict):
         raise error
-    diff = packet.get("diff")
-    if not isinstance(diff, dict):
+
+    def check_diff(diff: object) -> dict:
+        if not isinstance(diff, dict):
+            raise error
+        patch = diff.get("patch")
+        digest = diff.get("sha256")
+        if not isinstance(patch, str) or not isinstance(digest, str):
+            raise error
+        try:
+            patch_bytes = patch.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise error from exc
+        if (
+            diff.get("truncated") is not False
+            or len(patch_bytes) > 1_000_000
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or hashlib.sha256(patch_bytes).hexdigest() != digest
+        ):
+            raise error
+        return diff
+
+    artifact_diff = check_diff(packet.get("diff"))
+    git = packet.get("git")
+    if not isinstance(git, dict) or type(git.get("integrated_into_target")) is not bool:
         raise error
-    patch = diff.get("patch")
-    digest = diff.get("sha256")
-    if not isinstance(patch, str) or not isinstance(digest, str):
-        raise error
-    try:
-        patch_bytes = patch.encode("utf-8")
-    except UnicodeEncodeError as exc:
-        raise error from exc
-    if (
-        diff.get("truncated") is not False
-        or len(patch_bytes) > 1_000_000
-        or not re.fullmatch(r"[0-9a-f]{64}", digest)
-        or hashlib.sha256(patch_bytes).hexdigest() != digest
-    ):
+    target_diff = packet.get("target_diff")
+    if git["integrated_into_target"]:
+        target_diff = check_diff(target_diff)
+        if (
+            target_diff.get("base_sha") != git.get("base_sha")
+            or target_diff.get("target_sha") != git.get("target_sha")
+            or target_diff.get("changed_paths") != artifact_diff.get("changed_paths")
+        ):
+            raise error
+    elif target_diff is not None:
         raise error
     return packet
 

@@ -344,6 +344,9 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
                 git(coordinator, "merge", "--no-ff", "--no-edit", f"origin/feature/{name}")
                 inspection = reviewer_command("inspect", task_ids[name])
                 assert inspection["git"]["integrated_into_target"] is True
+                complete = reviewer_command("inspect", task_ids[name], "--full")
+                assert f"+def {name}():" in complete["target_diff"]["patch"]
+                assert complete["target_diff"]["truncated"] is False
                 if name == "alice":
                     changed = client.post(
                         "/intents",

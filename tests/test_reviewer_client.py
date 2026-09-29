@@ -84,11 +84,17 @@ def test_remote_audit_report_rejects_inconsistent_signature_counts() -> None:
 def test_remote_full_patch_rejects_truncation_or_hash_mismatch() -> None:
     patch = "diff --git a/a b/a\n+é\n"
     packet = {
+        "git": {
+            "base_sha": "a" * 40,
+            "target_sha": "b" * 40,
+            "integrated_into_target": False,
+        },
         "diff": {
             "patch": patch,
             "truncated": False,
             "sha256": hashlib.sha256(patch.encode()).hexdigest(),
-        }
+            "changed_paths": ["a"],
+        },
     }
     assert _validated_full_patch(packet) == packet
     for bad in (
@@ -96,6 +102,31 @@ def test_remote_full_patch_rejects_truncation_or_hash_mismatch() -> None:
         {"diff": {**packet["diff"], "truncated": True}},
         {"diff": {**packet["diff"], "sha256": "0" * 64}},
         {"diff": {**packet["diff"], "patch": "x" * 1_000_001}},
+    ):
+        with pytest.raises(ValueError, match="invalid full review patch"):
+            _validated_full_patch(bad)
+
+    integrated = {
+        **packet,
+        "git": {**packet["git"], "integrated_into_target": True},
+        "target_diff": {
+            **packet["diff"],
+            "base_sha": "a" * 40,
+            "target_sha": "b" * 40,
+        },
+    }
+    assert _validated_full_patch(integrated) == integrated
+    for bad in (
+        {**integrated, "target_diff": None},
+        {
+            **integrated,
+            "target_diff": {**integrated["target_diff"], "patch": patch[:-1]},
+        },
+        {
+            **integrated,
+            "target_diff": {**integrated["target_diff"], "target_sha": "c" * 40},
+        },
+        {**packet, "target_diff": integrated["target_diff"]},
     ):
         with pytest.raises(ValueError, match="invalid full review patch"):
             _validated_full_patch(bad)
