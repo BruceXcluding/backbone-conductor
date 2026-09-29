@@ -250,3 +250,9 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 项目所有者选定 MIT 后，加入标准 `LICENSE`、README 入口及 PEP 639 包元数据。0.41.0 wheel 已核对 `License-Expression: MIT`、内含许可证文件且包内 `__version__` 与发行版本一致；尚未上传 PyPI。
 
 本机完整套件 **342 passed、9 skipped，覆盖率 87.60%**；其中 6 个是默认沙箱不可监听端口的 HTTP/HTTPS 用例，已在允许本机监听的环境中单独执行对应套件 **10 passed**；3 个 DSH 无模型启动用例显式启用后 **3 passed**。Ruff 检查与格式检查、离线锁文件检查、24/24 合成规则评测、四例历史 Git 合并回放、十客户端 MCP 并发基准完整性、示例和 0.41.0 source distribution/wheel 构建通过。
+
+## v0.42 发布前校验与手动工作流
+
+日期：2026-09-29。新增默认只构建的手动 Release 工作流；正式上传只允许与包版本相同的 Git 标签，并由 `pypi` 环境保护后通过 Trusted Publisher OIDC 执行。发行包检查脚本核对源码版本、wheel 和 sdist 的精确文件集合、MIT SPDX 元数据、许可证内容及源码一致性；错误版本标签会拒绝。按照 Python Packaging 对 PEP 639 的说明，移除旧 `License ::` 分类项，只保留 `License-Expression: MIT`。PyPI 环境和 Trusted Publisher 尚未配置，未上传或测试真实发布。
+
+本机完整套件 **342 passed、9 skipped，覆盖率 87.60%**；其中 6 个真实 HTTP/HTTPS 用例因沙箱禁止 loopback socket 跳过，3 个 DSH 无模型启动用例需专项启用。Ruff、离线锁文件检查、24/24 合成评测、四例历史 Git 合并回放、十客户端 MCP 并发完整性、示例通过；隔离输出目录的 0.42.0 wheel 和 sdist 构建及归档校验通过。正式 Release 工作流仍待推送后运行一次 `dry_run=true` 验证。

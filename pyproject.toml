@@ -4,13 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "backbone-conductor"
-version = "0.41.0"
+version = "0.42.0"
 description = "Git-native intent and decision coordination for coding agents"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-classifiers = ["License :: OSI Approved :: MIT License"]
 dependencies = [
   "pydantic>=2.10,<3",
   "filelock>=3.32.7,<4",
@@ -25,6 +24,10 @@ dsh = ["deepseek-harness-sdk>=0.1,<1"]
 
 [project.scripts]
 backbone = "backbone_conductor.cli:main"
+
+[project.urls]
+Repository = "https://github.com/BruceXcluding/backbone-conductor"
+Issues = "https://github.com/BruceXcluding/backbone-conductor/issues"
 
 [dependency-groups]
 dev = ["pytest>=8.3,<10", "pytest-cov>=6,<8", "httpx>=0.28,<1", "ruff>=0.11,<1"]

@@ -25,6 +25,7 @@ jobs:
       - run: uv run --no-sync python scripts/benchmark_mcp.py --clients 10
       - run: uv run --no-sync python examples/demo.py
       - run: uv build
+      - run: uv run --no-sync python scripts/check_release.py
   compose:
     runs-on: ubuntu-latest
     steps:
