@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import sys
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,33 @@ def _prompts_file(filename: str) -> list[str]:
     ):
         raise ValueError("DSH prompts file must be a nonempty JSON array of nonempty strings")
     return value
+
+
+def _interactive_prompts():
+    """Read one prompt at a time; EOF or :quit ends the current SDK session."""
+    while True:
+        if sys.stdin.isatty():
+            print("backbone> ", end="", file=sys.stderr, flush=True)
+        line = sys.stdin.readline()
+        if not line:
+            return
+        prompt = line.rstrip("\r\n")
+        if prompt.strip().lower() in {":quit", ":exit"}:
+            return
+        if prompt.strip():
+            yield prompt
+
+
+def _run_interactive(runner: Any, session_id: str | None) -> None:
+    prompts = _interactive_prompts()
+    first_prompt = next(prompts, None)
+    if first_prompt is None:
+        return
+
+    def emit(turn: dict) -> None:
+        print(json.dumps(turn, ensure_ascii=False), flush=True)
+
+    runner.run_turns(chain((first_prompt,), prompts), session_id=session_id, on_turn=emit)
 
 
 def _validate_tls_key(filename: str, repo: str) -> None:
@@ -222,6 +250,9 @@ def build_parser() -> argparse.ArgumentParser:
     dsh_prompt.add_argument(
         "--prompts-file", help="JSON array of prompts run in one persistent SDK process"
     )
+    dsh_prompt.add_argument(
+        "--interactive", action="store_true", help="Read prompts from stdin until EOF or :quit"
+    )
     coordinator = commands.add_parser(
         "conductor", help="Run a limited DSH coordination agent with Backbone MCP"
     )
@@ -236,6 +267,9 @@ def build_parser() -> argparse.ArgumentParser:
     coordinator_prompt.add_argument("--prompt-file", help="UTF-8 prompt file")
     coordinator_prompt.add_argument(
         "--prompts-file", help="JSON array of prompts run in one persistent SDK process"
+    )
+    coordinator_prompt.add_argument(
+        "--interactive", action="store_true", help="Read prompts from stdin until EOF or :quit"
     )
 
     reviewer = commands.add_parser(
@@ -426,6 +460,8 @@ def _run(args: argparse.Namespace) -> Any:
         runner = DSHCoordinatorRunner(
             args.repo, args.dsh_home, args.model, args.provider, ledger_branch=args.ledger_branch
         )
+        if args.interactive:
+            return _run_interactive(runner, args.session_id)
         if prompts is not None:
             return runner.run_turns(prompts, session_id=args.session_id)
         prompt = (
@@ -460,6 +496,8 @@ def _run(args: argparse.Namespace) -> Any:
                 args.provider,
                 ca_file=args.mcp_ca_file,
             )
+            if args.interactive:
+                return _run_interactive(runner, args.session_id)
             return (
                 runner.run_turns(prompts, session_id=args.session_id)
                 if prompts is not None
@@ -476,6 +514,8 @@ def _run(args: argparse.Namespace) -> Any:
             args.provider,
             ledger_branch=args.ledger_branch,
         )
+        if args.interactive:
+            return _run_interactive(runner, args.session_id)
         return (
             runner.run_turns(prompts, session_id=args.session_id)
             if prompts is not None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import subprocess
@@ -243,6 +244,53 @@ def test_cli_runs_member_prompts_in_one_session(
     assert "nonempty JSON array" in json.loads(capsys.readouterr().err)["error"]
 
 
+def test_cli_streams_member_turns_until_quit(
+    interface_repo: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from backbone_conductor.dsh_agent import DSHMemberRunner
+
+    Conductor(interface_repo).initialize()
+    workspace = tmp_path / "coding-worktree"
+    workspace.mkdir()
+    observed = []
+
+    def run_turns(self, prompts, *, session_id=None, on_turn=None):
+        assert session_id is None
+        for prompt in prompts:
+            observed.append(prompt)
+            on_turn({"session_id": "session-1", "final_response": f"Reply {len(observed)}"})
+        return {"session_id": "session-1", "turns": []}
+
+    monkeypatch.setattr(DSHMemberRunner, "run_turns", run_turns)
+    command = [
+        "--repo",
+        str(interface_repo),
+        "dsh",
+        "--member",
+        "alice",
+        "--workspace",
+        str(workspace),
+        "--dsh-home",
+        str(tmp_path / "dsh-home"),
+        "--model",
+        "test-model",
+        "--interactive",
+    ]
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\nRead my task\nFollow up\n:quit\nIgnored"))
+    assert main(command) == 0
+    assert observed == ["Read my task", "Follow up"]
+    assert [
+        json.loads(line)["final_response"] for line in capsys.readouterr().out.splitlines()
+    ] == [
+        "Reply 1",
+        "Reply 2",
+    ]
+    monkeypatch.setattr(sys, "stdin", io.StringIO(":quit\n"))
+    assert main(command) == 0
+    assert capsys.readouterr().out == ""
+    assert observed == ["Read my task", "Follow up"]
+
+
 def test_cli_runs_limited_coordinator_entry(
     interface_repo: Path, tmp_path: Path, monkeypatch, capsys
 ):
@@ -319,6 +367,41 @@ def test_cli_runs_coordinator_prompts_in_one_session(
     assert json.loads(capsys.readouterr().out)["turns"] == []
 
 
+def test_cli_streams_coordinator_turns_until_eof(
+    interface_repo: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from backbone_conductor.dsh_agent import DSHCoordinatorRunner
+
+    Conductor(interface_repo).initialize()
+    observed = []
+
+    def run_turns(self, prompts, *, session_id=None, on_turn=None):
+        for prompt in prompts:
+            observed.append(prompt)
+            on_turn({"session_id": "coordinator-session", "final_response": "Draft prepared"})
+        return {"session_id": "coordinator-session", "turns": []}
+
+    monkeypatch.setattr(DSHCoordinatorRunner, "run_turns", run_turns)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("Read status\nPropose draft\n"))
+    assert (
+        main(
+            [
+                "--repo",
+                str(interface_repo),
+                "conductor",
+                "--dsh-home",
+                str(tmp_path / "private-dsh-home"),
+                "--model",
+                "test-model",
+                "--interactive",
+            ]
+        )
+        == 0
+    )
+    assert observed == ["Read status", "Propose draft"]
+    assert len(capsys.readouterr().out.splitlines()) == 2
+
+
 def test_cli_routes_remote_dsh_without_a_local_ledger(tmp_path: Path, monkeypatch, capsys) -> None:
     from backbone_conductor.dsh_agent import DSHRemoteMemberRunner
 
@@ -360,6 +443,52 @@ def test_cli_routes_remote_dsh_without_a_local_ledger(tmp_path: Path, monkeypatc
     assert json.loads(capsys.readouterr().out)["session_id"] == "session-1"
     assert main(command[:-4] + ["--prompt", "Read my remote task"]) == 1
     assert "mcp-token-file" in json.loads(capsys.readouterr().err)["error"]
+
+
+def test_cli_streams_remote_member_turns_without_local_ledger(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from backbone_conductor.dsh_agent import DSHRemoteMemberRunner
+
+    workspace = tmp_path / "member-workspace"
+    workspace.mkdir()
+    token_file = tmp_path / "alice.token"
+    token_file.write_text("a" * 48)
+    token_file.chmod(0o600)
+    observed = []
+
+    def run_turns(self, prompts, *, session_id=None, on_turn=None):
+        assert self.mcp_url == "https://coordinator.example/mcp"
+        for prompt in prompts:
+            observed.append(prompt)
+            on_turn({"session_id": "remote-session", "final_response": "Ready"})
+        return {"session_id": "remote-session", "turns": []}
+
+    monkeypatch.setattr(DSHRemoteMemberRunner, "run_turns", run_turns)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("Read my remote task\nWhat changed?\n:exit\n"))
+    assert (
+        main(
+            [
+                "dsh",
+                "--member",
+                "alice",
+                "--workspace",
+                str(workspace),
+                "--dsh-home",
+                str(tmp_path / "dsh-home"),
+                "--model",
+                "test-model",
+                "--mcp-url",
+                "https://coordinator.example/mcp",
+                "--mcp-token-file",
+                str(token_file),
+                "--interactive",
+            ]
+        )
+        == 0
+    )
+    assert observed == ["Read my remote task", "What changed?"]
+    assert len(capsys.readouterr().out.splitlines()) == 2
 
 
 def test_python_module_propagates_failure_exit_code(interface_repo: Path) -> None:

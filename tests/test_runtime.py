@@ -644,13 +644,19 @@ def test_installed_sdk_member_tools_and_in_process_history_with_local_mock_provi
         home = tmp_path / "dsh-home"
         runner = DSHMemberRunner(repo, workspace, home, "alice", "mock-model")
         session_id = f"{runner.session_prefix}durable-test"
-        turns = runner.run_turns(
-            ["Remember marker alpha", "Recall marker beta"], session_id=session_id
-        )
+        emitted: list[dict] = []
+
+        def prompts():
+            yield "Remember marker alpha"
+            assert [turn["final_response"] for turn in emitted] == ["Mock turn 1"]
+            yield "Recall marker beta"
+
+        turns = runner.run_turns(prompts(), session_id=session_id, on_turn=emitted.append)
         assert [turn["final_response"] for turn in turns["turns"]] == [
             "Mock turn 1",
             "Mock turn 2",
         ]
+        assert emitted == turns["turns"]
         assert len(requests) == 3
         assert "get_my_task" in json.dumps(requests[0].get("tools", []))
         tool_messages = [
@@ -734,9 +740,17 @@ def test_coordinator_runner_closes_sdk_and_removes_patch(tmp_path: Path, monkeyp
     module = ModuleType("deepseek_harness")
     module.DeepSeekHarness = Harness
     monkeypatch.setitem(sys.modules, "deepseek_harness", module)
-    result = runner.run_turns(["Check current coordination state", "Propose a draft"])
+    emitted: list[dict] = []
+
+    def prompts():
+        yield "Check current coordination state"
+        assert len(emitted) == 1
+        yield "Propose a draft"
+
+    result = runner.run_turns(prompts(), on_turn=emitted.append)
     assert result["session_id"].startswith(runner.session_prefix)
     assert len(result["turns"]) == 2
+    assert emitted == result["turns"]
     assert {turn["session_id"] for turn in result["turns"]} == {result["session_id"]}
     assert all(turn["final_response"] == "Draft intent proposed" for turn in result["turns"])
     assert all(turn["elapsed_ms"] >= 0 for turn in result["turns"])

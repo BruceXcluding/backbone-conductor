@@ -47,7 +47,7 @@ uv run backbone --repo /absolute/project dsh --member alice \
   --prompt-file /absolute/task-prompt.txt
 ```
 
-多回合时，`--prompts-file` 指向形如 `["读取我的任务", "检查刚才提出的方案"]` 的 JSON 文件，替代 `--prompt` 或 `--prompt-file`。返回值列出每一回合的完成状态、最终文本和耗时；同一会话中的后一回合可以看到前一回合的模型消息与 MCP 工具结果。协调代理也支持同一选项。
+多回合时，`--prompts-file` 指向形如 `["读取我的任务", "检查刚才提出的方案"]` 的 JSON 文件，替代 `--prompt` 或 `--prompt-file`。返回值列出每一回合的完成状态、最终文本和耗时；同一会话中的后一回合可以看到前一回合的模型消息与 MCP 工具结果。也可使用 `--interactive` 按行输入新提示，每轮结果立即作为一行 JSON 写到 stdout；空行跳过，`:quit`、`:exit` 或 EOF 结束。交互会话仍使用同一 SDK 进程，退出后不能恢复旧会话。协调代理和远程成员同样支持这两种多回合方式。
 
 本地成员入口会创建或核对 DSH home：拒绝符号链接，要求它位于协调仓库和代码工作区之外、由当前用户持有且权限为 0700。此入口会实际向配置的 provider 发起模型请求；必须由操作者自行配置凭据。返回的会话 ID 带仓库与成员命名空间，可用 `--session-id` 指定该成员命名空间内的会话 ID；其他命名空间的 ID 会被拒绝。`--prompts-file` 接受 JSON 字符串数组，让本地或远程成员在同一 SDK 进程中连续执行多个回合并继承上下文。锁定 SDK 0.1.5rc1 在进程重启后对已持久化的同 ID 会话返回 `already exists`；Backbone 会明确提示此限制，保留旧日志，不会悄悄创建一个伪续接会话。DSH 最小 profile 的 shell 与 MCP 子进程仍以调用者的 OS 身份运行；`workspace-write` 限制模型工具的写入范围，但不构成完整的读取或网络隔离。MCP `--member` 是本地工具约束，不是不同自然人之间的认证。会话日志保存在指定的 DSH home；不要把凭据或敏感日志放入 Git。模型建议、工具调用和代码修改都不能替代人工复核及真实 Git 合并。
 

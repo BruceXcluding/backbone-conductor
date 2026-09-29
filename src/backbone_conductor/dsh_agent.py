@@ -11,6 +11,8 @@ import stat
 import sys
 import tempfile
 import uuid
+from collections.abc import Callable, Iterable
+from itertools import chain
 from pathlib import Path
 from time import monotonic_ns
 from urllib.parse import urlsplit
@@ -215,9 +217,21 @@ class DSHMemberRunner:
             raise ValueError("DSH prompt must not be empty")
         return self.run_turns([prompt], session_id=session_id)["turns"][0]
 
-    def run_turns(self, prompts: list[str], *, session_id: str | None = None) -> dict:
+    def run_turns(
+        self,
+        prompts: Iterable[str],
+        *,
+        session_id: str | None = None,
+        on_turn: Callable[[dict], None] | None = None,
+    ) -> dict:
         """Run successive prompts in one SDK process so the session keeps its history."""
-        if not prompts or any(
+        if isinstance(prompts, (str, bytes)):
+            raise ValueError("DSH turns require at least one nonempty prompt")
+        prompt_iterator = iter(prompts)
+        first_prompt = next(prompt_iterator, None)
+        if not isinstance(first_prompt, str) or not first_prompt.strip():
+            raise ValueError("DSH turns require at least one nonempty prompt")
+        if isinstance(prompts, list) and any(
             not isinstance(prompt, str) or not prompt.strip() for prompt in prompts
         ):
             raise ValueError("DSH turns require at least one nonempty prompt")
@@ -252,7 +266,9 @@ class DSHMemberRunner:
                     request_timeout_seconds=120,
                 )
                 try:
-                    for prompt in prompts:
+                    for prompt in chain((first_prompt,), prompt_iterator):
+                        if not isinstance(prompt, str) or not prompt.strip():
+                            raise _TurnResultError("DSH turns require a nonempty prompt")
                         started_ns = monotonic_ns()
                         result = harness.run(prompt, session_id=selected_session)
                         if result.session_id != selected_session:
@@ -261,15 +277,16 @@ class DSHMemberRunner:
                             raise _TurnResultError(
                                 f"DSH member turn did not complete: {result.finish_reason}"
                             )
-                        turns.append(
-                            {
-                                "member": self.member,
-                                "session_id": result.session_id,
-                                "finish_reason": result.finish_reason,
-                                "final_response": result.final_response,
-                                "elapsed_ms": round((monotonic_ns() - started_ns) / 1_000_000, 3),
-                            }
-                        )
+                        turn = {
+                            "member": self.member,
+                            "session_id": result.session_id,
+                            "finish_reason": result.finish_reason,
+                            "final_response": result.final_response,
+                            "elapsed_ms": round((monotonic_ns() - started_ns) / 1_000_000, 3),
+                        }
+                        turns.append(turn)
+                        if on_turn is not None:
+                            on_turn(turn)
                 finally:
                     harness.close()
             except Exception as exc:
@@ -497,9 +514,21 @@ class DSHCoordinatorRunner:
             raise ValueError("DSH prompt must not be empty")
         return self.run_turns([prompt], session_id=session_id)["turns"][0]
 
-    def run_turns(self, prompts: list[str], *, session_id: str | None = None) -> dict:
+    def run_turns(
+        self,
+        prompts: Iterable[str],
+        *,
+        session_id: str | None = None,
+        on_turn: Callable[[dict], None] | None = None,
+    ) -> dict:
         """Keep the limited coordinator's context across turns in one SDK process."""
-        if not prompts or any(
+        if isinstance(prompts, (str, bytes)):
+            raise ValueError("DSH turns require at least one nonempty prompt")
+        prompt_iterator = iter(prompts)
+        first_prompt = next(prompt_iterator, None)
+        if not isinstance(first_prompt, str) or not first_prompt.strip():
+            raise ValueError("DSH turns require at least one nonempty prompt")
+        if isinstance(prompts, list) and any(
             not isinstance(prompt, str) or not prompt.strip() for prompt in prompts
         ):
             raise ValueError("DSH turns require at least one nonempty prompt")
@@ -532,7 +561,9 @@ class DSHCoordinatorRunner:
                     request_timeout_seconds=120,
                 )
                 try:
-                    for prompt in prompts:
+                    for prompt in chain((first_prompt,), prompt_iterator):
+                        if not isinstance(prompt, str) or not prompt.strip():
+                            raise _TurnResultError("DSH turns require a nonempty prompt")
                         started_ns = monotonic_ns()
                         result = harness.run(prompt, session_id=selected_session)
                         if result.session_id != selected_session:
@@ -543,14 +574,15 @@ class DSHCoordinatorRunner:
                             raise _TurnResultError(
                                 f"DSH coordinator turn did not complete: {result.finish_reason}"
                             )
-                        turns.append(
-                            {
-                                "session_id": result.session_id,
-                                "finish_reason": result.finish_reason,
-                                "final_response": result.final_response,
-                                "elapsed_ms": round((monotonic_ns() - started_ns) / 1_000_000, 3),
-                            }
-                        )
+                        turn = {
+                            "session_id": result.session_id,
+                            "finish_reason": result.finish_reason,
+                            "final_response": result.final_response,
+                            "elapsed_ms": round((monotonic_ns() - started_ns) / 1_000_000, 3),
+                        }
+                        turns.append(turn)
+                        if on_turn is not None:
+                            on_turn(turn)
                 finally:
                     harness.close()
             except Exception as exc:
