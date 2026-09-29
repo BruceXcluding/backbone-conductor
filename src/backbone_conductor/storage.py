@@ -477,20 +477,22 @@ class GitStore:
         end = _audit_time(until, "until")
         if start is not None and end is not None and start > end:
             raise StorageError("since must not be after until")
-        filtered = any(
-            value is not None for value in (author, http_principal, event_type, since, until)
-        )
         with self._lock:
             self._ensure_clean()
-            if self._head() is None:
+            head = self._head()
+            if head is None:
+                return []
+            commits = self._metadata_history_commits(head)
+            if not commits:
                 return []
             output = self._git(
                 "log",
+                "--full-history",
                 "-z",
-                *(() if filtered else (f"-{limit}",)),
                 "--format=%H%x00%an%x00%aI%x00%s%x00"
                 "%(trailers:key=Backbone-HTTP-Principal,valueonly)%x00"
                 "%(trailers:key=Backbone-HTTP-Role,valueonly)",
+                head,
                 "--",
                 ".backbone",
             ).stdout
@@ -499,7 +501,7 @@ class GitStore:
                 fields.pop()
             if len(fields) % 6:
                 raise StorageError("Could not parse Backbone Git audit log")
-            entries = []
+            by_commit = {}
             for offset in range(0, len(fields), 6):
                 commit, git_author, timestamp, message, principal, role = fields[
                     offset : offset + 6
@@ -515,6 +517,14 @@ class GitStore:
                 if principal and "\n" not in principal and role in {"admin", "member", "reviewer"}:
                     entry["http_principal"] = principal
                     entry["http_role"] = role
+                by_commit[commit] = entry
+            entries = []
+            for commit in commits:
+                if commit not in by_commit:
+                    raise StorageError("Could not read complete Backbone Git audit log")
+                entry = by_commit[commit]
+                git_author = entry["author"]
+                timestamp = entry["timestamp"]
                 if author is not None and git_author != author:
                     continue
                 if http_principal is not None and entry.get("http_principal") != http_principal:
@@ -530,29 +540,36 @@ class GitStore:
                 entries.append(entry)
                 if len(entries) == limit:
                     break
+            if self._head() != head:
+                raise StorageError("Git HEAD changed during audit log read; retry")
+            self._ensure_clean()
             return entries
 
     def verify_audit_signatures(self, limit: int = 50) -> dict[str, Any]:
         """Verify the latest metadata commits using Git's configured trust store."""
-        entries = []
-        for item in self.log(limit):
-            commit = item["commit"]
-            raw = self._git("cat-file", "-p", commit).stdout
-            headers = raw.split("\n\n", 1)[0]
-            signed = any(
-                line.startswith(("gpgsig ", "gpgsig-sha256 ")) for line in headers.splitlines()
-            )
-            if not signed:
-                status = "unsigned"
-            else:
-                check = self._git("verify-commit", commit, check=False)
-                status = "valid" if check.returncode == 0 else "invalid"
-            entries.append({"commit": commit, "signature": status})
-        total = (
-            int(self._git("rev-list", "--count", "HEAD", "--", ".backbone").stdout.strip())
-            if entries
-            else 0
-        )
+        if not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise StorageError("Log limit must be between 1 and 1000")
+        with self._lock:
+            self._ensure_clean()
+            head = self._head()
+            commits = self._metadata_history_commits(head) if head else []
+            entries = []
+            for commit in commits[:limit]:
+                raw = self._git("cat-file", "-p", commit).stdout
+                headers = raw.split("\n\n", 1)[0]
+                signed = any(
+                    line.startswith(("gpgsig ", "gpgsig-sha256 ")) for line in headers.splitlines()
+                )
+                if not signed:
+                    status = "unsigned"
+                else:
+                    check = self._git("verify-commit", commit, check=False)
+                    status = "valid" if check.returncode == 0 else "invalid"
+                entries.append({"commit": commit, "signature": status})
+            if self._head() != head:
+                raise StorageError("Git HEAD changed during signature verification; retry")
+            self._ensure_clean()
+            total = len(commits)
         counts = {
             status: sum(item["signature"] == status for item in entries)
             for status in ("valid", "unsigned", "invalid")
@@ -630,6 +647,56 @@ class GitStore:
         second = metadata_version(parents[1]) if len(parents) == 2 else None
         return parents, first, second
 
+    def _metadata_history_commits(self, head: str) -> list[str]:
+        """List reachable metadata writes, including merges that discard side state."""
+        history = self._git(
+            "rev-list", "--full-history", "--parents", head, "--", ".backbone"
+        ).stdout.splitlines()
+        commits = []
+        for row in history:
+            commit, *parents = row.split()
+            if len(parents) == 2:
+                # A code merge can carry the first parent's metadata
+                # unchanged while its other parent has an older snapshot.
+                # Keep the merge if the side has independent metadata:
+                # silently discarding that state needs to fail the audit.
+                diff = self._git(
+                    "diff-tree",
+                    "--quiet",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    parents[0],
+                    commit,
+                    "--",
+                    ".backbone",
+                    check=False,
+                )
+                if diff.returncode not in (0, 1):
+                    raise StorageError("Could not compare metadata in a Git merge commit")
+                if diff.returncode == 0:
+                    first_metadata = self._git(
+                        "log", "-1", "--format=%H", parents[0], "--", ".backbone"
+                    ).stdout.strip()
+                    side_metadata = self._git(
+                        "log", "-1", "--format=%H", parents[1], "--", ".backbone"
+                    ).stdout.strip()
+                    if not side_metadata or side_metadata == first_metadata:
+                        continue
+                    if first_metadata:
+                        ancestry = self._git(
+                            "merge-base",
+                            "--is-ancestor",
+                            side_metadata,
+                            first_metadata,
+                            check=False,
+                        )
+                        if ancestry.returncode == 0:
+                            continue
+                        if ancestry.returncode != 1:
+                            raise StorageError("Could not compare metadata ancestry in a Git merge")
+            commits.append(commit)
+        return commits
+
     def verify_audit_history(
         self, limit: int = 50, offset: int = 0, expected_head: str | None = None
     ) -> dict[str, Any]:
@@ -650,54 +717,7 @@ class GitStore:
                 raise StorageError("Backbone has no Git history")
             if expected_head is not None and head != expected_head:
                 raise StorageError("Git HEAD changed between history pages; restart verification")
-            history = self._git(
-                "rev-list", "--full-history", "--parents", head, "--", ".backbone"
-            ).stdout.splitlines()
-            commits = []
-            for row in history:
-                commit, *parents = row.split()
-                if len(parents) == 2:
-                    # A code merge can carry the first parent's metadata
-                    # unchanged while its other parent has an older snapshot.
-                    # Keep the merge if the side has independent metadata:
-                    # silently discarding that state needs to fail the audit.
-                    diff = self._git(
-                        "diff-tree",
-                        "--quiet",
-                        "--no-ext-diff",
-                        "--no-textconv",
-                        parents[0],
-                        commit,
-                        "--",
-                        ".backbone",
-                        check=False,
-                    )
-                    if diff.returncode not in (0, 1):
-                        raise StorageError("Could not compare metadata in a Git merge commit")
-                    if diff.returncode == 0:
-                        first_metadata = self._git(
-                            "log", "-1", "--format=%H", parents[0], "--", ".backbone"
-                        ).stdout.strip()
-                        side_metadata = self._git(
-                            "log", "-1", "--format=%H", parents[1], "--", ".backbone"
-                        ).stdout.strip()
-                        if not side_metadata or side_metadata == first_metadata:
-                            continue
-                        if first_metadata:
-                            ancestry = self._git(
-                                "merge-base",
-                                "--is-ancestor",
-                                side_metadata,
-                                first_metadata,
-                                check=False,
-                            )
-                            if ancestry.returncode == 0:
-                                continue
-                            if ancestry.returncode != 1:
-                                raise StorageError(
-                                    "Could not compare metadata ancestry in a Git merge"
-                                )
-                commits.append(commit)
+            commits = self._metadata_history_commits(head)
             if not commits:
                 raise StorageError("Backbone has no metadata history")
             if offset >= len(commits):

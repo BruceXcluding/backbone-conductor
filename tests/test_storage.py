@@ -286,6 +286,10 @@ def test_history_verification_ignores_code_merge_with_unchanged_first_parent_met
     assert report["ok"]
     assert report["total_metadata_commits"] == 2
     assert code_merge not in {entry["commit"] for entry in report["commits"]}
+    assert {entry["commit"] for entry in store.log()} == {
+        entry["commit"] for entry in report["commits"]
+    }
+    assert store.verify_audit_signatures()["total_metadata_commits"] == 2
 
 
 def test_history_verification_rejects_merge_that_discards_side_metadata(repo: Path, capsys):
@@ -306,6 +310,14 @@ def test_history_verification_rejects_merge_that_discards_side_metadata(repo: Pa
     assert side_metadata in {entry["commit"] for entry in report["commits"]}
     dropped = next(entry for entry in report["commits"] if entry["commit"] == dropped_merge)
     assert not dropped["parent_links_ok"]
+    assert {entry["commit"] for entry in store.log()} == {
+        entry["commit"] for entry in report["commits"]
+    }
+    signatures = store.verify_audit_signatures(limit=10)
+    assert signatures["total_metadata_commits"] == signatures["checked"] == 4
+    assert {entry["commit"] for entry in signatures["commits"]} == {
+        entry["commit"] for entry in report["commits"]
+    }
     assert main(["--repo", str(repo), "audit", "verify-history", "--all", "--limit", "1"]) == 1
     summary = json.loads(capsys.readouterr().out)
     assert {entry["commit"] for entry in summary["invalid_commits"]} == {dropped_merge}
