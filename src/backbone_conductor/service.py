@@ -26,7 +26,7 @@ from .models import (
     transition_intent,
     transition_task,
 )
-from .storage import GitStore
+from .storage import GitStore, StorageError
 
 _TERMINAL_TASKS = {TaskStatus.MERGED, TaskStatus.CANCELLED}
 _EDITABLE_INTENT_FIELDS = {
@@ -825,17 +825,26 @@ class Conductor:
         ):
             raise ValueError("Only a successfully submitted task has a code review packet")
         revision = f"{artifact.base_sha}...{artifact.commit_sha}"
-        diff = self._git(
-            "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary", revision, "--"
-        )
-        if diff.returncode:
-            raise ValueError("Could not read the submitted Git diff")
-        patch = diff.stdout
-        patch_bytes = patch.encode("utf-8")
-        if len(patch_bytes) > 1_000_000:
-            raise ValueError("Artifact diff exceeds the 1 MB review limit; split the task")
         preview_limit = 1_000_000 if full_patch else 131_072
-        preview = patch_bytes[:preview_limit].decode("utf-8", errors="ignore")
+        try:
+            diff = self.code_store._git_output_digest(
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--binary",
+                revision,
+                "--",
+                preview_limit=preview_limit,
+                max_bytes=1_000_000,
+            )
+        except StorageError as exc:
+            raise ValueError("Could not read the submitted Git diff") from exc
+        if not diff.complete:
+            raise ValueError("Artifact diff exceeds the 1 MB review limit; split the task")
+        preview = diff.preview.decode(
+            "utf-8", errors="ignore" if diff.size > preview_limit else "strict"
+        )
         try:
             branch_sha = self._commit(artifact.branch)
         except ValueError:
@@ -850,34 +859,38 @@ class Conductor:
         )
         target_diff = None
         if integrated:
-            result = self._git(
-                "--literal-pathspecs",
-                "diff",
-                "--no-ext-diff",
-                "--no-textconv",
-                "--no-color",
-                "--no-renames",
-                "--binary",
-                artifact.base_sha,
-                target_sha,
-                "--",
-                *artifact.changed_paths,
-            )
-            if result.returncode:
-                raise ValueError("Could not read the integrated target diff")
-            target_bytes = result.stdout.encode("utf-8")
-            if full_patch and len(target_bytes) > 1_000_000:
+            try:
+                target = self.code_store._git_output_digest(
+                    "--literal-pathspecs",
+                    "diff",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--no-color",
+                    "--no-renames",
+                    "--binary",
+                    artifact.base_sha,
+                    target_sha,
+                    "--",
+                    *artifact.changed_paths,
+                    preview_limit=preview_limit,
+                    max_bytes=1_000_000 if full_patch else None,
+                )
+            except StorageError as exc:
+                raise ValueError("Could not read the integrated target diff") from exc
+            if not target.complete:
                 raise ValueError(
                     "Integrated target diff exceeds the 1 MB review limit; inspect in a Git checkout"
                 )
-            target_preview = target_bytes[:preview_limit].decode("utf-8", errors="ignore")
+            target_preview = target.preview.decode(
+                "utf-8", errors="ignore" if target.size > preview_limit else "strict"
+            )
             target_diff = {
                 "base_sha": artifact.base_sha,
                 "target_sha": target_sha,
                 "changed_paths": artifact.changed_paths,
                 "patch": target_preview,
-                "truncated": len(target_bytes) > preview_limit,
-                "sha256": hashlib.sha256(target_bytes).hexdigest(),
+                "truncated": target.size > preview_limit,
+                "sha256": target.sha256,
             }
         blockers = self._blockers(state, task.intent_id, task_id)
         return {
@@ -904,8 +917,8 @@ class Conductor:
             },
             "diff": {
                 "patch": preview,
-                "truncated": len(patch_bytes) > preview_limit,
-                "sha256": hashlib.sha256(patch_bytes).hexdigest(),
+                "truncated": diff.size > preview_limit,
+                "sha256": diff.sha256,
                 "changed_paths": artifact.changed_paths,
             },
             "target_diff": target_diff,

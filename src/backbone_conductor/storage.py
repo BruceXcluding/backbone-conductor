@@ -16,6 +16,9 @@ import subprocess
 import tempfile
 import uuid
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
@@ -68,6 +71,16 @@ class StorageError(RuntimeError):
     """A repository cannot safely complete a Backbone storage operation."""
 
 
+@dataclass(frozen=True)
+class GitOutputDigest:
+    """A bounded preview and digest of Git stdout; incomplete means a hard limit was hit."""
+
+    preview: bytes
+    sha256: str | None
+    size: int
+    complete: bool
+
+
 class GitStore:
     """Persist snapshots and audit records in an existing working-tree repo."""
 
@@ -83,6 +96,15 @@ class GitStore:
         )
         self._lock = FileLock(self.git_dir / "backbone.lock", timeout=lock_timeout)
 
+    @staticmethod
+    def _git_environment(env: dict[str, str] | None = None) -> dict[str, str]:
+        git_env = os.environ.copy()
+        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
+            git_env.pop(key, None)
+        git_env["GIT_OPTIONAL_LOCKS"] = "0"
+        git_env.update(env or {})
+        return git_env
+
     def _git(
         self,
         *args: str,
@@ -91,16 +113,11 @@ class GitStore:
         input: str | None = None,
         timeout: int = 30,
     ) -> subprocess.CompletedProcess[str]:
-        git_env = os.environ.copy()
-        for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR"):
-            git_env.pop(key, None)
-        git_env["GIT_OPTIONAL_LOCKS"] = "0"
-        git_env.update(env or {})
         try:
             result = subprocess.run(
                 ["git", *args],
                 cwd=self.root,
-                env=git_env,
+                env=self._git_environment(env),
                 input=input,
                 capture_output=True,
                 text=True,
@@ -113,6 +130,56 @@ class GitStore:
             detail = result.stderr.strip() or result.stdout.strip()
             raise StorageError(f"git {args[0]} failed: {detail}")
         return result
+
+    def _git_output_digest(
+        self,
+        *args: str,
+        preview_limit: int,
+        max_bytes: int | None = None,
+        timeout: int = 30,
+    ) -> GitOutputDigest:
+        """Stream Git stdout without retaining more than the requested preview."""
+        try:
+            with subprocess.Popen(
+                ["git", *args],
+                cwd=self.root,
+                env=self._git_environment(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            ) as process:
+
+                def consume() -> GitOutputDigest:
+                    assert process.stdout is not None
+                    digest = hashlib.sha256()
+                    preview = bytearray()
+                    size = 0
+                    while chunk := process.stdout.read1(65_536):
+                        size += len(chunk)
+                        if len(preview) < preview_limit:
+                            preview.extend(chunk[: preview_limit - len(preview)])
+                        if max_bytes is not None and size > max_bytes:
+                            return GitOutputDigest(bytes(preview), None, size, False)
+                        digest.update(chunk)
+                    return GitOutputDigest(bytes(preview), digest.hexdigest(), size, True)
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(consume)
+                    try:
+                        result = future.result(timeout=timeout)
+                    except FutureTimeout as exc:
+                        process.kill()
+                        raise StorageError("Timed out reading Git output") from exc
+                    except Exception:
+                        process.kill()
+                        raise
+                    if not result.complete:
+                        process.kill()
+                        return result
+                if process.wait(timeout=timeout):
+                    raise StorageError(f"git {args[0]} failed while reading output")
+                return result
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise StorageError(f"Could not stream Git output: {exc}") from exc
 
     def _head(self) -> str | None:
         result = self._git("rev-parse", "--verify", "HEAD", check=False)

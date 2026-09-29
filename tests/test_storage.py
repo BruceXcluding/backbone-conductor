@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -86,6 +87,27 @@ def test_read_requires_init_and_repo_must_exist(tmp_path: Path, repo: Path):
         GitStore(tmp_path / "absent")
     with pytest.raises(StorageError, match="not a git repository"):
         GitStore(tmp_path)
+
+
+def test_git_output_digest_streams_preview_and_stops_at_hard_limit(repo: Path):
+    data = b"large-diff-line\n" * 150_000
+    (repo / "large.txt").write_bytes(data)
+    git(repo, "add", "large.txt")
+    git(repo, "commit", "-m", "Large file")
+    store = GitStore(repo)
+    complete = store._git_output_digest("show", "HEAD:large.txt", preview_limit=257)
+    assert complete.complete is True
+    assert complete.preview == data[:257]
+    assert complete.size == len(data)
+    assert complete.sha256 == hashlib.sha256(data).hexdigest()
+
+    limited = store._git_output_digest("show", "HEAD:large.txt", preview_limit=257, max_bytes=1024)
+    assert limited.complete is False
+    assert limited.preview == data[:257]
+    assert limited.size > 1024
+    assert limited.sha256 is None
+    with pytest.raises(StorageError, match="failed"):
+        store._git_output_digest("show", "HEAD:missing.txt", preview_limit=10)
 
 
 def test_persistence_versions_and_generated_views(repo: Path):

@@ -294,6 +294,26 @@ def test_integrated_target_diff_over_limit_keeps_preview_and_review_anchors(audi
     assert len(packet["target_diff"]["patch"].encode()) <= 131_072
     assert packet["version"] == service.state()["version"]
     assert packet["git"]["target_sha"] == git(repo, "rev-parse", "HEAD")
+    target_patch = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--no-renames",
+            "--binary",
+            packet["target_diff"]["base_sha"],
+            packet["target_diff"]["target_sha"],
+            "--",
+            "database.py",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout
+    assert packet["target_diff"]["sha256"] == hashlib.sha256(target_patch).hexdigest()
     with pytest.raises(ValueError, match="Integrated target diff exceeds the 1 MB"):
         service.inspect_task(task["id"], full_patch=True)
 
