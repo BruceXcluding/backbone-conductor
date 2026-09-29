@@ -205,6 +205,22 @@ def test_missing_optional_sdk_explains_installation(tmp_path: Path, monkeypatch)
         DSHReviewer(tmp_path, "test").review({}, "")
 
 
+def test_reviewer_requires_private_dsh_home(tmp_path: Path) -> None:
+    shared = tmp_path / "shared-review-home"
+    shared.mkdir(mode=0o755)
+    with pytest.raises(ValueError, match="mode 0700"):
+        DSHReviewer(shared, "model")
+
+    private = tmp_path / "private-review-home"
+    private.mkdir(mode=0o700)
+    alias = tmp_path / "alias-review-home"
+    alias.symlink_to(private, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        DSHReviewer(alias, "model")
+
+    assert DSHReviewer(private, "model").home == private
+
+
 @pytest.mark.parametrize("model,provider", [("", "provider"), ("model", " ")])
 def test_review_requires_explicit_model_and_provider(tmp_path: Path, model, provider) -> None:
     with pytest.raises(ValueError, match="nonempty"):
@@ -352,6 +368,27 @@ def test_member_runner_rejects_shared_workspace_and_home(tmp_path: Path) -> None
     runner = DSHMemberRunner(repo, workspace, tmp_path / "home", "alice", "model")
     with pytest.raises(ValueError, match="different repository or member"):
         runner.run("Read task", session_id="session-from-another-member")
+
+
+def test_member_runner_requires_private_dsh_home(tmp_path: Path) -> None:
+    repo = initialized_repo(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    shared = tmp_path / "shared-home"
+    shared.mkdir(mode=0o755)
+    with pytest.raises(ValueError, match="mode 0700"):
+        DSHMemberRunner(repo, workspace, shared, "alice", "model")
+
+    private = tmp_path / "private-home"
+    private.mkdir(mode=0o700)
+    alias = tmp_path / "alias-home"
+    alias.symlink_to(private, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        DSHMemberRunner(repo, workspace, alias, "alice", "model")
+
+    runner = DSHMemberRunner(repo, workspace, private, "alice", "model")
+    assert runner.home == private
+    assert runner.home.stat().st_mode & 0o777 == 0o700
 
 
 def test_member_runner_preflight_rejects_admin_tool_scope(tmp_path: Path, monkeypatch) -> None:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 import tempfile
 from pathlib import Path
 from time import monotonic_ns
@@ -41,7 +43,18 @@ class DSHReviewer:
     def __init__(self, dsh_home: str | Path, model: str, provider: str = "deepseek-official"):
         if not model.strip() or not provider.strip():
             raise ValueError("DSH model and provider must be explicit nonempty values")
-        self.home = Path(dsh_home).expanduser().resolve()
+        home_path = Path(dsh_home).expanduser().absolute()
+        if home_path.is_symlink():
+            raise ValueError("Reviewer DSH home must not be a symlink")
+        self.home = home_path.resolve()
+        self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        metadata = self.home.stat()
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO)
+        ):
+            raise ValueError("Reviewer DSH home must belong to this user and be mode 0700")
         self.model = model
         self.provider = provider
 

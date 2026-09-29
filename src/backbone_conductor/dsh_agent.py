@@ -133,13 +133,24 @@ class DSHMemberRunner:
             raise ValueError("DSH model and provider must be explicit nonempty values")
         self.repo = Path(repo).expanduser().resolve(strict=True)
         self.workspace = Path(workspace).expanduser().resolve(strict=True)
-        self.home = Path(dsh_home).expanduser().resolve()
+        home_path = Path(dsh_home).expanduser().absolute()
+        if home_path.is_symlink():
+            raise ValueError("Member DSH home must not be a symlink")
+        self.home = home_path.resolve()
         if not self.workspace.is_dir():
             raise ValueError("DSH workspace must be an existing directory")
         if self.workspace.is_relative_to(self.repo) or self.repo.is_relative_to(self.workspace):
             raise ValueError("DSH workspace must be separate from the Backbone repository")
         if self.home.is_relative_to(self.repo) or self.home.is_relative_to(self.workspace):
             raise ValueError("DSH home must be outside the repository and workspace")
+        self.home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        home_metadata = self.home.stat()
+        if (
+            not stat.S_ISDIR(home_metadata.st_mode)
+            or home_metadata.st_uid != os.getuid()
+            or home_metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO)
+        ):
+            raise ValueError("Member DSH home must belong to this user and be mode 0700")
         self.member = member.strip()
         identity = f"{self.repo}\0{self.member}".encode()
         self.session_prefix = f"backbone-{hashlib.sha256(identity).hexdigest()[:16]}-"

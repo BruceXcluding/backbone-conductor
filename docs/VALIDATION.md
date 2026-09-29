@@ -255,4 +255,10 @@ DSH 测试覆盖已安装 SDK 参数兼容、输入隔离、输出 Schema、错�
 
 日期：2026-09-29。新增默认只构建的手动 Release 工作流；正式上传只允许与包版本相同的 Git 标签，并由 `pypi` 环境保护后通过 Trusted Publisher OIDC 执行。发行包检查脚本核对源码版本、wheel 和 sdist 的精确文件集合、MIT SPDX 元数据、许可证内容及源码一致性；错误版本标签会拒绝。按照 Python Packaging 对 PEP 639 的说明，移除旧 `License ::` 分类项，只保留 `License-Expression: MIT`。PyPI 环境和 Trusted Publisher 尚未配置，未上传或测试真实发布。
 
-本机完整套件 **342 passed、9 skipped，覆盖率 87.60%**；其中 6 个真实 HTTP/HTTPS 用例因沙箱禁止 loopback socket 跳过，3 个 DSH 无模型启动用例需专项启用。Ruff、离线锁文件检查、24/24 合成评测、四例历史 Git 合并回放、十客户端 MCP 并发完整性、示例通过；隔离输出目录的 0.42.0 wheel 和 sdist 构建及归档校验通过。正式 Release 工作流仍待推送后运行一次 `dry_run=true` 验证。
+本机完整套件 **342 passed、9 skipped，覆盖率 87.60%**；其中 6 个真实 HTTP/HTTPS 用例因沙箱禁止 loopback socket 跳过，3 个 DSH 无模型启动用例需专项启用。Ruff、离线锁文件检查、24/24 合成评测、四例历史 Git 合并回放、十客户端 MCP 并发完整性、示例通过；隔离输出目录的 0.42.0 wheel 和 sdist 构建及归档校验通过。推送提交 `c3f1a92` 后，GitHub [CI](https://github.com/BruceXcluding/backbone-conductor/actions/runs/36512391836) 四项作业通过，[Release dry-run](https://github.com/BruceXcluding/backbone-conductor/actions/runs/36512428823) 构建成功，`publish` 作业跳过；下载的 GitHub 发行包经本地归档脚本校验，并从 wheel 独立安装导入 0.42.0 成功。
+
+## v0.43 私有 DSH home 约束
+
+日期：2026-09-29。本地成员 DSH 入口和语义审查入口现在创建或验证仅当前用户可访问的 0700 home，拒绝最终路径为符号链接、其他用户所有或组/其他用户可访问的目录；本地成员还要求 home 位于协调仓库与代码工作区之外。此前远程成员和受限协调代理已有同类 home 检查。测试覆盖宽松权限、符号链接及正常私有目录，无需调用付费模型。已安装 DSH SDK 的审查、成员和协调入口无模型启动专项测试 **3 passed**。
+
+本机完整套件 **344 passed、9 skipped，覆盖率 87.67%**；6 个真实 HTTP/HTTPS 用例因沙箱端口限制跳过，3 个 DSH 无模型启动用例已单独强制执行。Ruff、离线锁文件检查、24/24 合成评测、四例历史 Git 合并回放、十客户端 MCP 并发完整性、示例与 0.43.0 wheel/sdist 构建及归档校验通过。真实模型调用与不同自然人的使用验证仍未进行。
