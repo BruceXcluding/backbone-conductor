@@ -659,6 +659,9 @@ def score(
         if semantic_predictions is not None
         else None
     )
+    first_review_sha = _digest(first_review)
+    second_review_sha = _digest(second_review)
+    adjudications_sha = _digest(adjudications) if adjudications is not None else None
     reviewer_a, labels_a = _review_file(
         first_review, dataset_sha, prediction_sha, authors, packet_cases, semantic_sha
     )
@@ -744,6 +747,8 @@ def score(
         "status": "complete_sample" if resolved == len(cases) else "incomplete",
         "dataset_sha256": dataset_sha,
         "predictions_sha256": prediction_sha,
+        "first_review_sha256": first_review_sha,
+        "second_review_sha256": second_review_sha,
         "detector_sha256": frozen["detector_sha256"],
         "sampling": data["sampling"],
         "projects": sorted({case["project"] for case, _intents in cases}),
@@ -769,12 +774,20 @@ def score(
             "Model calls may incur provider cost, and external evidence "
             "is required to prove advice was frozen before outcomes and hidden from reviewers."
         )
+    if adjudications is not None:
+        report["adjudications_sha256"] = adjudications_sha
     if (
         _digest(dataset) != dataset_sha
         or _digest(predictions) != prediction_sha
         or (semantic_predictions is not None and _digest(semantic_predictions) != semantic_sha)
     ):
         raise ValueError("study inputs changed during scoring")
+    if (
+        _digest(first_review) != first_review_sha
+        or _digest(second_review) != second_review_sha
+        or (adjudications is not None and _digest(adjudications) != adjudications_sha)
+    ):
+        raise ValueError("review labels changed during scoring")
     return report
 
 

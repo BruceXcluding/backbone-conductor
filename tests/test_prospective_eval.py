@@ -441,6 +441,9 @@ def test_prospective_score_exposes_false_positives_and_missed_semantic_conflicts
     assert result["status"] == "complete_sample"
     assert result["counts"] == {"tp": 1, "fp": 1, "fn": 1, "tn": 1}
     assert result["precision"] == result["recall"] == result["f1"] == 0.5
+    assert result["first_review_sha256"] == hashlib.sha256(first.read_bytes()).hexdigest()
+    assert result["second_review_sha256"] == hashlib.sha256(second.read_bytes()).hexdigest()
+    assert "adjudications_sha256" not in result
     assert "cannot prove" in result["limitation"]
 
 
@@ -653,6 +656,34 @@ def test_missing_and_disputed_labels_do_not_become_negative_cases(tmp_path):
     assert result["resolved_count"] == 1
     assert result["counts"]["tp"] == 1
     assert result["status"] == "incomplete"
+    assert result["adjudications_sha256"] == hashlib.sha256(adjudication.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("changed_review", ["first", "second", "adjudication"])
+def test_scoring_rejects_review_file_changed_after_labels_were_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_review: str
+):
+    dataset, predictions = _files(tmp_path, [_case("disputed", "src/shared.py", "src/shared.py")])
+    first, second, adjudication = (
+        tmp_path / "carol.json",
+        tmp_path / "dave.json",
+        tmp_path / "erin.json",
+    )
+    _reviews(first, dataset, predictions, "carol", [_review("disputed", True)])
+    _reviews(second, dataset, predictions, "dave", [_review("disputed", False)])
+    _reviews(adjudication, dataset, predictions, "erin", [_review("disputed", True)])
+    changed_path = {"first": first, "second": second, "adjudication": adjudication}[changed_review]
+    original_metrics = study._metrics
+
+    def metrics_after_review_change(counts):
+        changed_labels = json.loads(changed_path.read_text(encoding="utf-8"))
+        changed_labels["cases"][0]["conflict"] = not changed_labels["cases"][0]["conflict"]
+        changed_path.write_text(json.dumps(changed_labels), encoding="utf-8")
+        return original_metrics(counts)
+
+    monkeypatch.setattr(study, "_metrics", metrics_after_review_change)
+    with pytest.raises(ValueError, match="review labels changed during scoring"):
+        score(dataset, predictions, first, second, adjudication)
 
 
 def test_freeze_is_exclusive_and_labels_bind_exact_inputs(tmp_path):
