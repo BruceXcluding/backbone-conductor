@@ -630,40 +630,57 @@ class GitStore:
         second = metadata_version(parents[1]) if len(parents) == 2 else None
         return parents, first, second
 
-    def verify_audit_history(self, limit: int = 50) -> dict[str, Any]:
-        """Inspect reachable metadata commits without treating unsigned history as trusted."""
-        if not isinstance(limit, int) or not 1 <= limit <= 1000:
+    def verify_audit_history(
+        self, limit: int = 50, offset: int = 0, expected_head: str | None = None
+    ) -> dict[str, Any]:
+        """Inspect a HEAD-pinned page of reachable metadata commits."""
+        if type(limit) is not int or not 1 <= limit <= 1000:
             raise StorageError("History limit must be between 1 and 1000")
+        if type(offset) is not int or offset < 0:
+            raise StorageError("History offset must be a nonnegative integer")
+        if expected_head is not None and (
+            not isinstance(expected_head, str)
+            or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", expected_head) is None
+        ):
+            raise StorageError("A full expected Git HEAD SHA is required")
         with self._lock:
             self._ensure_clean()
             head = self._head()
             if head is None:
                 raise StorageError("Backbone has no Git history")
+            if expected_head is not None and head != expected_head:
+                raise StorageError("Git HEAD changed between history pages; restart verification")
             commits = self._git(
                 "rev-list", "--full-history", head, "--", ".backbone"
             ).stdout.splitlines()
             if not commits:
                 raise StorageError("Backbone has no metadata history")
+            if offset >= len(commits):
+                raise StorageError("History offset is beyond the last metadata commit")
             object_format = self._git("rev-parse", "--show-object-format").stdout.strip()
             if object_format not in {"sha1", "sha256"}:
                 raise StorageError("Unsupported Git object format for history verification")
             entries = [
                 self._verify_historical_snapshot(commit, object_format)
-                for commit in commits[:limit]
+                for commit in commits[offset : offset + limit]
             ]
             if self._head() != head:
                 raise StorageError("Git HEAD changed during history verification; retry")
             self._ensure_clean()
             invalid = sum(not entry["ok"] for entry in entries)
-            truncated = len(commits) > len(entries)
+            next_offset = offset + len(entries)
+            truncated = len(commits) > next_offset
             return {
                 "head": head,
                 "limit": limit,
+                "offset": offset,
                 "checked": len(entries),
                 "total_metadata_commits": len(commits),
                 "truncated": truncated,
+                "next_offset": next_offset if truncated else None,
                 "invalid": invalid,
-                "ok": invalid == 0 and not truncated,
+                "page_ok": invalid == 0,
+                "ok": invalid == 0 and offset == 0 and not truncated,
                 "commits": entries,
             }
 

@@ -254,7 +254,7 @@ def test_history_verification_finds_repaired_older_metadata_drift(repo: Path, ca
     assert not latest_only["ok"]
 
 
-def test_history_verification_accepts_complete_normal_chain(repo: Path):
+def test_history_verification_accepts_complete_normal_chain(repo: Path, capsys):
     store = GitStore(repo)
     store.init()
     store.mutate(lambda state: state.sessions.update({"example": {"value": 1}}), "new state")
@@ -262,6 +262,53 @@ def test_history_verification_accepts_complete_normal_chain(repo: Path):
     assert report["ok"]
     assert report["checked"] == report["total_metadata_commits"] == 2
     assert all(entry["ok"] for entry in report["commits"])
+    assert main(["--repo", str(repo), "audit", "verify-history", "--all", "--limit", "1"]) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["pages"] == 2
+    assert summary["checked"] == 2
+    assert summary["invalid_commits"] == []
+
+
+def test_history_verification_pages_and_aggregates_without_losing_older_failures(
+    repo: Path, capsys
+):
+    store = GitStore(repo)
+    store.init()
+    store.mutate(lambda state: state.sessions.update({"first": {"value": 1}}), "first")
+    view = repo / ".backbone/BACKBONE.md"
+    view.write_text(view.read_text() + "External drift\n")
+    git(repo, "add", ".backbone/BACKBONE.md")
+    git(repo, "commit", "-m", "External drift")
+    store.mutate(lambda state: state.sessions.update({"later": {"value": 2}}), "repair")
+    first = store.verify_audit_history(limit=1)
+    assert first["page_ok"]
+    assert first["truncated"]
+    assert not first["ok"]
+    assert first["next_offset"] == 1
+    second = store.verify_audit_history(limit=1, offset=1, expected_head=first["head"])
+    assert second["offset"] == 1
+    assert second["invalid"] == 1
+    assert second["truncated"]
+    assert not second["page_ok"]
+    assert not second["ok"]
+    assert main(["--repo", str(repo), "audit", "verify-history", "--all", "--limit", "1"]) == 1
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["checked"] == 4
+    assert summary["pages"] == 4
+    assert summary["invalid"] == len(summary["invalid_commits"]) == 1
+
+
+def test_history_verification_rejects_changed_head_and_bad_offset(repo: Path):
+    store = GitStore(repo)
+    store.init()
+    page = store.verify_audit_history(limit=1)
+    (repo / "code.txt").write_text("new code\n")
+    git(repo, "add", "code.txt")
+    git(repo, "commit", "-m", "Move code HEAD")
+    with pytest.raises(StorageError, match="HEAD changed between history pages"):
+        store.verify_audit_history(limit=1, expected_head=page["head"])
+    with pytest.raises(StorageError, match="offset is beyond"):
+        store.verify_audit_history(limit=1, offset=1)
 
 
 def test_history_verification_reports_missing_historical_state(repo: Path):

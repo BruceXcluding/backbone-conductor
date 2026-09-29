@@ -183,7 +183,7 @@ backbone reviewer --url https://coordinator.example.org:8443 \
 backbone reviewer --url https://coordinator.example.org:8443 \
   --token-file /private/path/carol.token audit-snapshot
 backbone reviewer --url https://coordinator.example.org:8443 \
-  --token-file /private/path/carol.token audit-history --limit 1000
+  --token-file /private/path/carol.token audit-history --all --limit 1000
 backbone reviewer --url https://coordinator.example.org:8443 \
   --token-file /private/path/carol.token resolve-conflict CONFLICT_ID \
   --action coordinate --rationale '先统一接口变更顺序' --version OBSERVED_VERSION
@@ -219,14 +219,14 @@ git -C /repo config gpg.ssh.allowedSignersFile /private/path/allowed-signers
 git -C /repo config commit.gpgsign true
 backbone --repo /repo audit verify --limit 50 --require-signatures
 backbone --repo /repo audit verify-snapshot
-backbone --repo /repo audit verify-history --limit 1000
+backbone --repo /repo audit verify-history --all --limit 1000
 ```
 
 Backbone 用 `git commit-tree` 写元数据，启用 `commit.gpgsign=true` 时会显式传入 `-S`；签名失败则回滚该次元数据事务。`audit verify` 使用 Git 当前配置的信任库验证最近 `--limit` 个元数据提交，返回 `valid`、`unsigned`、`invalid`、`total_metadata_commits` 与 `truncated`。默认模式对无效签名返回非零状态；`--require-signatures` 还要求所检查提交全部有效。`truncated=true` 表示仍有更早提交未检查；旧提交不会因开启签名而补签。独立元数据分支使用 `--ledger-branch backbone` 检查该分支。Git 签名只证明某可信密钥签过提交，不能证明 HTTP principal、Git author 或自然人身份；allowed signers 的维护与私钥保护由部署者负责。验证命令不修改仓库。
 
 `audit verify-snapshot` 另行核对**当前** `state.json`、所有生成视图以及元数据提交在第一/第二 Git 父链上的版本链接；缺失、多余、内容不一致或父版本错误都会使退出码非零。审查者可用 `reviewer audit-snapshot` 从认证服务读取同一报告，也可调用 `GET /audit/snapshot`；远程 CLI 只校验响应结构，不能独立验证服务端仓库。该命令不遍历并证明整个历史，不检查签名，也不能证明 HTTP principal 或真人身份。独立元数据分支请同样传入 `--ledger-branch backbone`。
 
-`audit verify-history` 逐个检查**当前 HEAD 可达**、涉及 `.backbone/` 的元数据提交，比较其状态生成的文件集合、常规文件模式与 Git blob 哈希，并核对普通及双父提交的父版本链接。默认最多 50 个，可用 `--limit` 提高到 1000；发现错误或 `truncated=true` 时返回非零状态，因此只有 `ok=true` 才表示该可达范围已全部检查。审查者可用 `reviewer audit-history` 或 `GET /audit/history` 读取服务端报告。它不验证签名，也无法发现已被整体改写且不再从当前 HEAD 可达的历史；应另行保管可信提交 SHA 并核对签名。远程 CLI 只检查响应结构与计数，不独立读取 Git 对象。超过 1000 个元数据提交时当前命令无法一次完成整条历史检查，须保留截断结论；独立元数据分支需指定 `--ledger-branch backbone`。
+`audit verify-history` 逐个检查**当前 HEAD 可达**、涉及 `.backbone/` 的元数据提交，比较其状态生成的文件集合、常规文件模式与 Git blob 哈希，并核对普通及双父提交的父版本链接。默认单页最多 50 个，可用 `--limit` 调整到 1000；单页结果提供 `offset`、`page_ok`、`next_offset` 和 `truncated`，只有从第一页开始且未截断的单页 `ok=true` 才表示整条可达历史通过。`--all` 用相同页大小遍历整条历史，固定首次读取的 Git HEAD，页间 HEAD 变化则拒绝继续；汇总报告只保留失败提交，`ok=true` 才表示全部已检查提交通过。需要手工分页时，把前一页的 `next_offset` 与 `head` 分别作为 `--offset` 和 `--expected-head` 传入。审查者可用 `reviewer audit-history` 或 `GET /audit/history` 读取服务端报告；远程 CLI 校验每页结构、计数及 HEAD 一致性，但不独立读取 Git 对象。它不验证签名，也无法发现已被整体改写且不再从当前 HEAD 可达的历史；应另行保管可信提交 SHA 并核对签名。独立元数据分支需指定 `--ledger-branch backbone`。
 
 - `backbone log` / `git log -- .backbone` 查看历史。`backbone log` 与 HTTP `/timeline` 可按精确 Git author、已认证 HTTP principal、事件类型及带时区的 `since` / `until` 时间筛选，`limit` 在筛选后生效。时间依据 Git author timestamp，事件类型由提交主题归类，均为浏览索引而非独立验证的事实。已认证 HTTP 写入会在提交中留下 `Backbone-HTTP-Principal` 与 `Backbone-HTTP-Role` trailer，返回 `http_principal` / `http_role`（包括审查者）；未认证本地调用没有这些字段。它们记录服务端已验证的 bearer principal，不是 Git 签名，也无法阻止拥有仓库写权限的人伪造提交；Git author 仍由仓库配置决定。
 - `backbone decision transition DECISION_ID reverted` 撤销接受过的决策并重算冲突。

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from backbone_conductor.audit_history import verify_all_history_pages
 from backbone_conductor.cli import _format_inspection, main
 from backbone_conductor.reviewer_client import (
     _private_token,
@@ -116,10 +117,13 @@ def test_remote_history_report_rejects_inconsistent_counts() -> None:
     report = {
         "head": "a" * 40,
         "limit": 2,
+        "offset": 0,
         "checked": 2,
         "total_metadata_commits": 2,
         "truncated": False,
+        "next_offset": None,
         "invalid": 0,
+        "page_ok": True,
         "ok": True,
         "commits": [
             {
@@ -144,6 +148,9 @@ def test_remote_history_report_rejects_inconsistent_counts() -> None:
     for bad in (
         {**report, "invalid": 1},
         {**report, "truncated": True},
+        {**report, "next_offset": 2},
+        {**report, "offset": 1},
+        {**report, "page_ok": False},
         {**report, "commits": [report["commits"][0]]},
         {**report, "commits": [{**report["commits"][0], "ok": False}, report["commits"][1]]},
     ):
@@ -156,10 +163,29 @@ def test_remote_history_report_rejects_inconsistent_counts() -> None:
         "checked": 1,
         "total_metadata_commits": 2,
         "truncated": True,
+        "next_offset": 1,
         "ok": False,
         "commits": report["commits"][:1],
     }
     assert _validated_history_report(partial, 1) == partial
+    final_page = {
+        **report,
+        "limit": 1,
+        "offset": 1,
+        "checked": 1,
+        "commits": report["commits"][1:],
+        "ok": False,
+    }
+    assert _validated_history_report(final_page, 1, 1, report["head"]) == final_page
+    with pytest.raises(ValueError, match="invalid history report"):
+        _validated_history_report(final_page, 1, 1, "d" * 40)
+    combined = verify_all_history_pages(lambda offset, _head: (partial, final_page)[offset], 1)
+    assert combined["ok"]
+    assert combined["pages"] == 2
+    assert combined["checked"] == 2
+    repeated = {**final_page, "commits": partial["commits"]}
+    with pytest.raises(ValueError, match="repeated commits"):
+        verify_all_history_pages(lambda offset, _head: (partial, repeated)[offset], 1)
 
 
 def test_remote_full_patch_rejects_truncation_or_hash_mismatch() -> None:

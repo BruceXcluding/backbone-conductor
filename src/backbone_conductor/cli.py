@@ -13,6 +13,7 @@ from itertools import chain
 from pathlib import Path
 from typing import Any
 
+from .audit_history import verify_all_history_pages
 from .service import Conductor
 from .storage import AUDIT_EVENT_TYPES
 
@@ -463,6 +464,10 @@ def build_parser() -> argparse.ArgumentParser:
         "verify-history", help="Check reachable metadata snapshots, up to a bounded limit"
     )
     history.add_argument("--limit", type=int, default=50)
+    history_scope = history.add_mutually_exclusive_group()
+    history_scope.add_argument("--offset", type=int, default=0)
+    history_scope.add_argument("--all", action="store_true")
+    history.add_argument("--expected-head")
     commands.add_parser("schema", help="Print protocol JSON Schema")
     review = commands.add_parser("review", help="Request advisory semantic review through DSH")
     review.add_argument("task_id")
@@ -590,6 +595,10 @@ def build_parser() -> argparse.ArgumentParser:
         "audit-history", help="Read the coordinator's bounded metadata history report"
     )
     reviewer_history.add_argument("--limit", type=int, default=50)
+    reviewer_history_scope = reviewer_history.add_mutually_exclusive_group()
+    reviewer_history_scope.add_argument("--offset", type=int, default=0)
+    reviewer_history_scope.add_argument("--all", action="store_true")
+    reviewer_history.add_argument("--expected-head")
     reviewer_inspect = reviewer_actions.add_parser(
         "inspect", help="Read submitted or approved task review"
     )
@@ -997,7 +1006,16 @@ def _run(args: argparse.Namespace) -> Any:
         if args.action == "verify":
             return conductor.verify_audit_signatures(args.limit)
         if args.action == "verify-history":
-            return conductor.verify_audit_history(args.limit)
+            return (
+                verify_all_history_pages(
+                    lambda offset, head: conductor.verify_audit_history(
+                        args.limit, offset, head or args.expected_head
+                    ),
+                    args.limit,
+                )
+                if args.all
+                else conductor.verify_audit_history(args.limit, args.offset, args.expected_head)
+            )
         return conductor.verify_current_snapshot()
     raise ValueError(f"Unknown command: {args.command}")
 

@@ -410,6 +410,21 @@ def test_reviewer_can_review_others_intent_with_bound_identity(
         )
         assert history_report.status_code == 200
         assert history_report.json()["ok"] is True
+        first_page = client.get(
+            "/audit/history", params={"limit": 1}, headers=auth_header(CAROL_TOKEN)
+        ).json()
+        assert first_page["truncated"]
+        second_page = client.get(
+            "/audit/history",
+            params={
+                "limit": 1,
+                "offset": first_page["next_offset"],
+                "expected_head": first_page["head"],
+            },
+            headers=auth_header(CAROL_TOKEN),
+        )
+        assert second_page.status_code == 200
+        assert second_page.json()["offset"] == 1
         assert client.post(path, headers=auth_header(CAROL_TOKEN), json=payload).status_code == 422
         own = Conductor(repo).create_intent(
             {"author": "carol", "problem": "Own scope", "proposed_outcome": "Deliver"}

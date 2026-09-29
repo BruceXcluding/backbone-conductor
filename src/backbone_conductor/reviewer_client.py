@@ -9,6 +9,7 @@ from pathlib import Path
 
 import httpx
 
+from .audit_history import validate_history_page, verify_all_history_pages
 from .private_token import read_private_token
 from .remote_http import identifier, request_json, server_url
 
@@ -129,67 +130,14 @@ def _validated_snapshot_report(report: object) -> dict:
     return report
 
 
-def _validated_history_report(report: object, limit: int) -> dict:
+def _validated_history_report(
+    report: object, limit: int, offset: int = 0, expected_head: str | None = None
+) -> dict:
     """Check the shape and counts of the coordinator's bounded history report."""
-    error = ValueError("Reviewer server returned an invalid history report")
-    if not isinstance(report, dict):
-        raise error
-    required = {
-        "head",
-        "limit",
-        "checked",
-        "total_metadata_commits",
-        "truncated",
-        "invalid",
-        "ok",
-        "commits",
-    }
-    if not required <= report.keys():
-        raise error
-    sha = r"(?:[0-9a-f]{40}|[0-9a-f]{64})"
-    if not isinstance(report["head"], str) or re.fullmatch(sha, report["head"]) is None:
-        raise error
-    for key in ("limit", "checked", "total_metadata_commits", "invalid"):
-        if type(report[key]) is not int or report[key] < 0:
-            raise error
-    if (
-        report["limit"] != limit
-        or report["checked"] != min(limit, report["total_metadata_commits"])
-        or report["checked"] == 0
-        or type(report["truncated"]) is not bool
-        or report["truncated"] != (report["total_metadata_commits"] > report["checked"])
-        or type(report["ok"]) is not bool
-        or not isinstance(report["commits"], list)
-        or len(report["commits"]) != report["checked"]
-    ):
-        raise error
-    failures = 0
-    for entry in report["commits"]:
-        if (
-            not isinstance(entry, dict)
-            or not isinstance(entry.get("commit"), str)
-            or re.fullmatch(sha, entry["commit"]) is None
-            or type(entry.get("ok")) is not bool
-        ):
-            raise error
-        if "error" in entry:
-            if entry["ok"] or not isinstance(entry["error"], str):
-                raise error
-        else:
-            for key in ("missing_views", "extra_views", "changed_views"):
-                value = entry.get(key)
-                if not isinstance(value, list) or any(not isinstance(path, str) for path in value):
-                    raise error
-            links_ok = entry.get("parent_links_ok")
-            if type(links_ok) is not bool or entry["ok"] != (
-                not any(entry[key] for key in ("missing_views", "extra_views", "changed_views"))
-                and links_ok
-            ):
-                raise error
-        failures += not entry["ok"]
-    if report["invalid"] != failures or report["ok"] != (failures == 0 and not report["truncated"]):
-        raise error
-    return report
+    try:
+        return validate_history_page(report, limit, offset, expected_head)
+    except ValueError as exc:
+        raise ValueError("Reviewer server returned an invalid history report") from exc
 
 
 def _validated_full_patch(packet: object) -> dict:
@@ -306,8 +254,21 @@ def run_reviewer_command(args) -> dict | list:
         if args.action == "audit-snapshot":
             return _validated_snapshot_report(request(client, "GET", "/audit/snapshot"))
         if args.action == "audit-history":
-            report = request(client, "GET", "/audit/history", params={"limit": args.limit})
-            return _validated_history_report(report, args.limit)
+
+            def fetch(offset: int, head: str | None) -> dict:
+                params = {"limit": args.limit, "offset": offset}
+                if head is not None or args.expected_head is not None:
+                    params["expected_head"] = head or args.expected_head
+                report = request(client, "GET", "/audit/history", params=params)
+                return _validated_history_report(
+                    report, args.limit, offset, head or args.expected_head
+                )
+
+            return (
+                verify_all_history_pages(fetch, args.limit)
+                if args.all
+                else fetch(args.offset, args.expected_head)
+            )
         if args.action == "inspect":
             packet = request(
                 client,

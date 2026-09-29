@@ -281,6 +281,11 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(
             history_report = json.loads(capsys.readouterr().out)
             assert history_report["ok"] is True
             assert history_report["checked"] == history_report["total_metadata_commits"]
+            assert main([*reviewer_command, "audit-history", "--all", "--limit", "2"]) == 0
+            complete_history = json.loads(capsys.readouterr().out)
+            assert complete_history["ok"] is True
+            assert complete_history["pages"] > 1
+            assert complete_history["checked"] == history_report["checked"]
             assert (
                 main([*reviewer_command, "audit-verify", "--limit", "1", "--require-signatures"])
                 == 1

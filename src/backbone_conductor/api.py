@@ -532,8 +532,12 @@ def create_app(
         return conductor.verify_current_snapshot()
 
     @app.get("/audit/history")
-    def verify_history(limit: int = Query(default=50, ge=1, le=1000)) -> dict:
-        return conductor.verify_audit_history(limit)
+    def verify_history(
+        limit: int = Query(default=50, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        expected_head: str | None = None,
+    ) -> dict:
+        return conductor.verify_audit_history(limit, offset, expected_head)
 
     if member_mcp_app is not None:
         app.mount("/", member_mcp_app)
