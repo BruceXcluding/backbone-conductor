@@ -248,6 +248,8 @@ def test_review_packet_bounds_remote_patch_size(audit_project, line_count, too_l
             service.inspect_task(task["id"])
         with pytest.raises(ValueError, match="1 MB review limit"):
             service.inspect_task(task["id"], full_patch=True)
+        with pytest.raises(ValueError, match="1 MB review limit"):
+            service.review_task(task["id"], str(repo.parent / "review-home"), "mock-model")
     else:
         packet = service.inspect_task(task["id"])
         assert packet["diff"]["truncated"] is True
@@ -318,7 +320,7 @@ def test_integrated_target_diff_over_limit_keeps_preview_and_review_anchors(audi
         service.inspect_task(task["id"], full_patch=True)
 
 
-def test_review_diffs_ignore_configured_textconv(audit_project):
+def test_review_diffs_ignore_configured_textconv(audit_project, monkeypatch):
     service, repo = audit_project
     _intent, task, artifact = prepare_artifact(service, repo)
     assert service.submit_artifact("alice", artifact)["accepted"]
@@ -330,6 +332,25 @@ def test_review_diffs_ignore_configured_textconv(audit_project):
     for field in ("diff", "target_diff"):
         assert "+DATABASE = {}" in packet[field]["patch"]
         assert "CONVERTED" not in packet[field]["patch"]
+
+    observed = {}
+
+    def capture_review(_reviewer, context, patch):
+        observed["context"] = context
+        observed["patch"] = patch
+        return {
+            "verdict": "uncertain",
+            "rationale": "Test stub only",
+            "concerns": [],
+            "runtime": {"elapsed_ms": 0, "session_id": "stub", "finish_reason": "completed"},
+        }
+
+    monkeypatch.setattr("backbone_conductor.runtime.DSHReviewer.review", capture_review)
+    result = service.review_task(task["id"], str(repo.parent / "review-home"), "mock-model")
+    assert result["advisory"] is True
+    assert observed["context"]["task"]["id"] == task["id"]
+    assert "+DATABASE = {}" in observed["patch"]
+    assert "CONVERTED" not in observed["patch"]
     display_diff = git(
         repo,
         "diff",

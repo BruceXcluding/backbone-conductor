@@ -1095,13 +1095,25 @@ class Conductor:
         artifact = task.artifact
         if task.status != TaskStatus.SUBMITTED or not artifact or not artifact.commit_sha:
             raise ValueError("Semantic review requires a successfully submitted artifact")
-        diff = self._git(
-            "diff", f"{artifact.base_sha}...{artifact.commit_sha}", "--", ".", ":(exclude).backbone"
-        )
-        if diff.returncode:
-            raise ValueError("Cannot read artifact diff for semantic review")
-        if len(diff.stdout.encode()) > 1_000_000:
+        try:
+            diff = self.code_store._git_output_digest(
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--binary",
+                f"{artifact.base_sha}...{artifact.commit_sha}",
+                "--",
+                ".",
+                ":(exclude).backbone",
+                preview_limit=1_000_000,
+                max_bytes=1_000_000,
+            )
+        except StorageError as exc:
+            raise ValueError("Cannot read artifact diff for semantic review") from exc
+        if not diff.complete:
             raise ValueError("Artifact diff exceeds the 1 MB review limit; split the task")
+        patch = diff.preview.decode("utf-8")
         context = {
             "task": _dump(task),
             "intent": _dump(snapshot.intents[task.intent_id]),
@@ -1144,7 +1156,7 @@ class Conductor:
                 ) from error
 
         try:
-            review = DSHReviewer(dsh_home, model, provider).review(context, diff.stdout)
+            review = DSHReviewer(dsh_home, model, provider).review(context, patch)
         except Exception as exc:
             record_failure("runtime", exc)
             raise
