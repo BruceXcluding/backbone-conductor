@@ -23,6 +23,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 
 from .mcp_server import COORDINATOR_TOOLS
+from .private_token import read_private_token
 from .service import Conductor
 
 _MEMBER_SYSTEM_PROMPT = (
@@ -90,29 +91,69 @@ def _read_member_token(path: Path, workspace: Path, home: Path) -> str:
     location = path.resolve(strict=True)
     if location.is_relative_to(workspace) or location.is_relative_to(home):
         raise ValueError("DSH MCP token file must be outside the workspace and DSH home")
-    descriptor = os.open(
-        path,
-        os.O_RDONLY
-        | getattr(os, "O_NONBLOCK", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-    )
-    with os.fdopen(descriptor, "rb") as stream:
-        metadata = os.fstat(stream.fileno())
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise ValueError("DSH MCP token file must be a single-link regular file")
-        if metadata.st_uid != os.getuid() or metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
-            raise ValueError("DSH MCP token file must belong to this user and be mode 0600")
-        raw = stream.read(1025)
-    if len(raw) > 1024:
-        raise ValueError("DSH MCP token file is too large")
+    return read_private_token(path, "DSH MCP")
+
+
+def _validate_member_endpoint(mcp_url: str) -> None:
+    parts = urlsplit(mcp_url)
     try:
-        token = raw.decode("ascii").rstrip("\r\n")
-    except UnicodeDecodeError as exc:
-        raise ValueError("DSH MCP token must be ASCII") from exc
-    if not 32 <= len(token) <= 512 or any(character.isspace() for character in token):
-        raise ValueError("DSH MCP token must be a single 32–512 character value")
-    return token
+        port = parts.port
+    except ValueError as exc:
+        raise ValueError("DSH MCP URL has an invalid port") from exc
+    if (
+        parts.scheme not in {"http", "https"}
+        or not parts.hostname
+        or parts.username is not None
+        or parts.password is not None
+        or parts.path != "/mcp"
+        or parts.query
+        or parts.fragment
+        or port == 0
+    ):
+        raise ValueError("DSH MCP URL must be an absolute /mcp HTTP(S) endpoint")
+    if parts.scheme == "http" and parts.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError("DSH remote MCP requires HTTPS outside loopback")
+
+
+def _check_remote_member(mcp_url: str, member: str, token: str, ca_file: Path | None) -> None:
+    async def check() -> None:
+        async with httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {token}"},
+            verify=ssl.create_default_context(cafile=str(ca_file)) if ca_file else True,
+            trust_env=False,
+        ) as http_client:
+            async with streamable_http_client(mcp_url, http_client=http_client) as (
+                read,
+                write,
+                _,
+            ):
+                async with ClientSession(read, write) as session:
+                    await _check_member_session(session, member)
+
+    try:
+        asyncio.run(asyncio.wait_for(check(), timeout=20))
+    except Exception as exc:
+        raise ValueError(f"Backbone member MCP preflight failed ({type(exc).__name__})") from exc
+
+
+def preflight_remote_member(
+    mcp_url: str, member: str, token_file: str | Path, ca_file: str | Path | None = None
+) -> dict:
+    """Verify remote member scope and binding without a model or local Git checkout."""
+    if not member.strip() or any(ord(character) < 32 for character in member):
+        raise ValueError("DSH member must be nonempty and contain no control characters")
+    _validate_member_endpoint(mcp_url)
+    token = read_private_token(token_file, "Member MCP")
+    certificate = Path(ca_file).expanduser().resolve(strict=True) if ca_file else None
+    if certificate is not None and not certificate.is_file():
+        raise ValueError("Member MCP CA file must be a regular file")
+    _check_remote_member(mcp_url, member.strip(), token, certificate)
+    return {
+        "member_id": member.strip(),
+        "mcp_url": mcp_url,
+        "tool_count": len(_MEMBER_TOOLS),
+        "verified": True,
+    }
 
 
 class DSHMemberRunner:
@@ -327,19 +368,7 @@ class DSHRemoteMemberRunner(DSHMemberRunner):
             raise ValueError("DSH member must be nonempty and contain no control characters")
         if not model.strip() or not provider.strip():
             raise ValueError("DSH model and provider must be explicit nonempty values")
-        parts = urlsplit(mcp_url)
-        if (
-            parts.scheme not in {"http", "https"}
-            or not parts.hostname
-            or parts.username is not None
-            or parts.password is not None
-            or parts.path != "/mcp"
-            or parts.query
-            or parts.fragment
-        ):
-            raise ValueError("DSH MCP URL must be an absolute /mcp HTTP(S) endpoint")
-        if parts.scheme == "http" and parts.hostname not in {"localhost", "127.0.0.1", "::1"}:
-            raise ValueError("DSH remote MCP requires HTTPS outside loopback")
+        _validate_member_endpoint(mcp_url)
         self.workspace = Path(workspace).expanduser().resolve(strict=True)
         home_path = Path(dsh_home).expanduser().absolute()
         if home_path.is_symlink():
@@ -396,29 +425,7 @@ class DSHRemoteMemberRunner(DSHMemberRunner):
     def _preflight_mcp(self, patch: list[dict] | None = None) -> None:
         config = (patch if patch is not None else self.member_patch())[1]["insert"][0]["config"]
         token = config["headers"]["Authorization"][7:]
-
-        async def check() -> None:
-            async with httpx.AsyncClient(
-                headers={"Authorization": f"Bearer {token}"},
-                verify=ssl.create_default_context(cafile=str(self.ca_file))
-                if self.ca_file
-                else True,
-                trust_env=False,
-            ) as http_client:
-                async with streamable_http_client(self.mcp_url, http_client=http_client) as (
-                    read,
-                    write,
-                    _,
-                ):
-                    async with ClientSession(read, write) as session:
-                        await _check_member_session(session, self.member)
-
-        try:
-            asyncio.run(asyncio.wait_for(check(), timeout=20))
-        except Exception as exc:
-            raise ValueError(
-                f"Backbone member MCP preflight failed ({type(exc).__name__})"
-            ) from exc
+        _check_remote_member(self.mcp_url, self.member, token, self.ca_file)
 
     def _harness_env(self) -> dict[str, str]:
         return {"NODE_EXTRA_CA_CERTS": str(self.ca_file)} if self.ca_file else {}

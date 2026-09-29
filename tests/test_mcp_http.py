@@ -386,7 +386,7 @@ def test_live_streamable_http_mcp_client_and_rotation(remote_repo) -> None:
 
 
 def test_remote_dsh_member_preflight_sdk_and_mock_tool_call(
-    remote_repo, tmp_path: Path, monkeypatch, mock_dsh_tool_provider
+    remote_repo, tmp_path: Path, monkeypatch, mock_dsh_tool_provider, capsys
 ) -> None:
     repo, credentials, tokens = remote_repo
     with socket.socket() as listener:
@@ -438,6 +438,32 @@ def test_remote_dsh_member_preflight_sdk_and_mock_tool_call(
         token_file = tmp_path / "alice.token"
         token_file.write_text(tokens["alice"] + "\n", encoding="ascii")
         token_file.chmod(0o600)
+        command = [
+            "member-check",
+            "--mcp-url",
+            f"{base_url}/mcp",
+            "--member",
+            "alice",
+            "--token-file",
+            str(token_file),
+        ]
+        assert main(command) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report == {
+            "member_id": "alice",
+            "mcp_url": f"{base_url}/mcp",
+            "tool_count": 8,
+            "verified": True,
+        }
+        assert tokens["alice"] not in json.dumps(report)
+        assert main(command[:4] + ["bob"] + command[5:]) == 1
+        assert "preflight failed" in capsys.readouterr().err
+        token_file.chmod(0o644)
+        assert main(command) == 1
+        assert "0600" in capsys.readouterr().err
+        token_file.chmod(0o600)
+        assert main(command[:2] + ["http://coordinator.example/mcp"] + command[3:]) == 1
+        assert "HTTPS" in capsys.readouterr().err
         runner = DSHRemoteMemberRunner(
             workspace, tmp_path / "dsh-home", "alice", "placeholder", f"{base_url}/mcp", token_file
         )

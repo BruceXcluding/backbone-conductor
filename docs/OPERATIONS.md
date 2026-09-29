@@ -48,7 +48,7 @@ backbone --repo /repo serve --host 0.0.0.0 --port 8443 \
 
 在上述可信 HTTPS 命令中加入 `--mcp-http --mcp-allowed-host coordinator.example.org:8443`，成员 Agent 就可连接 `https://coordinator.example.org:8443/mcp` 并提供自己的 `Authorization: Bearer` 令牌。`--mcp-http` 必须与 `--auth-file` 一起使用；默认 Host 名单只含本机回环地址，远程实际 Host header（含非默认端口）须显式列出。该接口只注册八个成员工具，逐请求认证并绑定成员身份；管理员/审查者令牌返回 403，旧令牌轮换后返回 401。凭据不可用时返回 503；未知 Host 由 MCP 传输层拒绝。已验证本机真实 HTTP 客户端和受信任证书的 HTTPS 客户端，尚未在公网或不同自然人的共享部署中验证。
 
-成员客户端需支持 Streamable HTTP 和静态 bearer header。令牌是长期凭据，应通过客户端的私有配置或环境变量传入，不要把明文放入 Git、公开 URL 或共享日志。此接口未实现 OAuth 动态注册；如果客户端只接受 OAuth 授权发现，需另行提供兼容的身份服务。MCP 的角色权限不能替代协调仓库的操作系统文件权限。
+成员客户端需支持 Streamable HTTP 和静态 bearer header。令牌是长期凭据，应通过客户端的私有配置或环境变量传入，不要把明文放入 Git、公开 URL 或共享日志。连接前可用 `backbone member-check --mcp-url https://coordinator.example.org:8443/mcp --member alice --token-file /private/path/alice.token` 在成员设备上只读验证身份绑定与工具范围，无需模型或协调仓库；实际真人试用的角色、流程和证据要求见[验收清单](PILOT.md)。此接口未实现 OAuth 动态注册；如果客户端只接受 OAuth 授权发现，需另行提供兼容的身份服务。MCP 的角色权限不能替代协调仓库的操作系统文件权限。
 
 ## Docker Compose
 

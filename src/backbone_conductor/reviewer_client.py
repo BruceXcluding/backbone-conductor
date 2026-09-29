@@ -3,46 +3,21 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import ssl
-import stat
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
+
+from .private_token import read_private_token
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
 def _private_token(path: str) -> str:
-    location = Path(path).expanduser().absolute()
-    if location.is_symlink():
-        raise ValueError("Reviewer token file must be a regular file, not a symlink")
-    descriptor = os.open(
-        location,
-        os.O_RDONLY
-        | getattr(os, "O_NONBLOCK", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-    )
-    with os.fdopen(descriptor, "rb") as stream:
-        metadata = os.fstat(stream.fileno())
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise ValueError("Reviewer token file must be a single-link regular file")
-        if metadata.st_uid != os.getuid() or metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
-            raise ValueError("Reviewer token file must belong to this user and be mode 0600")
-        raw = stream.read(1025)
-    if len(raw) > 1024:
-        raise ValueError("Reviewer token file is too large")
-    try:
-        token = raw.decode("ascii").rstrip("\r\n")
-    except UnicodeDecodeError as exc:
-        raise ValueError("Reviewer token must be ASCII") from exc
-    if not 32 <= len(token) <= 512 or any(character.isspace() for character in token):
-        raise ValueError("Reviewer token must be a single 32–512 character value")
-    return token
+    return read_private_token(path, "Reviewer")
 
 
 def _server_url(value: str) -> str:

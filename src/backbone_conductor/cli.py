@@ -510,6 +510,15 @@ def build_parser() -> argparse.ArgumentParser:
     reviewer = commands.add_parser(
         "reviewer", help="Review through an authenticated HTTP server without a local Git clone"
     )
+    member_check = commands.add_parser(
+        "member-check", help="Verify remote MCP member identity and tool scope without a model"
+    )
+    member_check.add_argument("--mcp-url", required=True, help="Remote coordinator /mcp URL")
+    member_check.add_argument("--member", required=True, help="Expected member principal")
+    member_check.add_argument(
+        "--token-file", required=True, help="Private member bearer-token file"
+    )
+    member_check.add_argument("--ca-file", help="CA certificate for a trusted HTTPS server")
     reviewer.add_argument("--url", required=True, help="Coordinator HTTP(S) server origin")
     reviewer.add_argument("--token-file", required=True, help="Private reviewer bearer-token file")
     reviewer.add_argument("--ca-file", help="CA certificate for a trusted HTTPS server")
@@ -806,6 +815,12 @@ def _run(args: argparse.Namespace) -> Any:
         if args.ledger_branch:
             raise ValueError("Remote reviewer does not use --ledger-branch")
         return run_reviewer_command(args)
+    if args.command == "member-check":
+        from .dsh_agent import preflight_remote_member
+
+        if args.ledger_branch:
+            raise ValueError("Remote member check does not use --ledger-branch")
+        return preflight_remote_member(args.mcp_url, args.member, args.token_file, args.ca_file)
 
     conductor = Conductor(args.repo, ledger_branch=args.ledger_branch)
     if args.command == "init":
