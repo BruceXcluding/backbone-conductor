@@ -1,4 +1,4 @@
-"""Run inside an isolated Docker client to probe a remote member MCP endpoint."""
+"""Probe a remote member MCP endpoint from an isolated non-root Docker client."""
 
 from __future__ import annotations
 
@@ -14,12 +14,16 @@ from mcp.client.streamable_http import streamable_http_client
 
 
 async def main() -> None:
+    assert os.getuid() == int(os.environ["BACKBONE_TEST_CLIENT_UID"])
+    assert os.getuid() != int(os.environ["BACKBONE_TEST_SERVER_UID"])
     assert not Path("/workspace/.git").exists(), "Client must not mount the Git repository"
     assert not Path("/run/secrets/backbone-http-tokens.json").exists(), (
         "Client must not mount the server's credential file"
     )
     token = os.environ["BACKBONE_TEST_TOKEN"]
     intent_id = os.environ["BACKBONE_TEST_INTENT_ID"]
+    member = os.environ["BACKBONE_TEST_MEMBER"]
+    other_member = os.environ["BACKBONE_TEST_OTHER_MEMBER"]
     context = ssl.create_default_context(cafile="/certs/server.crt")
     async with httpx.AsyncClient(
         verify=context,
@@ -54,7 +58,19 @@ async def main() -> None:
                 )
                 assert not result.isError, result
                 created = json.loads(result.content[0].text)
-                assert created["id"] == intent_id and created["author"] == "alice", created
+                assert created["id"] == intent_id and created["author"] == member, created
+                spoof = await session.call_tool(
+                    "create_intent",
+                    {
+                        "intent_data": {
+                            "id": f"{intent_id}-spoof",
+                            "author": other_member,
+                            "problem": "Reject a different member identity",
+                            "proposed_outcome": "No impersonation",
+                        }
+                    },
+                )
+                assert spoof.isError, spoof
 
 
 if __name__ == "__main__":

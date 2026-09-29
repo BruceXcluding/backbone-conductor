@@ -1,4 +1,4 @@
-"""Exercise Compose HTTP, HTTPS, ledger, and member MCP against real Docker."""
+"""Exercise Compose HTTP, HTTPS, ledger, and isolated member MCP against real Docker."""
 
 from __future__ import annotations
 
@@ -210,7 +210,7 @@ def verify_inline(
     reviewer_token: str,
     member_token: str,
     port: int,
-) -> tuple[str, str, str]:
+) -> tuple[str, str, str, str]:
     env = {**os.environ, "BACKBONE_REPO": str(repo), "BACKBONE_AUTH_DIR": str(auth_dir)}
     env["BACKBONE_PORT"] = str(port)
     env["BACKBONE_UID"] = str(os.getuid())
@@ -236,7 +236,7 @@ def verify_inline(
         assert git(repo, "status", "--porcelain") == ""
         assert "Backbone-HTTP-Principal: alice" in git(repo, "log", "-1", "--format=%B")
         rotated = rotate_token_file(
-            auth_dir / "backbone-http-tokens.json", repo, "owner", ["alice"], ["carol"]
+            auth_dir / "backbone-http-tokens.json", repo, "owner", ["alice", "bob"], ["carol"]
         )
         new_tokens = {entry["name"]: entry["token"] for entry in rotated}
         assert request(port, "/state", old_token)[0] == 401
@@ -246,7 +246,12 @@ def verify_inline(
         assert request(port, "/state", new_tokens["owner"])[0] == 200
         assert request(port, "/state", new_tokens["carol"])[0] == 200
         verify_member_mcp(port, new_tokens["alice"], "inline-rotated-mcp-intent")
-        return new_tokens["owner"], new_tokens["carol"], new_tokens["alice"]
+        return (
+            new_tokens["owner"],
+            new_tokens["carol"],
+            new_tokens["alice"],
+            new_tokens["bob"],
+        )
     finally:
         compose(project, env, "down", mcp=True)
 
@@ -342,6 +347,9 @@ def verify_network_member(
     tls_dir: Path,
     member_token: str,
     intent_id: str,
+    member: str,
+    other_member: str,
+    client_uid: int,
     *,
     separate: bool,
 ) -> None:
@@ -353,6 +361,10 @@ def verify_network_member(
         **os.environ,
         "BACKBONE_TEST_TOKEN": member_token,
         "BACKBONE_TEST_INTENT_ID": intent_id,
+        "BACKBONE_TEST_MEMBER": member,
+        "BACKBONE_TEST_OTHER_MEMBER": other_member,
+        "BACKBONE_TEST_CLIENT_UID": str(client_uid),
+        "BACKBONE_TEST_SERVER_UID": env["BACKBONE_UID"],
     }
     command(
         "docker",
@@ -360,12 +372,22 @@ def verify_network_member(
         "--rm",
         "--network",
         f"{project}_default",
+        "--user",
+        f"{client_uid}:{client_uid}",
         "--env",
         "BACKBONE_TEST_TOKEN",
         "--env",
         "BACKBONE_TEST_INTENT_ID",
+        "--env",
+        "BACKBONE_TEST_MEMBER",
+        "--env",
+        "BACKBONE_TEST_OTHER_MEMBER",
+        "--env",
+        "BACKBONE_TEST_CLIENT_UID",
+        "--env",
+        "BACKBONE_TEST_SERVER_UID",
         "--volume",
-        f"{tls_dir}:/certs:ro",
+        f"{tls_dir / 'server.crt'}:/certs/server.crt:ro",
         "--volume",
         f"{PROJECT_ROOT / 'scripts' / 'verify_network_mcp_client.py'}:/probe.py:ro",
         "--entrypoint",
@@ -384,6 +406,7 @@ def verify_tls(
     token: str,
     reviewer_token: str,
     member_token: str,
+    second_member_token: str,
     *,
     separate: bool,
 ) -> None:
@@ -412,6 +435,7 @@ def verify_tls(
         wait_healthy(port, certificate)
         assert mcp_status(port, token, certificate) == 403
         assert mcp_status(port, member_token, certificate) == 200
+        assert mcp_status(port, second_member_token, certificate) == 200
         assert request(port, "/state", certificate=certificate)[0] == 401
         assert request(port, "/state", token, certificate=certificate)[0] == 200
         intent_id = "tls-separate-intent" if separate else "tls-inline-intent"
@@ -429,11 +453,33 @@ def verify_tls(
         network_intent_id = (
             "tls-separate-network-intent" if separate else "tls-inline-network-intent"
         )
+        client_uids = [uid for uid in (10001, 10002, 10003) if uid != int(env["BACKBONE_UID"])]
         verify_network_member(
-            project, env, tls_dir, member_token, network_intent_id, separate=separate
+            project,
+            env,
+            tls_dir,
+            member_token,
+            network_intent_id,
+            "alice",
+            "bob",
+            client_uids[0],
+            separate=separate,
+        )
+        assert "Backbone-HTTP-Principal: alice" in git(repo, "log", "-1", branch, "--format=%B")
+        second_network_intent_id = f"{network_intent_id}-bob"
+        verify_network_member(
+            project,
+            env,
+            tls_dir,
+            second_member_token,
+            second_network_intent_id,
+            "bob",
+            "alice",
+            client_uids[1],
+            separate=separate,
         )
         assert git(repo, "rev-parse", branch) != ledger_head
-        assert "Backbone-HTTP-Principal: alice" in git(repo, "log", "-1", branch, "--format=%B")
+        assert "Backbone-HTTP-Principal: bob" in git(repo, "log", "-1", branch, "--format=%B")
         assert git(repo, "status", "--porcelain") == ""
         if separate:
             assert git(repo, "rev-parse", "HEAD") == code_head
@@ -456,6 +502,9 @@ def verify_tls(
         assert status == 200 and state["intents"][intent_id]["status"] == "accepted"
         assert state["intents"][mcp_intent_id]["author"] == "alice"
         assert state["intents"][network_intent_id]["author"] == "alice"
+        assert state["intents"][second_network_intent_id]["author"] == "bob"
+        assert f"{network_intent_id}-spoof" not in state["intents"]
+        assert f"{second_network_intent_id}-spoof" not in state["intents"]
     except BaseException:
         try:
             print(
@@ -479,11 +528,15 @@ def main() -> None:
         auth_dir = root / "auth"
         auth_dir.mkdir(mode=0o700)
         issued = create_token_file(
-            auth_dir / "backbone-http-tokens.json", inline_repo, "owner", ["alice"], ["carol"]
+            auth_dir / "backbone-http-tokens.json",
+            inline_repo,
+            "owner",
+            ["alice", "bob"],
+            ["carol"],
         )
         old_tokens = {entry["name"]: entry["token"] for entry in issued}
         project = f"backbone-compose-{os.getpid()}"
-        new_token, reviewer_token, member_token = verify_inline(
+        new_token, reviewer_token, member_token, second_member_token = verify_inline(
             project,
             inline_repo,
             auth_dir,
@@ -511,6 +564,7 @@ def main() -> None:
             new_token,
             reviewer_token,
             member_token,
+            second_member_token,
             separate=False,
         )
         verify_tls(
@@ -521,9 +575,10 @@ def main() -> None:
             new_token,
             reviewer_token,
             member_token,
+            second_member_token,
             separate=True,
         )
-    print("Compose HTTP/HTTPS, ledger, and isolated network member MCP verification passed")
+    print("Compose HTTP/HTTPS, ledger, and two-UID network member MCP verification passed")
 
 
 if __name__ == "__main__":
