@@ -319,6 +319,21 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(
         token_file = tmp_path / "alice.token"
         token_file.write_text(member_token + "\n", encoding="ascii")
         token_file.chmod(0o600)
+        member_command = [
+            "member",
+            "--url",
+            url,
+            "--token-file",
+            str(token_file),
+            "--ca-file",
+            str(certificate),
+        ]
+        assert main([*member_command, "whoami"]) == 0
+        assert json.loads(capsys.readouterr().out) == {"name": "alice", "role": "member"}
+        assert main([*member_command, "tasks"]) == 0
+        assert json.loads(capsys.readouterr().out)["member_id"] == "alice"
+        assert main(["member", "--url", url, "--token-file", str(token_file), "whoami"]) == 1
+        assert "connection failed" in json.loads(capsys.readouterr().err)["error"]
         runner = DSHRemoteMemberRunner(
             workspace,
             tmp_path / "private-dsh-home",

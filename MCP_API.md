@@ -50,6 +50,8 @@ args = ["--repo", "/absolute/your-project", "mcp", "--member", "alice"]
 
 远程客户端连接 `https://coordinator.example.org:8443/mcp`，发送 `Authorization: Bearer <成员令牌>`；启动时增加 `--mcp-allowed-host coordinator.example.org:8443`，使传输层接受该实际 Host header。该参数接受 Host 值，不接受 URL 或通配符。默认只接受本机回环地址。部署时应使用可信 HTTPS 或可信代理并隔离协调仓库的 OS 写权限；静态 bearer 令牌不是 OAuth 授权服务器，也不能证明令牌背后的自然人身份。此入口不主动向 Agent 会话推送任务，仍由客户端调用 `get_my_task` 拉取。
 
+没有可配置静态 bearer 的 MCP 客户端时，可用 `backbone member --url https://coordinator.example.org:8443 --token-file /private/path/alice.token tasks` 通过同一认证服务读取任务；后续 `start`、`updates`、`rebase`、`fetch`、`submit` 及提案命令见[远程成员 CLI](docs/OPERATIONS.md#远程成员-cli)。该 CLI 是人可直接使用的 HTTP 客户端，不改变 MCP 的工具范围或权限模型。
+
 ASGI 挂载与会话管理遵循 [官方 MCP Python SDK 的部署说明](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/run/asgi.md)；当前仅验证锁定的 MCP 1.x 版本。
 
 ## 成员流程

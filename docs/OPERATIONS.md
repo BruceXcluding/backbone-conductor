@@ -99,9 +99,35 @@ docker compose -f compose.yaml -f compose.tls.yaml \
 
 成员客户端使用 `https://coordinator.example.org:8443/mcp` 与自己的 bearer 令牌。`BACKBONE_MCP_ALLOWED_HOSTS` 是以逗号分隔的**精确 Host header** 列表，含非默认端口；仅本机回环访问时可不设置。直接执行 `backbone serve` 也可用 `BACKBONE_MCP_HTTP=1` 和此环境变量，或使用同等 CLI 标志。服务会拒绝无令牌、非成员和未知 Host 的请求；轮换令牌无需重启。Compose 四种组合已用真实成员 MCP 客户端验证认证、写入、Git 审计和重启恢复；两种 HTTPS 模式还由不挂载仓库和服务端凭据文件的 Alice、Bob 独立 Docker 客户端，以不同非特权 UID、各自 bearer 令牌经 Compose 网络连接；仅挂载公开测试证书，核对冒名拒绝与各自的 Git 审计归属。远程公网及不同自然人的共享部署仍待验证。
 
+### 远程成员 CLI
+
+仅需安装 Backbone 包、私有成员令牌和可信 HTTPS 的成员，可直接操作 HTTP 接口，不需要本地协调仓库或 DSH 模型。`--url` 是服务 origin，**不含** `/mcp`；下例中的 `TASK_ID` 来自 `tasks`，完整 `SHA` 来自成员代码克隆的 `git rev-parse HEAD`：
+
+```sh
+backbone member --url https://coordinator.example.org:8443 \
+  --token-file /private/path/alice.token whoami
+backbone member --url https://coordinator.example.org:8443 \
+  --token-file /private/path/alice.token tasks
+backbone member --url https://coordinator.example.org:8443 \
+  --token-file /private/path/alice.token start TASK_ID
+backbone member --url https://coordinator.example.org:8443 \
+  --token-file /private/path/alice.token updates --since-version OBSERVED_VERSION
+# 若决策上下文变化，先读取新的 tasks.version，再显式刷新任务：
+backbone member --url https://coordinator.example.org:8443 \
+  --token-file /private/path/alice.token rebase TASK_ID --version OBSERVED_VERSION
+# 在独立克隆提交并推送 feature/alice 后：
+backbone member --url https://coordinator.example.org:8443 \
+  --token-file /private/path/alice.token fetch TASK_ID \
+  --branch feature/alice --sha FULL_LOWERCASE_SHA
+backbone member --url https://coordinator.example.org:8443 \
+  --token-file /private/path/alice.token submit TASK_ID --file /private/path/artifact.json
+```
+
+`artifact.json` 是制品对象，至少包含 `intent_id`、`branch`（如 `origin/feature/alice`）、`base_ref`、`summary` 和固定的 `commit_sha`；`--file -` 可从 stdin 读取 JSON。成员也可用 `create-intent --file /private/path/intent.json` 建草稿、用 `propose-decision --file /private/path/decision.json` 提议决策。命令先调用 `/whoami`，只接受 member 角色，并把 author/member_id 绑定到令牌 principal；令牌从所有者持有的 0600 单链接文件读取。自签证书可加 `--ca-file`；非回环 HTTP 被拒绝。`updates` 只读取，不自动刷新任务；`rebase` 刷新 Backbone 决策与目标基线，不执行 Git rebase。提交制品不会合并代码或批准任务。
+
 ### 独立代码克隆的提交与合并
 
-远程 MCP 只传递协调数据，不传送 Git 对象。管理员分派任务后，先把协调端目标代码分支推送到代码远端；独立元数据模式还需单独推送 `backbone` 分支。成员在自己的代码克隆中更新目标分支、通过成员 MCP 读取并开始任务、提交代码，再推送功能分支：
+远程 MCP 和成员 HTTP CLI 只传递协调数据，不传送 Git 对象。管理员分派任务后，先把协调端目标代码分支推送到代码远端；独立元数据模式还需单独推送 `backbone` 分支。成员在自己的代码克隆中更新目标分支、通过成员 MCP 或 CLI 读取并开始任务、提交代码，再推送功能分支：
 
 ```sh
 git -C /alice-worktree fetch origin main
@@ -112,14 +138,14 @@ git -C /alice-worktree switch -c feature/alice
 git -C /alice-worktree push origin HEAD:refs/heads/feature/alice
 ```
 
-成员在推送后通过 `/mcp` 的 `fetch_artifact_branch` 提供 `task_id`、功能分支名 `feature/alice` 和本地 `git rev-parse HEAD` 得到的完整小写 SHA。协调端仅从已配置的 Git remote（默认 `origin`）获取该分支，核对远端当前 tip 与预期 SHA，并仅快进 `origin/feature/alice` 跟踪引用；SHA 不匹配或远端强推改写时拒绝，且不更新跟踪引用。也可由管理员执行下方 Git 命令作为手工恢复步骤。此操作不产生 Backbone 审计提交，也不切换协调端 HEAD。
+成员在推送后通过 `/mcp` 的 `fetch_artifact_branch` 或远程成员 CLI 的 `fetch` 提供 `task_id`、功能分支名 `feature/alice` 和本地 `git rev-parse HEAD` 得到的完整小写 SHA。协调端仅从已配置的 Git remote（默认 `origin`）获取该分支，核对远端当前 tip 与预期 SHA，并仅快进 `origin/feature/alice` 跟踪引用；SHA 不匹配或远端强推改写时拒绝，且不更新跟踪引用。也可由管理员执行下方 Git 命令作为手工恢复步骤。此操作不产生 Backbone 审计提交，也不切换协调端 HEAD。
 
 ```sh
 git -C /coordinator fetch origin \
   refs/heads/feature/alice:refs/remotes/origin/feature/alice
 ```
 
-成员通过 `/mcp` 的 `submit_artifact` 提供 `intent_id`、`branch`（例如 `origin/feature/alice`）、`base_ref`（例如分派目标 `main`）、`summary` 和刚获取的 `commit_sha`。协调端从 Git 解析真实提交和路径，检查范围与决策；请求中的 SHA 只用于核对，不代替 Git 证据。收到 `accepted: true` 后，审查者可用 `GET /tasks/{task_id}/inspection`、管理员 MCP `inspect_task` 或本地 `backbone task inspect TASK_ID` 读取固定提交的代码差异、当前目标分支 SHA、分支是否变动、决策变化与阻塞冲突。默认响应最多展示 128 KiB 补丁并附完整补丁 SHA-256；若 `truncated=true`，审查者可用 HTTP `?full_patch=true`、本地 `task inspect TASK_ID --full` 或远程 `reviewer inspect TASK_ID --full` 获取上限内的完整补丁。代码合并前 `target_diff` 为 null；合并后它展示任务声明路径相对原始基线在当前目标提交中的净差异，附目标 SHA、哈希与截断标记。`--full` 同时取得固定产物与目标路径的完整差异；目标差异若超过 1 MB，完整读取会拒绝，须在 Git checkout 中审阅。远程 CLI 会核对两份完整补丁与服务端哈希一致；该核对不能独立证明服务端 Git 状态，也不覆盖任务路径以外的目标树。超过 1 MB 的产物差异需拆分任务后重新提交。此接口只读，也不代替人工语义审阅。人工实际合并代码后，审查者最后以自己的 bearer 凭据调用 `POST /tasks/{task_id}/merge`，提交 `{"author":"reviewer","rationale":"...","expected_version":"...","expected_target_sha":"..."}`，两个预期值须取自合并后重新获取的审查包。未完成 Git 合并、账本或目标分支在检查后变化时该调用会被拒绝。合并和完成记录生成后再推送目标分支。已完成任务的 `inspect` 使用结构化审批锚点重新读取审批时的账本快照与目标提交，不把后续分支变化伪装成批准时的代码；响应另列 `current_version` 和 `git.current_target_sha`。旧完成记录缺少锚点时须查 Git 审计历史；原目标 Git 对象若已被删除，补丁无法重建。成员功能分支若有新提交，必须重新进行检查和审阅。
+成员通过 `/mcp` 的 `submit_artifact` 或远程成员 CLI 的 `submit` 提供 `intent_id`、`branch`（例如 `origin/feature/alice`）、`base_ref`（例如分派目标 `main`）、`summary` 和刚获取的 `commit_sha`。协调端从 Git 解析真实提交和路径，检查范围与决策；请求中的 SHA 只用于核对，不代替 Git 证据。收到 `accepted: true` 后，审查者可用 `GET /tasks/{task_id}/inspection`、管理员 MCP `inspect_task` 或本地 `backbone task inspect TASK_ID` 读取固定提交的代码差异、当前目标分支 SHA、分支是否变动、决策变化与阻塞冲突。默认响应最多展示 128 KiB 补丁并附完整补丁 SHA-256；若 `truncated=true`，审查者可用 HTTP `?full_patch=true`、本地 `task inspect TASK_ID --full` 或远程 `reviewer inspect TASK_ID --full` 获取上限内的完整补丁。代码合并前 `target_diff` 为 null；合并后它展示任务声明路径相对原始基线在当前目标提交中的净差异，附目标 SHA、哈希与截断标记。`--full` 同时取得固定产物与目标路径的完整差异；目标差异若超过 1 MB，完整读取会拒绝，须在 Git checkout 中审阅。远程 CLI 会核对两份完整补丁与服务端哈希一致；该核对不能独立证明服务端 Git 状态，也不覆盖任务路径以外的目标树。超过 1 MB 的产物差异需拆分任务后重新提交。此接口只读，也不代替人工语义审阅。人工实际合并代码后，审查者最后以自己的 bearer 凭据调用 `POST /tasks/{task_id}/merge`，提交 `{"author":"reviewer","rationale":"...","expected_version":"...","expected_target_sha":"..."}`，两个预期值须取自合并后重新获取的审查包。未完成 Git 合并、账本或目标分支在检查后变化时该调用会被拒绝。合并和完成记录生成后再推送目标分支。已完成任务的 `inspect` 使用结构化审批锚点重新读取审批时的账本快照与目标提交，不把后续分支变化伪装成批准时的代码；响应另列 `current_version` 和 `git.current_target_sha`。旧完成记录缺少锚点时须查 Git 审计历史；原目标 Git 对象若已被删除，补丁无法重建。成员功能分支若有新提交，必须重新进行检查和审阅。
 
 完成记录除检查固定提交已成为目标分支祖先，还会比较产物声明的代码路径：若这些路径相对提交时基线完全没有净改动，即使 Git 历史含产物提交（例如 `git merge -s ours`），也拒绝完成。若目标树在相关路径上与原产物不同，审查者须提交非空复核理由；记录会保存产物 SHA、目标 SHA 与差异路径。这是明显丢弃改动的确定性防线，不证明较复杂的同路径改写仍保留了原意图。审查者必须核对最终代码。合并后若代码已回退到基线，任务可取消或刷新后重新提交，避免只因 Git 祖先关系而无法恢复。
 

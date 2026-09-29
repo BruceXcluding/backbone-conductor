@@ -519,6 +519,39 @@ def build_parser() -> argparse.ArgumentParser:
         "--token-file", required=True, help="Private member bearer-token file"
     )
     member_check.add_argument("--ca-file", help="CA certificate for a trusted HTTPS server")
+    member = commands.add_parser(
+        "member", help="Use authenticated HTTP member workflow without a local coordinator clone"
+    )
+    member.add_argument("--url", required=True, help="Coordinator HTTP(S) server origin")
+    member.add_argument("--token-file", required=True, help="Private member bearer-token file")
+    member.add_argument("--ca-file", help="CA certificate for a trusted HTTPS server")
+    member_actions = member.add_subparsers(dest="action", required=True)
+    member_actions.add_parser("whoami", help="Check the token's member identity")
+    member_actions.add_parser("tasks", help="Read assigned task context")
+    member_updates = member_actions.add_parser(
+        "updates", help="Check changed decisions and conflicts"
+    )
+    member_updates.add_argument("--since-version", help="Previously observed ledger version")
+    for action in ("create-intent", "propose-decision"):
+        proposal = member_actions.add_parser(action)
+        proposal.add_argument("--file", required=True, help="JSON object file, or - for stdin")
+    member_start = member_actions.add_parser("start", help="Start an assigned task")
+    member_start.add_argument("task_id")
+    member_rebase = member_actions.add_parser("rebase", help="Refresh task decision context")
+    member_rebase.add_argument("task_id")
+    member_rebase.add_argument("--version", required=True, help="Observed ledger version")
+    member_fetch = member_actions.add_parser(
+        "fetch", help="Fetch a pushed code branch by exact SHA"
+    )
+    member_fetch.add_argument("task_id")
+    member_fetch.add_argument("--branch", required=True, help="Pushed feature branch name")
+    member_fetch.add_argument("--sha", required=True, help="Full lowercase pushed commit SHA")
+    member_fetch.add_argument("--remote", default="origin", help="Configured code Git remote")
+    member_submit = member_actions.add_parser("submit", help="Submit a fetched Git artifact")
+    member_submit.add_argument("task_id")
+    member_submit.add_argument(
+        "--file", required=True, help="Artifact JSON object file, or - for stdin"
+    )
     reviewer.add_argument("--url", required=True, help="Coordinator HTTP(S) server origin")
     reviewer.add_argument("--token-file", required=True, help="Private reviewer bearer-token file")
     reviewer.add_argument("--ca-file", help="CA certificate for a trusted HTTPS server")
@@ -821,6 +854,17 @@ def _run(args: argparse.Namespace) -> Any:
         if args.ledger_branch:
             raise ValueError("Remote member check does not use --ledger-branch")
         return preflight_remote_member(args.mcp_url, args.member, args.token_file, args.ca_file)
+    if args.command == "member":
+        from .member_client import run_member_command
+
+        if args.ledger_branch:
+            raise ValueError("Remote member does not use --ledger-branch")
+        payload = (
+            _json_file(args.file)
+            if args.action in {"create-intent", "propose-decision", "submit"}
+            else None
+        )
+        return run_member_command(args, payload)
 
     conductor = Conductor(args.repo, ledger_branch=args.ledger_branch)
     if args.command == "init":

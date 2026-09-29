@@ -6,11 +6,11 @@ import hashlib
 import re
 import ssl
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import httpx
 
 from .private_token import read_private_token
+from .remote_http import identifier, request_json, server_url
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -21,31 +21,11 @@ def _private_token(path: str) -> str:
 
 
 def _server_url(value: str) -> str:
-    parts = urlsplit(value)
-    try:
-        port = parts.port
-    except ValueError as exc:
-        raise ValueError("Reviewer URL has an invalid port") from exc
-    if (
-        parts.scheme not in {"http", "https"}
-        or not parts.hostname
-        or parts.username is not None
-        or parts.password is not None
-        or parts.path not in {"", "/"}
-        or parts.query
-        or parts.fragment
-        or port == 0
-    ):
-        raise ValueError("Reviewer URL must be an HTTP(S) server origin")
-    if parts.scheme == "http" and parts.hostname not in {"localhost", "127.0.0.1", "::1"}:
-        raise ValueError("Remote reviewer access requires HTTPS outside loopback")
-    return value.rstrip("/")
+    return server_url(value, "Reviewer")
 
 
 def _identifier(value: str) -> str:
-    if not _ID.fullmatch(value):
-        raise ValueError("Reviewer command needs a valid Backbone identifier")
-    return value
+    return identifier(value, "Reviewer")
 
 
 def _validated_audit_report(report: object, limit: int) -> dict:
@@ -149,24 +129,7 @@ def run_reviewer_command(args) -> dict | list:
         data: dict | None = None,
         params: dict | None = None,
     ):
-        try:
-            response = client.request(method, path, json=data, params=params)
-        except httpx.RequestError as exc:
-            raise ValueError(f"Reviewer connection failed ({type(exc).__name__})") from exc
-        if response.status_code >= 400:
-            try:
-                detail = response.json().get("detail", "Request failed")
-            except (ValueError, AttributeError):
-                detail = "Request failed"
-            raise ValueError(
-                f"Reviewer request failed (HTTP {response.status_code}): {str(detail)[:300]}"
-            )
-        if not 200 <= response.status_code < 300:
-            raise ValueError(f"Reviewer request failed (HTTP {response.status_code})")
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise ValueError("Reviewer server returned invalid JSON") from exc
+        return request_json(client, method, path, "Reviewer", data, params)
 
     with httpx.Client(
         base_url=origin,
