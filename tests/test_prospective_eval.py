@@ -18,7 +18,14 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "evaluate_prospective.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from evaluate_prospective import capture, freeze, freeze_semantic, main, score  # noqa: E402
+from evaluate_prospective import (  # noqa: E402
+    capture,
+    freeze,
+    freeze_semantic,
+    main,
+    prepare_review,
+    score,
+)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -215,6 +222,77 @@ def _review(identifier: str, conflict: bool) -> dict:
     return {"id": identifier, "conflict": conflict, "rationale": "Reviewed both planned changes"}
 
 
+def test_blind_review_packets_feed_scoring_without_exposing_predictions(tmp_path, capsys):
+    dataset, predictions = _files(
+        tmp_path,
+        [
+            _case("overlap", "src/shared.py", "src/shared.py"),
+            _case("separate", "src/one.py", "src/two.py"),
+        ],
+    )
+    first, second = tmp_path / "carol.json", tmp_path / "dave.json"
+    assert (
+        main(
+            [
+                "prepare-review",
+                "--dataset",
+                str(dataset),
+                "--predictions",
+                str(predictions),
+                "--reviewer",
+                "carol",
+                "--output",
+                str(first),
+            ]
+        )
+        == 0
+    )
+    prepared = json.loads(capsys.readouterr().out)
+    assert prepared["case_count"] == 2
+    assert prepared["packet_sha256"] == hashlib.sha256(first.read_bytes()).hexdigest()
+    prepare_review(dataset, predictions, second, "dave")
+    assert first.stat().st_mode & 0o777 == second.stat().st_mode & 0o777 == 0o600
+    packet = json.loads(first.read_text())
+    assert packet["schema_version"] == 2
+    assert "coordination of scope" in packet["label_definition"]
+    assert [case["id"] for case in packet["cases"]] == ["overlap", "separate"]
+    assert all(case["conflict"] is None and case["rationale"] == "" for case in packet["cases"])
+    content = first.read_text()
+    assert '"findings"' not in content
+    assert '"verdict"' not in content
+    assert '"prediction":' not in content
+    assert score(dataset, predictions, first, second)["status"] == "incomplete"
+
+    partial = json.loads(first.read_text())
+    partial["cases"][0]["conflict"] = True
+    partial["cases"][0]["rationale"] = "The original plans needed a shared interface decision"
+    first.write_text(json.dumps(partial), encoding="utf-8")
+    incomplete = score(dataset, predictions, first, second)
+    assert incomplete["status"] == "incomplete"
+    assert incomplete["resolved_count"] == 0
+    assert incomplete["cases"][0]["status"] == "awaiting_review"
+
+    for path in (first, second):
+        labeled = json.loads(path.read_text())
+        for case in labeled["cases"]:
+            case["conflict"] = case["id"] == "overlap"
+            case["rationale"] = "Compared both completed changes with the original plans"
+        path.write_text(json.dumps(labeled), encoding="utf-8")
+    result = score(dataset, predictions, first, second)
+    assert result["status"] == "complete_sample"
+    assert result["counts"] == {"tp": 1, "fp": 0, "fn": 0, "tn": 1}
+
+    altered = json.loads(second.read_text())
+    altered["cases"][0]["intents"][0]["affected_paths"] = ["other.py"]
+    second.write_text(json.dumps(altered), encoding="utf-8")
+    with pytest.raises(ValueError, match="review packet does not match frozen dataset"):
+        score(dataset, predictions, first, second)
+    with pytest.raises(FileExistsError, match="never overwrites"):
+        prepare_review(dataset, predictions, first, "carol")
+    with pytest.raises(ValueError, match="reviewer must differ"):
+        prepare_review(dataset, predictions, tmp_path / "alice.json", "alice")
+
+
 def test_prospective_score_exposes_false_positives_and_missed_semantic_conflicts(tmp_path):
     dataset, predictions = _files(
         tmp_path,
@@ -290,6 +368,9 @@ def test_semantic_advice_is_frozen_and_scored_separately(tmp_path, monkeypatch, 
     assert all(context["accepted_decisions"] == [] for context in contexts)
     assert contexts[0]["deterministic_conflicts"]
     assert contexts[2]["deterministic_conflicts"] == []
+    blind = prepare_review(dataset, predictions, tmp_path / "blind.json", "carol", semantic)
+    assert blind["semantic_predictions_sha256"] == hashlib.sha256(semantic.read_bytes()).hexdigest()
+    assert "verdict" not in (tmp_path / "blind.json").read_text()
     with pytest.raises(FileExistsError):
         freeze_semantic(dataset, predictions, semantic, tmp_path / "private-dsh", "mock-model")
 
@@ -315,6 +396,23 @@ def test_semantic_advice_is_frozen_and_scored_separately(tmp_path, monkeypatch, 
     assert report["combined"]["counts"] == {"tp": 2, "fp": 1, "fn": 1, "tn": 1}
     assert report["combined"]["recall"] == 2 / 3
     assert "not an independent model-only detector" in report["limitation"]
+    second_blind = tmp_path / "dave-blind.json"
+    prepare_review(dataset, predictions, second_blind, "dave", semantic)
+    truth = {item["id"]: item["conflict"] for item in labels}
+    for path in (tmp_path / "blind.json", second_blind):
+        packet = json.loads(path.read_text())
+        for case in packet["cases"]:
+            case["conflict"] = truth[case["id"]]
+            case["rationale"] = "Compared the original plans and completed artifacts"
+        path.write_text(json.dumps(packet), encoding="utf-8")
+    blind_report = score(
+        dataset,
+        predictions,
+        tmp_path / "blind.json",
+        second_blind,
+        semantic_predictions=semantic,
+    )
+    assert blind_report["combined"]["counts"] == report["combined"]["counts"]
     assert (
         main(
             [

@@ -36,6 +36,22 @@ ADVICE_FIELDS = {
     "operations",
     "affected_paths",
 }
+BLIND_REVIEW_FIELDS = {
+    "id",
+    "author",
+    "created_at",
+    "problem",
+    "proposed_outcome",
+    "constraints",
+    "affected_symbols",
+    "operations",
+    "affected_paths",
+}
+BLIND_LABEL_DEFINITION = (
+    "Mark conflict true only when the two original plans, if implemented in parallel, "
+    "required coordination of scope, sequencing, or design before integration. "
+    "A textual Git merge conflict alone is not the label."
+)
 LIMITATION = (
     "Scores cover only independently reviewed, resolved cases in this submitted sample. "
     "Only pre-work intent-pair warnings are scored; decision and task rules are excluded. "
@@ -382,14 +398,20 @@ def _review_file(
     dataset_sha: str,
     predictions_sha: str,
     authors: dict[str, set[str]],
+    packet_cases: dict[str, dict[str, Any]],
     semantic_sha: str | None = None,
 ) -> tuple[str, dict[str, bool]]:
     data = _read(path)
+    schema_version = data.get("schema_version")
     expected = {"schema_version", "dataset_sha256", "predictions_sha256", "reviewer", "cases"}
     if semantic_sha is not None:
         expected.add("semantic_predictions_sha256")
-    if set(data) != expected or data["schema_version"] != 1:
+    if schema_version == 2:
+        expected.add("label_definition")
+    if set(data) != expected or type(schema_version) is not int or schema_version not in {1, 2}:
         raise ValueError(f"{path}: review file has an invalid schema")
+    if schema_version == 2 and data["label_definition"] != BLIND_LABEL_DEFINITION:
+        raise ValueError(f"{path}: review label definition has changed")
     if (
         data["dataset_sha256"] != dataset_sha
         or data["predictions_sha256"] != predictions_sha
@@ -399,14 +421,31 @@ def _review_file(
         raise ValueError(f"{path}: review does not match frozen dataset and predictions")
     reviewer = _nonempty(data["reviewer"], f"{path} reviewer")
     labels: dict[str, bool] = {}
+    seen: set[str] = set()
     for item in data["cases"]:
-        if not isinstance(item, dict) or set(item) != {"id", "conflict", "rationale"}:
-            raise ValueError(f"{path}: each review case needs id, conflict, rationale")
-        case_id = _nonempty(item["id"], f"{path} case id")
-        if case_id not in authors or case_id in labels:
+        if not isinstance(item, dict):
+            raise ValueError(f"{path}: each review case must be an object")
+        case_id = _nonempty(item.get("id"), f"{path} case id")
+        if case_id not in authors or case_id in seen:
             raise ValueError(f"{path}: unknown or duplicate case {case_id}")
+        seen.add(case_id)
+        if schema_version == 1:
+            if set(item) != {"id", "conflict", "rationale"}:
+                raise ValueError(f"{path}: each review case needs id, conflict, rationale")
+        else:
+            expected_case = packet_cases[case_id]
+            if set(item) != set(expected_case) or any(
+                item[key] != expected_case[key]
+                for key in expected_case
+                if key not in {"conflict", "rationale"}
+            ):
+                raise ValueError(f"{case_id}: review packet does not match frozen dataset")
         if reviewer in authors[case_id]:
             raise ValueError(f"{case_id}: reviewer must differ from intent authors")
+        if schema_version == 2 and item["conflict"] is None:
+            if item["rationale"] != "":
+                raise ValueError(f"{case_id}: unlabeled review must have empty rationale")
+            continue
         if type(item["conflict"]) is not bool:
             raise ValueError(f"{case_id}: conflict label must be boolean")
         _nonempty(item["rationale"], f"{case_id} rationale")
@@ -489,6 +528,70 @@ def _validated_semantic(
     return verdicts
 
 
+def _blind_review_case(case: dict[str, Any], intents: list[Intent]) -> dict[str, Any]:
+    """Expose frozen plans without rule findings, model advice, or labels."""
+    return {
+        "id": case["id"],
+        "project": case["project"],
+        "base_sha": case["base_sha"],
+        "captured_at": case["captured_at"],
+        "intents": [
+            intent.model_dump(mode="json", include=BLIND_REVIEW_FIELDS) for intent in intents
+        ],
+        "conflict": None,
+        "rationale": "",
+    }
+
+
+def prepare_review(
+    dataset: Path,
+    predictions: Path,
+    output: Path,
+    reviewer: str,
+    semantic_predictions: Path | None = None,
+) -> dict[str, Any]:
+    """Create a private, prediction-blind review file ready for human labels."""
+    paths = (dataset, predictions, output)
+    if semantic_predictions is not None:
+        paths += (semantic_predictions,)
+    if not all(path.is_absolute() for path in paths):
+        raise ValueError("review paths must be absolute")
+    if len({path.resolve() for path in paths}) != len(paths):
+        raise ValueError("review output must differ from study inputs")
+    if output.resolve().is_relative_to(ROOT):
+        raise ValueError("review file must be outside the public repository")
+    if output.exists():
+        raise FileExistsError("review file already exists; preparation never overwrites labels")
+    reviewer = _nonempty(reviewer, "reviewer")
+    dataset_sha, predictions_sha = _digest(dataset), _digest(predictions)
+    data, cases = _dataset(dataset)
+    frozen, _predicted = _validated_predictions(dataset, data, cases, predictions)
+    semantic_sha = _digest(semantic_predictions) if semantic_predictions is not None else None
+    if semantic_predictions is not None:
+        _validated_semantic(semantic_predictions, dataset_sha, predictions_sha, cases, frozen)
+    for case, intents in cases:
+        if reviewer in {intent.author for intent in intents}:
+            raise ValueError(f"{case['id']}: reviewer must differ from intent authors")
+    if (
+        _digest(dataset) != dataset_sha
+        or _digest(predictions) != predictions_sha
+        or (semantic_predictions is not None and _digest(semantic_predictions) != semantic_sha)
+    ):
+        raise ValueError("study inputs changed while preparing blind review")
+    packet = {
+        "schema_version": 2,
+        "dataset_sha256": dataset_sha,
+        "predictions_sha256": predictions_sha,
+        "reviewer": reviewer,
+        "label_definition": BLIND_LABEL_DEFINITION,
+        "cases": [_blind_review_case(case, intents) for case, intents in cases],
+    }
+    if semantic_sha is not None:
+        packet["semantic_predictions_sha256"] = semantic_sha
+    _write_exclusive(output, packet)
+    return packet
+
+
 def _metrics(counts: dict[str, int]) -> dict[str, Any]:
     precision = (
         counts["tp"] / (counts["tp"] + counts["fp"]) if counts["tp"] + counts["fp"] else None
@@ -525,6 +628,7 @@ def score(
     if _digest(dataset) != dataset_sha or _digest(predictions) != prediction_sha:
         raise ValueError("study inputs changed while scoring was preparing")
     authors = {case["id"]: {intent.author for intent in intents} for case, intents in cases}
+    packet_cases = {case["id"]: _blind_review_case(case, intents) for case, intents in cases}
     semantic_sha = _digest(semantic_predictions) if semantic_predictions is not None else None
     semantic_verdicts = (
         _validated_semantic(semantic_predictions, dataset_sha, prediction_sha, cases, frozen)
@@ -532,16 +636,16 @@ def score(
         else None
     )
     reviewer_a, labels_a = _review_file(
-        first_review, dataset_sha, prediction_sha, authors, semantic_sha
+        first_review, dataset_sha, prediction_sha, authors, packet_cases, semantic_sha
     )
     reviewer_b, labels_b = _review_file(
-        second_review, dataset_sha, prediction_sha, authors, semantic_sha
+        second_review, dataset_sha, prediction_sha, authors, packet_cases, semantic_sha
     )
     if reviewer_a == reviewer_b:
         raise ValueError("two distinct reviewers are required")
     if adjudications is not None:
         adjudicator, adjudicated = _review_file(
-            adjudications, dataset_sha, prediction_sha, authors, semantic_sha
+            adjudications, dataset_sha, prediction_sha, authors, packet_cases, semantic_sha
         )
         if adjudicator in {reviewer_a, reviewer_b}:
             raise ValueError("adjudicator must differ from both reviewers")
@@ -675,6 +779,14 @@ def main(argv: list[str] | None = None) -> int:
     semantic_command.add_argument("--dsh-home", type=Path, required=True)
     semantic_command.add_argument("--model", required=True)
     semantic_command.add_argument("--provider", default="deepseek-official")
+    review_command = actions.add_parser(
+        "prepare-review", help="Create a prediction-blind file for an independent reviewer"
+    )
+    review_command.add_argument("--dataset", type=Path, required=True)
+    review_command.add_argument("--predictions", type=Path, required=True)
+    review_command.add_argument("--semantic-predictions", type=Path)
+    review_command.add_argument("--reviewer", required=True)
+    review_command.add_argument("--output", type=Path, required=True)
     score_command = actions.add_parser("score", help="Score a frozen sample against reviews")
     score_command.add_argument("--dataset", type=Path, required=True)
     score_command.add_argument("--predictions", type=Path, required=True)
@@ -711,6 +823,27 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(f"Frozen {len(frozen['cases'])} semantic cases to {args.output}")
             print(f"Semantic predictions SHA-256: {_digest(args.output)}")
+            return 0
+        if args.action == "prepare-review":
+            packet = prepare_review(
+                args.dataset,
+                args.predictions,
+                args.output,
+                args.reviewer,
+                args.semantic_predictions,
+            )
+            print(
+                json.dumps(
+                    {
+                        "reviewer": packet["reviewer"],
+                        "case_count": len(packet["cases"]),
+                        "output": str(args.output),
+                        "packet_sha256": _digest(args.output),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
             return 0
         if len(args.review) != 2:
             raise ValueError("score requires exactly two --review files")

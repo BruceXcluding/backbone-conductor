@@ -74,7 +74,22 @@ python scripts/evaluate_prospective.py freeze-semantic \
 
 此命令把两份意图的计划字段、代码基线 SHA 与已冻结的确定性证据逐例发送给配置的 provider；可能产生费用。模型**看得到规则证据**，因此后续“模型建议”指标并非独立的纯模型检测器指标。v1 前瞻数据不含已接受决策，也不能代表在线协调时含决策的完整建议质量。语义文件记录每例结构化意见、实际输入哈希、模型/提供商、完成状态和实现源码哈希；只有全部回合成功且原始数据及确定性预测在运行期间未改变，才以私有权限一次性创建文件。它不会修改 Backbone 仓库。将三份文件一起固定在外部可信证据存储，并记录冻结完成时间；模型调用和自报时间本身不能证明事前顺序。不可在已知工作结果后重新挑选或冻结案例。
 
-工作结果可供审阅时，先制定标签定义：`conflict=true` 表示两份原计划若并行执行，需要在集成前协调范围、先后顺序或设计；`false` 表示不需要这种协调。文本 Git 合并冲突只是证据之一，不能自动充当标签。两位非意图作者的审阅者分别看到原意图、实际产物及必要上下文，但**不看预测或对方标签**。每人单独写一个文件；文件中的 `dataset_sha256` 与 `predictions_sha256` 是绑定值，可从冻结文件计算，不需要展示预测内容。每个文件形如：
+工作结果可供审阅时，先制定标签定义：`conflict=true` 表示两份原计划若并行执行，需要在集成前协调范围、先后顺序或设计；`false` 表示不需要这种协调。文本 Git 合并冲突只是证据之一，不能自动充当标签。两位非意图作者的审阅者分别看到原意图、实际产物及必要上下文，但**不看预测或对方标签**。可分别生成私有盲审文件：
+
+```sh
+python scripts/evaluate_prospective.py prepare-review \
+  --dataset /private/study/cases.json \
+  --predictions /private/study/predictions.json \
+  --reviewer carol --output /private/study/carol.json
+python scripts/evaluate_prospective.py prepare-review \
+  --dataset /private/study/cases.json \
+  --predictions /private/study/predictions.json \
+  --reviewer dave --output /private/study/dave.json
+```
+
+若冻结了可选模型建议，生成每份文件时都增加 `--semantic-predictions /private/study/semantic.json`。生成器检查冻结文件与案例是否匹配，拒绝意图作者作为审阅者，以私有 0600 权限新建文件且不覆盖已有标签；人工编辑后也须保持文件私有。文件包含采样案例、基线 SHA、事前意图计划和判定定义，只有预测文件的 SHA-256，**不含规则证据、预警或模型意见**；不要把预测文件或另一位审阅者的标签交给审阅者。案例 ID 或原意图若本身暗示结果，工具无法消除这种盲审偏差，采样时须避免。实际产物与必要上下文仍须另行提供，且不能夹带预测。审阅者将每例的 `conflict: null` 改为 `true` 或 `false`，填写非空 `rationale`；未标注案例保持 `null` 与空理由。评分器会核对文件中的案例内容与冻结数据，原计划被修改会拒绝；空标签只计为未完成，不计为负例。
+
+也可手工建立兼容的旧格式审阅文件。每人单独写一个文件；文件中的 `dataset_sha256` 与 `predictions_sha256` 是绑定值，可从冻结文件计算，不需要展示预测内容。旧格式文件形如：
 
 ```json
 {
@@ -103,6 +118,6 @@ python scripts/evaluate_prospective.py score \
   --adjudications /private/study/erin.json --json
 ```
 
-若冻结了 `semantic.json`，每份审阅及裁决文件都需额外加入 `"semantic_predictions_sha256": "填入 semantic.json 的 SHA-256"`。审阅者仅获取三个文件的哈希绑定值，不看预测内容；评分时增加 `--semantic-predictions /private/study/semantic.json`。报告分开给出确定性规则、看过规则证据的模型建议、两者 OR 联合预警的 TP/FP/FN/TN、精确率与召回率，不会以模型的 `compatible` 取消规则预警。`uncertain` 记为没有发出模型预警；若人工标签为正例，就计入模型建议的漏报，并另报弃答数。只有双人一致或经第三人裁决的案例进入任何一组指标；因此标签不足时的指标只覆盖已解决子集。
+若冻结了 `semantic.json`，生成器会把模型文件的哈希绑定到盲审文件；手工旧格式审阅及裁决文件则需额外加入 `"semantic_predictions_sha256": "填入 semantic.json 的 SHA-256"`。审阅者只获得这些哈希绑定值，不看预测内容；评分时增加 `--semantic-predictions /private/study/semantic.json`。报告分开给出确定性规则、看过规则证据的模型建议、两者 OR 联合预警的 TP/FP/FN/TN、精确率与召回率，不会以模型的 `compatible` 取消规则预警。`uncertain` 记为没有发出模型预警；若人工标签为正例，就计入模型建议的漏报，并另报弃答数。只有双人一致或经第三人裁决的案例进入任何一组指标；因此标签不足时的指标只覆盖已解决子集。
 
 没有分歧时省略 `--adjudications`。报告列出已解决样本的 TP/FP/FN/TN、精确率、召回率、F1 和逐例状态；没有正例时召回率为 `null`，没有预警时精确率为 `null`。`complete_sample` 只说明此文件的案例标签齐备，不证明抽样代表性、审阅者确为不同自然人或达到原草案的真实项目目标。发布指标前应检查时间顺序、采样偏差、标签一致性和各项目分布，并保留未解决样本及理由。不要把敏感任务、代码或审阅记录直接提交到本公开仓库。
