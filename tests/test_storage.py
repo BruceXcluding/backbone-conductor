@@ -222,6 +222,70 @@ def test_snapshot_verification_detects_wrong_parent_with_matching_views(repo: Pa
     assert not report["ok"]
 
 
+def test_history_verification_finds_repaired_older_metadata_drift(repo: Path, capsys):
+    store = GitStore(repo)
+    store.init()
+    store.mutate(lambda state: state.sessions.update({"first": {"value": 1}}), "first")
+    (repo / "code.txt").write_text("ordinary source change\n")
+    git(repo, "add", "code.txt")
+    git(repo, "commit", "-m", "Code only")
+    view = repo / ".backbone/BACKBONE.md"
+    view.write_text(view.read_text() + "External drift\n")
+    git(repo, "add", ".backbone/BACKBONE.md")
+    git(repo, "commit", "-m", "External metadata drift")
+    damaged = git(repo, "rev-parse", "HEAD")
+    store.mutate(lambda state: state.sessions.update({"later": {"value": 2}}), "repair")
+
+    assert store.verify_current_snapshot()["ok"]
+    report = store.verify_audit_history(limit=10)
+    assert not report["ok"]
+    assert not report["truncated"]
+    assert report["invalid"] == 1
+    assert report["total_metadata_commits"] == 4
+    bad = next(entry for entry in report["commits"] if entry["commit"] == damaged)
+    assert bad["changed_views"] == [".backbone/BACKBONE.md"]
+    assert not bad["parent_links_ok"]
+    assert main(["--repo", str(repo), "audit", "verify-history", "--limit", "10"]) == 1
+    assert json.loads(capsys.readouterr().out)["invalid"] == 1
+
+    latest_only = store.verify_audit_history(limit=1)
+    assert latest_only["invalid"] == 0
+    assert latest_only["truncated"]
+    assert not latest_only["ok"]
+
+
+def test_history_verification_accepts_complete_normal_chain(repo: Path):
+    store = GitStore(repo)
+    store.init()
+    store.mutate(lambda state: state.sessions.update({"example": {"value": 1}}), "new state")
+    report = store.verify_audit_history(limit=2)
+    assert report["ok"]
+    assert report["checked"] == report["total_metadata_commits"] == 2
+    assert all(entry["ok"] for entry in report["commits"])
+
+
+def test_history_verification_reports_missing_historical_state(repo: Path):
+    store = GitStore(repo)
+    store.init()
+    git(repo, "rm", ".backbone/state.json")
+    git(repo, "commit", "-m", "External removal of state")
+    report = store.verify_audit_history(limit=2)
+    assert report["invalid"] == 1
+    assert not report["ok"]
+    assert report["commits"][0]["error"] == "Missing state.json at metadata commit"
+
+
+def test_history_verification_reports_non_utf8_historical_state(repo: Path):
+    store = GitStore(repo)
+    store.init()
+    (repo / ".backbone/state.json").write_bytes(b"\xff")
+    git(repo, "add", ".backbone/state.json")
+    git(repo, "commit", "-m", "External binary state")
+    report = store.verify_audit_history(limit=2)
+    assert report["invalid"] == 1
+    assert report["commits"][0]["error"] == "state.json is not UTF-8"
+
+
 def test_log_filters_author_type_and_time_before_limit(repo: Path, monkeypatch, capsys):
     store = GitStore(repo)
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-27T09:00:00+00:00")
@@ -688,6 +752,7 @@ def test_reconcile_disjoint_metadata_keeps_both_parents_and_regenerates_conflict
     assert merged.parent_version == inspection["local_version"]
     assert merged.merged_parent_version == inspection["remote_version"]
     assert second.verify_current_snapshot()["ok"]
+    assert second.verify_audit_history(limit=20)["ok"]
     assert result["version"] == result["commit"] == merged.version
     assert any(not conflict.resolved for conflict in merged.conflicts.values())
     assert git(second.root, "status", "--porcelain") == ""

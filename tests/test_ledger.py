@@ -270,6 +270,7 @@ def test_migration_signs_both_ledger_and_source_commits(source_repo: Path, tmp_p
     ledger = GitStore(result["worktree"])
     assert ledger.verify_audit_signatures(limit=1)["valid"] == 1
     assert ledger.verify_current_snapshot()["ok"]
+    assert ledger.verify_audit_history(limit=20)["ok"]
     git(source_repo, "verify-commit", "HEAD")
 
 

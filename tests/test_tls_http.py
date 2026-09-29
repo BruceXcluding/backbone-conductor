@@ -277,6 +277,10 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(
             snapshot_report = json.loads(capsys.readouterr().out)
             assert snapshot_report["ok"] is True
             assert snapshot_report["version"] == service.state()["version"]
+            assert main([*reviewer_command, "audit-history", "--limit", "100"]) == 0
+            history_report = json.loads(capsys.readouterr().out)
+            assert history_report["ok"] is True
+            assert history_report["checked"] == history_report["total_metadata_commits"]
             assert (
                 main([*reviewer_command, "audit-verify", "--limit", "1", "--require-signatures"])
                 == 1

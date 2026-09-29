@@ -14,6 +14,7 @@ from backbone_conductor.reviewer_client import (
     _private_token,
     _validated_audit_report,
     _validated_full_patch,
+    _validated_history_report,
     _validated_snapshot_report,
 )
 
@@ -109,6 +110,56 @@ def test_remote_snapshot_report_rejects_inconsistent_result() -> None:
     ):
         with pytest.raises(ValueError, match="invalid snapshot report"):
             _validated_snapshot_report(bad)
+
+
+def test_remote_history_report_rejects_inconsistent_counts() -> None:
+    report = {
+        "head": "a" * 40,
+        "limit": 2,
+        "checked": 2,
+        "total_metadata_commits": 2,
+        "truncated": False,
+        "invalid": 0,
+        "ok": True,
+        "commits": [
+            {
+                "commit": "b" * 40,
+                "ok": True,
+                "missing_views": [],
+                "extra_views": [],
+                "changed_views": [],
+                "parent_links_ok": True,
+            },
+            {
+                "commit": "c" * 40,
+                "ok": True,
+                "missing_views": [],
+                "extra_views": [],
+                "changed_views": [],
+                "parent_links_ok": True,
+            },
+        ],
+    }
+    assert _validated_history_report(report, 2) == report
+    for bad in (
+        {**report, "invalid": 1},
+        {**report, "truncated": True},
+        {**report, "commits": [report["commits"][0]]},
+        {**report, "commits": [{**report["commits"][0], "ok": False}, report["commits"][1]]},
+    ):
+        with pytest.raises(ValueError, match="invalid history report"):
+            _validated_history_report(bad, 2)
+
+    partial = {
+        **report,
+        "limit": 1,
+        "checked": 1,
+        "total_metadata_commits": 2,
+        "truncated": True,
+        "ok": False,
+        "commits": report["commits"][:1],
+    }
+    assert _validated_history_report(partial, 1) == partial
 
 
 def test_remote_full_patch_rejects_truncation_or_hash_mismatch() -> None:

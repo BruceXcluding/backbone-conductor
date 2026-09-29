@@ -398,12 +398,18 @@ def test_reviewer_can_review_others_intent_with_bound_identity(
         assert client.get("/timeline", headers=auth_header(ALICE_TOKEN)).status_code == 403
         assert client.get("/audit/verify", headers=auth_header(ALICE_TOKEN)).status_code == 403
         assert client.get("/audit/snapshot", headers=auth_header(ALICE_TOKEN)).status_code == 403
+        assert client.get("/audit/history", headers=auth_header(ALICE_TOKEN)).status_code == 403
         audit = client.get("/audit/verify", headers=auth_header(CAROL_TOKEN))
         assert audit.status_code == 200
         assert audit.json()["unsigned"] >= 1
         snapshot_report = client.get("/audit/snapshot", headers=auth_header(CAROL_TOKEN))
         assert snapshot_report.status_code == 200
         assert snapshot_report.json()["ok"] is True
+        history_report = client.get(
+            "/audit/history", params={"limit": 100}, headers=auth_header(CAROL_TOKEN)
+        )
+        assert history_report.status_code == 200
+        assert history_report.json()["ok"] is True
         assert client.post(path, headers=auth_header(CAROL_TOKEN), json=payload).status_code == 422
         own = Conductor(repo).create_intent(
             {"author": "carol", "problem": "Own scope", "proposed_outcome": "Deliver"}

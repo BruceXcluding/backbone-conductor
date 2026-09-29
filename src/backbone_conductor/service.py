@@ -1137,6 +1137,9 @@ class Conductor:
     def verify_current_snapshot(self) -> dict:
         return self.store.verify_current_snapshot()
 
+    def verify_audit_history(self, limit: int = 50) -> dict:
+        return self.store.verify_audit_history(limit)
+
     def review_task(
         self,
         task_id: str,

@@ -459,6 +459,10 @@ def build_parser() -> argparse.ArgumentParser:
     audit_actions.add_parser(
         "verify-snapshot", help="Check current metadata views and Git parent version links"
     )
+    history = audit_actions.add_parser(
+        "verify-history", help="Check reachable metadata snapshots, up to a bounded limit"
+    )
+    history.add_argument("--limit", type=int, default=50)
     commands.add_parser("schema", help="Print protocol JSON Schema")
     review = commands.add_parser("review", help="Request advisory semantic review through DSH")
     review.add_argument("task_id")
@@ -582,6 +586,10 @@ def build_parser() -> argparse.ArgumentParser:
     reviewer_actions.add_parser(
         "audit-snapshot", help="Read the coordinator's current metadata consistency report"
     )
+    reviewer_history = reviewer_actions.add_parser(
+        "audit-history", help="Read the coordinator's bounded metadata history report"
+    )
+    reviewer_history.add_argument("--limit", type=int, default=50)
     reviewer_inspect = reviewer_actions.add_parser(
         "inspect", help="Read submitted or approved task review"
     )
@@ -986,11 +994,11 @@ def _run(args: argparse.Namespace) -> Any:
             until=args.until,
         )
     if args.command == "audit":
-        return (
-            conductor.verify_audit_signatures(args.limit)
-            if args.action == "verify"
-            else conductor.verify_current_snapshot()
-        )
+        if args.action == "verify":
+            return conductor.verify_audit_signatures(args.limit)
+        if args.action == "verify-history":
+            return conductor.verify_audit_history(args.limit)
+        return conductor.verify_current_snapshot()
     raise ValueError(f"Unknown command: {args.command}")
 
 
@@ -1024,6 +1032,10 @@ def main(argv: list[str] | None = None) -> int:
         )
     if (args.command == "audit" and args.action == "verify-snapshot") or (
         args.command == "reviewer" and args.action == "audit-snapshot"
+    ):
+        return int(not result["ok"])
+    if (args.command == "audit" and args.action == "verify-history") or (
+        args.command == "reviewer" and args.action == "audit-history"
     ):
         return int(not result["ok"])
     return 0

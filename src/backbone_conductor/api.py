@@ -49,6 +49,7 @@ def _reviewer_route(method: str, path: str) -> bool:
             "/timeline",
             "/audit/verify",
             "/audit/snapshot",
+            "/audit/history",
             "/sync",
             "/docs",
             "/redoc",
@@ -529,6 +530,10 @@ def create_app(
     @app.get("/audit/snapshot")
     def verify_snapshot() -> dict:
         return conductor.verify_current_snapshot()
+
+    @app.get("/audit/history")
+    def verify_history(limit: int = Query(default=50, ge=1, le=1000)) -> dict:
+        return conductor.verify_audit_history(limit)
 
     if member_mcp_app is not None:
         app.mount("/", member_mcp_app)

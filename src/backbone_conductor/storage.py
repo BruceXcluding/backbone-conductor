@@ -590,19 +590,7 @@ class GitStore:
             version = state.version
             if version is None:
                 raise StorageError("Current Backbone snapshot has no metadata commit")
-            lineage = self._git("rev-list", "--parents", "-n", "1", version).stdout.split()
-            if not lineage or lineage[0] != version:
-                raise StorageError("Could not read current Backbone commit parents")
-            parents = lineage[1:]
-
-            def metadata_version(parent: str) -> str | None:
-                return (
-                    self._git("log", "-1", "--format=%H", parent, "--", ".backbone").stdout.strip()
-                    or None
-                )
-
-            expected_parent = metadata_version(parents[0]) if parents else None
-            expected_merged_parent = metadata_version(parents[1]) if len(parents) == 2 else None
+            parents, expected_parent, expected_merged_parent = self._metadata_parents(version)
             links_ok = (
                 len(parents) <= 2
                 and state.parent_version == expected_parent
@@ -625,6 +613,114 @@ class GitStore:
                 "parent_links_ok": links_ok,
                 "ok": not (missing or extra or changed) and links_ok,
             }
+
+    def _metadata_parents(self, version: str) -> tuple[list[str], str | None, str | None]:
+        lineage = self._git("rev-list", "--parents", "-n", "1", version).stdout.split()
+        if not lineage or lineage[0] != version:
+            raise StorageError("Could not read Backbone commit parents")
+        parents = lineage[1:]
+
+        def metadata_version(parent: str) -> str | None:
+            return (
+                self._git("log", "-1", "--format=%H", parent, "--", ".backbone").stdout.strip()
+                or None
+            )
+
+        first = metadata_version(parents[0]) if parents else None
+        second = metadata_version(parents[1]) if len(parents) == 2 else None
+        return parents, first, second
+
+    def verify_audit_history(self, limit: int = 50) -> dict[str, Any]:
+        """Inspect reachable metadata commits without treating unsigned history as trusted."""
+        if not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise StorageError("History limit must be between 1 and 1000")
+        with self._lock:
+            self._ensure_clean()
+            head = self._head()
+            if head is None:
+                raise StorageError("Backbone has no Git history")
+            commits = self._git(
+                "rev-list", "--full-history", head, "--", ".backbone"
+            ).stdout.splitlines()
+            if not commits:
+                raise StorageError("Backbone has no metadata history")
+            object_format = self._git("rev-parse", "--show-object-format").stdout.strip()
+            if object_format not in {"sha1", "sha256"}:
+                raise StorageError("Unsupported Git object format for history verification")
+            entries = [
+                self._verify_historical_snapshot(commit, object_format)
+                for commit in commits[:limit]
+            ]
+            if self._head() != head:
+                raise StorageError("Git HEAD changed during history verification; retry")
+            self._ensure_clean()
+            invalid = sum(not entry["ok"] for entry in entries)
+            truncated = len(commits) > len(entries)
+            return {
+                "head": head,
+                "limit": limit,
+                "checked": len(entries),
+                "total_metadata_commits": len(commits),
+                "truncated": truncated,
+                "invalid": invalid,
+                "ok": invalid == 0 and not truncated,
+                "commits": entries,
+            }
+
+    def _verify_historical_snapshot(self, commit: str, object_format: str) -> dict[str, Any]:
+        entry: dict[str, Any] = {"commit": commit, "ok": False}
+        try:
+            snapshot = self._git("show", f"{commit}:.backbone/state.json", check=False)
+        except UnicodeError:
+            return {**entry, "error": "state.json is not UTF-8"}
+        if snapshot.returncode:
+            return {**entry, "error": "Missing state.json at metadata commit"}
+        try:
+            state = BackboneState.model_validate(json.loads(snapshot.stdout))
+            expected = {
+                f".backbone/{name}": content.encode("utf-8")
+                for name, content in self._render(state).items()
+            }
+        except (ValueError, StorageError, UnicodeError) as exc:
+            return {**entry, "error": f"Invalid state or generated views: {exc}"}
+        try:
+            listing = self._git("ls-tree", "-r", "-z", commit, "--", ".backbone").stdout
+        except UnicodeError:
+            return {**entry, "error": "Metadata tree has non-UTF-8 paths"}
+        actual: dict[str, tuple[str, str, str]] = {}
+        for record in listing.split("\x00"):
+            if not record:
+                continue
+            try:
+                header, path = record.split("\t", 1)
+                mode, kind, oid = header.split(" ", 2)
+            except ValueError:
+                return {**entry, "error": "Metadata tree entry is malformed"}
+            actual[path] = (mode, kind, oid)
+        missing = sorted(expected.keys() - actual.keys())
+        extra = sorted(actual.keys() - expected.keys())
+        changed = []
+        for path in sorted(expected.keys() & actual.keys()):
+            content = expected[path]
+            object_id = hashlib.new(
+                object_format, b"blob " + str(len(content)).encode() + b"\x00" + content
+            ).hexdigest()
+            if actual[path] != ("100644", "blob", object_id):
+                changed.append(path)
+        parents, expected_parent, expected_merged = self._metadata_parents(commit)
+        links_ok = (
+            len(parents) <= 2
+            and state.parent_version == expected_parent
+            and state.merged_parent_version == expected_merged
+        )
+        return {
+            **entry,
+            "missing_views": missing,
+            "extra_views": extra,
+            "changed_views": changed,
+            "parent_links_ok": links_ok,
+            "ok": not (missing or extra or changed) and links_ok,
+        }
 
     def sync(self, remote: str = "origin", branch: str | None = None) -> dict[str, Any]:
         """Explicitly push the current branch; never pull or force-push."""
