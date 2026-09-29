@@ -22,6 +22,10 @@ uv run backbone --repo /absolute/project review-stats \
 
 需在本地配置 provider 凭据，不写入 Git。审查会向该 provider 发送任务和代码 diff；结果只作建议。补丁禁用默认 shell，但指定的 DSH home 若有自定义补丁，仍可能装载其他工具；请使用专用 home 和适当的运行账户。一次性目录与只读工具策略不限制 Harness 进程自身的 OS 权限或向 provider 发送数据。
 
+## 意图配对语义建议
+
+`backbone conflict advise INTENT_A INTENT_B --dsh-home /absolute/private-home --model YOUR_MODEL` 在实施前比较两份非终态意图。输入仅包含两份意图的计划字段、相关已接受决策、当前确定性冲突证据与观察到的账本版本，限 1 MB；不传代码 diff。返回 Schema 限定的 `conflict / compatible / uncertain` 建议、理由、证据和协调建议，并附输入 SHA-256、运行元数据与是否因并发账本变化而过期的标记。该入口只读，不会把模型建议写成 Backbone 冲突、解除阻塞或批准合并。调用会将这些协调数据发送给配置的 provider；语义质量尚无真实模型评测结果。
+
 ## 受限协调代理
 
 `backbone conductor` 在本地仓库启动 DSH `sdk-minimal`，以一次性只读工作目录和私有补丁连接 `backbone mcp --coordinator`。该 MCP 服务**只**公开读取完整协调状态、创建 `conductor-agent` 作者的草稿意图、提出同作者的建议决策、检测确定性冲突、分派已接受意图、读取固定提交审查包六项工具。意图接受、决策接受、冲突仲裁、任务合并审批及远端同步均不在工具列表中；运行前独立 MCP 握手要求精确工具集合并读取状态，若权限扩大则拒绝启动模型。DSH 补丁禁用默认持久 shell，并将文件策略设为只读。模型不能通过这些工具完成需要人类审查的状态转换。

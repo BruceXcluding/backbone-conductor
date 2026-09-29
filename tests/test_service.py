@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 
@@ -242,6 +243,83 @@ def test_advisory_semantic_review_and_stale_review_rejected(project, monkeypatch
     monkeypatch.setattr(DSHReviewer, "review", stale)
     with pytest.raises(ValueError, match="changed during"):
         service.review_task(task["id"], str(repo / "dsh-home"), "test-model")
+
+
+def test_intent_conflict_advice_is_read_only_and_version_bound(project, monkeypatch):
+    from backbone_conductor.runtime import DSHReviewer
+
+    service, repo = project
+    left = service.create_intent(
+        {
+            "author": "alice",
+            "problem": "Replace the export API",
+            "proposed_outcome": "New export format",
+            "affected_paths": ["src/export.py"],
+        }
+    )
+    right = service.create_intent(
+        {
+            "author": "bob",
+            "problem": "Extend the export API",
+            "proposed_outcome": "Old callers keep working",
+            "affected_paths": ["src/export.py"],
+        }
+    )
+    observed = {}
+
+    def advise(_self, context):
+        observed.update(context)
+        return {
+            "verdict": "compatible",
+            "rationale": "The model missed the overlapping path",
+            "evidence": [],
+            "coordination": [],
+            "runtime": {"session_id": "session-advice-1", "finish_reason": "completed"},
+        }
+
+    monkeypatch.setattr(DSHReviewer, "advise_conflict", advise)
+    before = service.state()
+    head = git(repo, "rev-parse", "HEAD")
+    home = repo.parent / f"{repo.name}-conflict-advice-home"
+    result = service.advise_intent_conflict(left["id"], right["id"], str(home), "test-model")
+    assert result["advisory"] and result["human_review_required"]
+    assert result["model_advice"]["verdict"] == "compatible"
+    assert not result["stale"]
+    assert result["observed_version"] == result["current_version"] == before["version"]
+    assert (
+        result["context_sha256"]
+        == hashlib.sha256(
+            json.dumps(observed, sort_keys=True, ensure_ascii=False).encode()
+        ).hexdigest()
+    )
+    assert any(item["rule"] == "resource_contention" for item in result["deterministic_conflicts"])
+    assert result["blocking_conflict_ids"]
+    assert observed["version"] == before["version"]
+    assert {item["id"] for item in observed["intents"]} == {left["id"], right["id"]}
+    assert all("artifacts" not in item and "reviews" not in item for item in observed["intents"])
+    assert git(repo, "rev-parse", "HEAD") == head
+    assert service.state() == before
+    with pytest.raises(ValueError, match="different intents"):
+        service.advise_intent_conflict(left["id"], left["id"], str(home), "test-model")
+    with pytest.raises(ValueError, match="outside the repository"):
+        service.advise_intent_conflict(
+            left["id"], right["id"], str(repo / "advice-home"), "test-model"
+        )
+
+    def change_state(_self, _context):
+        service.create_intent(
+            {
+                "author": "carol",
+                "problem": "New requirement while advice runs",
+                "proposed_outcome": "Version changes",
+            }
+        )
+        return {"verdict": "uncertain", "rationale": "State changed"}
+
+    monkeypatch.setattr(DSHReviewer, "advise_conflict", change_state)
+    stale = service.advise_intent_conflict(left["id"], right["id"], str(home), "test-model")
+    assert stale["stale"]
+    assert stale["observed_version"] != stale["current_version"]
 
 
 def test_failed_semantic_review_has_redacted_private_attempt_log(project, monkeypatch, tmp_path):

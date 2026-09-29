@@ -113,6 +113,56 @@ def test_cli_replaces_accepted_intent_with_audited_draft(interface_repo: Path, c
     assert result["replacement"]["supersedes"] == original["id"]
 
 
+def test_cli_returns_read_only_semantic_conflict_advice(
+    interface_repo: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from backbone_conductor.runtime import DSHReviewer
+
+    service = Conductor(interface_repo)
+    service.initialize()
+    first = service.create_intent(intent_data())
+    second = service.create_intent(
+        {
+            "author": "bob",
+            "problem": "Change the export contract",
+            "proposed_outcome": "Replace the return type",
+        }
+    )
+    monkeypatch.setattr(
+        DSHReviewer,
+        "advise_conflict",
+        lambda _self, _context: {
+            "verdict": "uncertain",
+            "rationale": "The plans need human comparison",
+            "evidence": [],
+            "coordination": [],
+        },
+    )
+    head = git(interface_repo, "rev-parse", "HEAD")
+    assert (
+        main(
+            [
+                "--repo",
+                str(interface_repo),
+                "conflict",
+                "advise",
+                first["id"],
+                second["id"],
+                "--dsh-home",
+                str(tmp_path / "private-advice-home"),
+                "--model",
+                "test-model",
+            ]
+        )
+        == 0
+    )
+    result = json.loads(capsys.readouterr().out)
+    assert result["advisory"] and result["human_review_required"]
+    assert result["model_advice"]["verdict"] == "uncertain"
+    assert result["pair"] == [first["id"], second["id"]]
+    assert git(interface_repo, "rev-parse", "HEAD") == head
+
+
 def test_cli_reviews_draft_with_rationale(interface_repo: Path, capsys) -> None:
     prefix = ["--repo", str(interface_repo)]
     assert main([*prefix, "init"]) == 0

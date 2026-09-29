@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 from pathlib import Path
 from time import monotonic_ns
@@ -685,6 +686,100 @@ class Conductor:
             }
 
         return self.store.mutate(change, "backbone: conflicts checked")
+
+    def advise_intent_conflict(
+        self,
+        left_id: str,
+        right_id: str,
+        dsh_home: str,
+        model: str,
+        provider: str = "deepseek-official",
+    ) -> dict:
+        """Return version-bound model advice without changing the authoritative ledger."""
+        from .runtime import DSHReviewer
+
+        if left_id == right_id:
+            raise ValueError("Conflict advice requires two different intents")
+        home = Path(dsh_home).expanduser().absolute().resolve()
+        if home.is_relative_to(self.code_store.root) or home.is_relative_to(self.store.root):
+            raise ValueError("Conflict advice DSH home must be outside the repository")
+        snapshot = self.store.read()
+        pair = [snapshot.intents[left_id], snapshot.intents[right_id]]
+        terminal = {IntentStatus.COMPLETED, IntentStatus.SUPERSEDED, IntentStatus.REJECTED}
+        if any(intent.status in terminal for intent in pair):
+            raise ValueError("Conflict advice requires two live intents")
+        conflicts = [
+            {
+                "id": conflict.id,
+                "rule": conflict.rule,
+                "severity": conflict.severity.value,
+                "evidence": conflict.evidence,
+            }
+            for conflict in self._refresh(snapshot)
+            if not conflict.resolved and set(conflict.parties) == {left_id, right_id}
+        ]
+        relevant = {left_id, right_id}
+        context = {
+            "version": snapshot.version,
+            "intents": [
+                intent.model_dump(
+                    mode="json",
+                    include={
+                        "id",
+                        "author",
+                        "status",
+                        "problem",
+                        "proposed_outcome",
+                        "constraints",
+                        "affected_symbols",
+                        "operations",
+                        "affected_paths",
+                    },
+                )
+                for intent in pair
+            ],
+            "accepted_decisions": [
+                decision.model_dump(
+                    mode="json",
+                    include={
+                        "id",
+                        "summary",
+                        "rationale",
+                        "related_intents",
+                        "depends_on",
+                        "removes_symbols",
+                    },
+                )
+                for decision in snapshot.decisions.values()
+                if decision.status == DecisionStatus.ACCEPTED
+                and (
+                    not decision.related_intents or relevant.intersection(decision.related_intents)
+                )
+            ],
+            "deterministic_conflicts": conflicts,
+        }
+        context_bytes = json.dumps(context, sort_keys=True, ensure_ascii=False).encode()
+        if len(context_bytes) > 1_000_000:
+            raise ValueError("Conflict advice context exceeds 1 MB; narrow the intent pair")
+        context_sha256 = hashlib.sha256(context_bytes).hexdigest()
+        advice = DSHReviewer(dsh_home, model, provider).advise_conflict(context)
+        current_version = self.store.read().version
+        return {
+            "advisory": True,
+            "human_review_required": True,
+            "pair": [left_id, right_id],
+            "observed_version": snapshot.version,
+            "current_version": current_version,
+            "stale": current_version != snapshot.version,
+            "context_sha256": context_sha256,
+            "deterministic_conflicts": conflicts,
+            "blocking_conflict_ids": [
+                conflict["id"]
+                for conflict in conflicts
+                if conflict["severity"] != Severity.ADVISORY.value
+            ],
+            "model_advice": advice,
+        }
 
     def inspect_task(self, task_id: str) -> dict:
         """Build a read-only packet pinned to the artifact's checked Git commits."""

@@ -180,6 +180,12 @@ def build_parser() -> argparse.ArgumentParser:
     conflicts = commands.add_parser("conflict").add_subparsers(dest="action", required=True)
     conflicts.add_parser("check", help="Detect and record deterministic conflicts")
     conflicts.add_parser("list")
+    advise = conflicts.add_parser("advise", help="Get read-only DSH advice for two live intents")
+    advise.add_argument("left_intent_id")
+    advise.add_argument("right_intent_id")
+    advise.add_argument("--dsh-home", required=True, help="Private DSH home outside the repo")
+    advise.add_argument("--model", required=True)
+    advise.add_argument("--provider", default="deepseek-official")
     resolve = conflicts.add_parser("resolve")
     resolve.add_argument("conflict_id")
     resolve.add_argument("--author", required=True)
@@ -589,6 +595,14 @@ def _run(args: argparse.Namespace) -> Any:
             return conductor.detect_conflicts()
         if args.action == "list":
             return list(conductor.state()["conflicts"].values())
+        if args.action == "advise":
+            return conductor.advise_intent_conflict(
+                args.left_intent_id,
+                args.right_intent_id,
+                args.dsh_home,
+                args.model,
+                args.provider,
+            )
         return conductor.resolve_conflict(
             args.conflict_id, args.author, args.resolution_action, args.rationale
         )

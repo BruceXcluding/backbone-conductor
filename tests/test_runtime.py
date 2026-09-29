@@ -146,6 +146,71 @@ def test_review_accepts_fenced_json(tmp_path: Path, harness_stub) -> None:
     assert result["concerns"] == ["No input validation"]
 
 
+def test_conflict_advice_is_structured_and_tool_free(tmp_path: Path, harness_stub) -> None:
+    harness_stub.response = json.dumps(
+        {
+            "verdict": "conflict",
+            "rationale": "Both plans change the export contract",
+            "evidence": ["The consumers expect different return types"],
+            "coordination": ["Agree one return type before implementation"],
+        }
+    )
+    context = {"intents": [{"id": "intent-a"}, {"id": "intent-b"}]}
+    advice = DSHReviewer(tmp_path / "private-home", "test-model").advise_conflict(context)
+    assert advice["verdict"] == "conflict"
+    assert advice["evidence"] == ["The consumers expect different return types"]
+    assert advice["runtime"]["finish_reason"] == "completed"
+    assert json.dumps(context, ensure_ascii=False) in harness_stub.prompt
+    assert "Do not use tools" in harness_stub.prompt
+    assert "cannot create, resolve, or approve" in harness_stub.prompt
+    assert harness_stub.patch == _review_patch(harness_stub.workspace)
+    assert harness_stub.closed
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        '{"verdict":"approved","rationale":"Proceed"}',
+        '{"verdict":"compatible","rationale":""}',
+        '{"verdict":"conflict","rationale":"Needs coordination","approve_merge":true}',
+    ],
+)
+def test_conflict_advice_rejects_invalid_model_output(
+    tmp_path: Path, harness_stub, response: str
+) -> None:
+    harness_stub.response = response
+    with pytest.raises(ValueError, match="invalid conflict advice"):
+        DSHReviewer(tmp_path / "private-home", "test-model").advise_conflict({})
+    assert harness_stub.closed
+
+
+def test_installed_sdk_conflict_advice_with_local_mock_provider(
+    tmp_path: Path, monkeypatch, mock_dsh_tool_provider
+) -> None:
+    if os.environ.get("BACKBONE_REQUIRE_DSH_MCP") != "1":
+        pytest.skip("set BACKBONE_REQUIRE_DSH_MCP=1 for the installed SDK advice check")
+    pytest.importorskip("deepseek_harness")
+    response = json.dumps(
+        {
+            "verdict": "conflict",
+            "rationale": "The two interfaces disagree",
+            "evidence": ["One plan removes an API the other extends"],
+            "coordination": ["Agree a transition plan"],
+        }
+    )
+    with mock_dsh_tool_provider(None, {}, response) as (provider_url, requests):
+        monkeypatch.setenv("DEEPSEEK_BASE_URL", provider_url)
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "local-conflict-mock-key")
+        advice = DSHReviewer(tmp_path / "advice-home", "mock-model").advise_conflict(
+            {"intents": [{"id": "intent-left"}, {"id": "intent-right"}]}
+        )
+    assert advice["verdict"] == "conflict"
+    assert advice["runtime"]["finish_reason"] == "completed"
+    assert len(requests) == 1
+    assert "intent-left" in json.dumps(requests[0]["messages"])
+    assert "intent-right" in json.dumps(requests[0]["messages"])
+
+
 @pytest.mark.parametrize(
     "response",
     [

@@ -13,7 +13,7 @@ import pytest
 @pytest.fixture
 def mock_dsh_tool_provider():
     @contextmanager
-    def serve(tool_name: str, arguments: dict, final_response: str):
+    def serve(tool_name: str | None, arguments: dict, final_response: str):
         requests: list[dict] = []
 
         class Provider(BaseHTTPRequestHandler):
@@ -35,7 +35,7 @@ def mock_dsh_tool_provider():
                         ],
                     }
                 ]
-                if request_number == 1:
+                if request_number == 1 and tool_name is not None:
                     delta = {
                         "tool_calls": [
                             {
