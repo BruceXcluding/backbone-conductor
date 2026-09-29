@@ -149,6 +149,12 @@ backbone reviewer --url https://coordinator.example.org:8443 \
 backbone reviewer --url https://coordinator.example.org:8443 \
   --token-file /private/path/carol.token conflicts
 backbone reviewer --url https://coordinator.example.org:8443 \
+  --token-file /private/path/carol.token timeline \
+  --http-principal carol --type conflict --limit 20
+backbone reviewer --url https://coordinator.example.org:8443 \
+  --token-file /private/path/carol.token audit-verify \
+  --limit 50 --require-signatures
+backbone reviewer --url https://coordinator.example.org:8443 \
   --token-file /private/path/carol.token resolve-conflict CONFLICT_ID \
   --action coordinate --rationale '先统一接口变更顺序' --version OBSERVED_VERSION
 backbone reviewer --url https://coordinator.example.org:8443 \
@@ -162,7 +168,7 @@ backbone reviewer --url https://coordinator.example.org:8443 \
   --version OBSERVED_VERSION --target-sha OBSERVED_TARGET_SHA
 ```
 
-`state` 返回用于意图审查、决策撤销和冲突裁决的当前 `version`；若期间有人写入，旧版本会被拒绝，应重新读取状态和目标后审查。`decisions` 和 `conflicts` 提供撤销或裁决前的当前证据；`revert-decision` 只撤销已接受决策，不回滚代码或恢复被覆盖的前任，`resolve-conflict` 只裁决仍未解决的精确冲突 ID，并在审计记录中留下所审阅的版本。`inspect` 返回固定提交的差异、完整补丁哈希及 `truncated` 标志。代码合并后须重新运行 `inspect`，从该次响应复制 `version` 和 `git.target_sha` 给 `approve`；若账本或目标分支随后改变，审批会拒绝。审查者须核对完整代码与最终目标树，不能仅凭截断预览审批；`approve` 只记录审阅结论，不执行 Git 合并。命令先向 `/whoami` 核对令牌确属审查者，写入请求的 author 自动使用服务端返回的 principal。真实不同自然人的远程使用仍待验收。
+`state` 返回用于意图审查、决策撤销和冲突裁决的当前 `version`；若期间有人写入，旧版本会被拒绝，应重新读取状态和目标后审查。`decisions` 和 `conflicts` 提供撤销或裁决前的当前证据；`revert-decision` 只撤销已接受决策，不回滚代码或恢复被覆盖的前任，`resolve-conflict` 只裁决仍未解决的精确冲突 ID，并在审计记录中留下所审阅的版本。`inspect` 返回固定提交的差异、完整补丁哈希及 `truncated` 标志。代码合并后须重新运行 `inspect`，从该次响应复制 `version` 和 `git.target_sha` 给 `approve`；若账本或目标分支随后改变，审批会拒绝。审查者须核对完整代码与最终目标树，不能仅凭截断预览审批；`approve` 只记录审阅结论，不执行 Git 合并。命令先向 `/whoami` 核对令牌确属审查者，写入请求的 author 自动使用服务端返回的 principal。`timeline` 及 `audit-verify` 读取协调端 Git 账本与签名报告；后者依赖服务端的 Git 信任库，客户端没有独立验证提交签名，`--require-signatures` 只要求本次所检查的提交全部有效，仍需注意 `truncated`。真实不同自然人的远程使用仍待验收。
 
 ## 独立元数据分支
 

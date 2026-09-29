@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
+_SHA = re.compile(r"[0-9a-f]{40}\Z")
 
 
 def _private_token(path: str) -> str:
@@ -71,6 +72,45 @@ def _identifier(value: str) -> str:
     return value
 
 
+def _validated_audit_report(report: object, limit: int) -> dict:
+    """Fail closed when a remote signature report violates its response contract."""
+    error = ValueError("Reviewer server returned an invalid audit report")
+    if not isinstance(report, dict):
+        raise error
+    counts = ("checked", "limit", "total_metadata_commits", "valid", "unsigned", "invalid")
+    if any(type(report.get(key)) is not int or report[key] < 0 for key in counts):
+        raise error
+    if (
+        report["limit"] != limit
+        or report["checked"] > limit
+        or report["total_metadata_commits"] < report["checked"]
+        or report["checked"] != report["valid"] + report["unsigned"] + report["invalid"]
+        or type(report.get("truncated")) is not bool
+        or report["truncated"] != (report["total_metadata_commits"] > report["checked"])
+        or type(report.get("all_inspected_signed_and_valid")) is not bool
+        or report["all_inspected_signed_and_valid"]
+        != (report["checked"] > 0 and report["valid"] == report["checked"])
+    ):
+        raise error
+    commits = report.get("commits")
+    if not isinstance(commits, list) or len(commits) != report["checked"]:
+        raise error
+    statuses = {"valid": 0, "unsigned": 0, "invalid": 0}
+    for item in commits:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("commit"), str)
+            or not _SHA.fullmatch(item["commit"])
+            or not isinstance(item.get("signature"), str)
+            or item.get("signature") not in statuses
+        ):
+            raise error
+        statuses[item["signature"]] += 1
+    if any(statuses[key] != report[key] for key in statuses):
+        raise error
+    return report
+
+
 def run_reviewer_command(args) -> dict | list:
     """Call the reviewer HTTP API once, binding write authors to its token identity."""
     origin = _server_url(args.url)
@@ -82,9 +122,15 @@ def run_reviewer_command(args) -> dict | list:
             raise ValueError("Reviewer CA file must be a regular file")
         verify = ssl.create_default_context(cafile=str(certificate))
 
-    def request(client: httpx.Client, method: str, path: str, data: dict | None = None):
+    def request(
+        client: httpx.Client,
+        method: str,
+        path: str,
+        data: dict | None = None,
+        params: dict | None = None,
+    ):
         try:
-            response = client.request(method, path, json=data)
+            response = client.request(method, path, json=data, params=params)
         except httpx.RequestError as exc:
             raise ValueError(f"Reviewer connection failed ({type(exc).__name__})") from exc
         if response.status_code >= 400:
@@ -128,6 +174,27 @@ def run_reviewer_command(args) -> dict | list:
             return request(client, "GET", "/conflicts")
         if args.action == "tasks":
             return request(client, "GET", "/tasks")
+        if args.action == "timeline":
+            return request(
+                client,
+                "GET",
+                "/timeline",
+                params={
+                    key: value
+                    for key, value in {
+                        "limit": args.limit,
+                        "author": args.author,
+                        "http_principal": args.http_principal,
+                        "event_type": args.event_type,
+                        "since": args.since,
+                        "until": args.until,
+                    }.items()
+                    if value is not None
+                },
+            )
+        if args.action == "audit-verify":
+            report = request(client, "GET", "/audit/verify", params={"limit": args.limit})
+            return _validated_audit_report(report, args.limit)
         if args.action == "inspect":
             return request(client, "GET", f"/tasks/{_identifier(args.task_id)}/inspection")
         if args.action == "review-intent":

@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from backbone_conductor.cli import main
-from backbone_conductor.reviewer_client import _private_token
+from backbone_conductor.reviewer_client import _private_token, _validated_audit_report
 
 
 def test_reviewer_cli_requires_https_for_non_loopback(tmp_path: Path, capsys) -> None:
@@ -52,3 +52,25 @@ def test_reviewer_token_file_rejects_shared_or_linked_credentials(tmp_path: Path
     os.link(token, hardlink)
     with pytest.raises(ValueError, match="single-link"):
         _private_token(str(token))
+
+
+def test_remote_audit_report_rejects_inconsistent_signature_counts() -> None:
+    report = {
+        "checked": 1,
+        "limit": 1,
+        "total_metadata_commits": 2,
+        "truncated": True,
+        "valid": 0,
+        "unsigned": 1,
+        "invalid": 0,
+        "all_inspected_signed_and_valid": False,
+        "commits": [{"commit": "a" * 40, "signature": "unsigned"}],
+    }
+    assert _validated_audit_report(report, 1) == report
+    for bad in (
+        {**report, "all_inspected_signed_and_valid": True},
+        {**report, "valid": 1},
+        {**report, "commits": [{"commit": "a" * 40, "signature": {}}]},
+    ):
+        with pytest.raises(ValueError, match="invalid audit report"):
+            _validated_audit_report(bad, 1)

@@ -250,6 +250,34 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(
             assert resolution["decision"]["author"] == "carol"
             assert resolution["conflict"]["resolution"]["reviewed_version"] == version
             assert service.state()["conflicts"][overlap["id"]]["resolved"]
+            assert (
+                main(
+                    [
+                        *reviewer_command,
+                        "timeline",
+                        "--http-principal",
+                        "carol",
+                        "--type",
+                        "conflict",
+                        "--limit",
+                        "1",
+                    ]
+                )
+                == 0
+            )
+            audit_events = json.loads(capsys.readouterr().out)
+            assert len(audit_events) == 1
+            assert audit_events[0]["http_principal"] == "carol"
+            assert audit_events[0]["event_type"] == "conflict"
+            assert main([*reviewer_command, "audit-verify", "--limit", "1"]) == 0
+            audit_report = json.loads(capsys.readouterr().out)
+            assert audit_report["checked"] == 1
+            assert audit_report["unsigned"] == 1
+            assert (
+                main([*reviewer_command, "audit-verify", "--limit", "1", "--require-signatures"])
+                == 1
+            )
+            assert json.loads(capsys.readouterr().out)["unsigned"] == 1
             headers = {"Authorization": f"Bearer {token}"}
             assert client.get(f"{url}/state", headers=headers).status_code == 200
             response = client.post(

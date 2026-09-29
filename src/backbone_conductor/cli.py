@@ -294,6 +294,24 @@ def build_parser() -> argparse.ArgumentParser:
     reviewer_actions = reviewer.add_subparsers(dest="action", required=True)
     for action in ("whoami", "state", "intents", "decisions", "conflicts", "tasks"):
         reviewer_actions.add_parser(action)
+    reviewer_timeline = reviewer_actions.add_parser(
+        "timeline", help="Read the coordinator's Git audit timeline"
+    )
+    reviewer_timeline.add_argument("--limit", type=int, default=50)
+    reviewer_timeline.add_argument("--author", help="Exact Git author name")
+    reviewer_timeline.add_argument("--http-principal", help="Exact authenticated HTTP principal")
+    reviewer_timeline.add_argument("--type", dest="event_type", choices=AUDIT_EVENT_TYPES)
+    reviewer_timeline.add_argument("--since", help="Inclusive ISO 8601 timestamp with timezone")
+    reviewer_timeline.add_argument("--until", help="Inclusive ISO 8601 timestamp with timezone")
+    reviewer_audit = reviewer_actions.add_parser(
+        "audit-verify", help="Read the coordinator's Git signature verification report"
+    )
+    reviewer_audit.add_argument("--limit", type=int, default=50)
+    reviewer_audit.add_argument(
+        "--require-signatures",
+        action="store_true",
+        help="Exit nonzero unless every inspected commit has a valid signature",
+    )
     reviewer_inspect = reviewer_actions.add_parser("inspect", help="Read a submitted task packet")
     reviewer_inspect.add_argument("task_id")
     reviewer_intent = reviewer_actions.add_parser("review-intent", help="Accept or reject a draft")
@@ -689,7 +707,9 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     if result is not None:
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    if args.command == "audit" and args.action == "verify":
+    if (args.command == "audit" and args.action == "verify") or (
+        args.command == "reviewer" and args.action == "audit-verify"
+    ):
         return int(
             result["invalid"] > 0
             or (args.require_signatures and not result["all_inspected_signed_and_valid"])
