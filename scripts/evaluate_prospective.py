@@ -743,6 +743,49 @@ def score(
         rows.append(row)
     resolved = sum(counts.values())
     metrics = _metrics(counts)
+    both_labeled = labels_a.keys() & labels_b.keys()
+    agreed = sum(labels_a[case_id] == labels_b[case_id] for case_id in both_labeled)
+    labeling = {
+        "first_labeled_count": len(labels_a),
+        "second_labeled_count": len(labels_b),
+        "both_labeled_count": len(both_labeled),
+        "agreed_count": agreed,
+        "disagreed_count": len(both_labeled) - agreed,
+        "adjudicated_count": len(adjudicated),
+        "unresolved_disagreement_count": len(both_labeled) - agreed - len(adjudicated),
+        "observed_agreement": agreed / len(both_labeled) if both_labeled else None,
+    }
+    project_counts: dict[str, dict[str, Any]] = {}
+    for (case, _intents), row in zip(cases, rows, strict=True):
+        project = case["project"]
+        summary = project_counts.setdefault(
+            project,
+            {
+                "sample_count": 0,
+                "resolved_count": 0,
+                "deterministic": {"tp": 0, "fp": 0, "fn": 0, "tn": 0},
+                "semantic": {"tp": 0, "fp": 0, "fn": 0, "tn": 0},
+                "combined": {"tp": 0, "fp": 0, "fn": 0, "tn": 0},
+            },
+        )
+        summary["sample_count"] += 1
+        if "outcome" in row:
+            summary["resolved_count"] += 1
+            summary["deterministic"][row["outcome"]] += 1
+            if semantic_verdicts is not None:
+                summary["semantic"][row["semantic_outcome"]] += 1
+                summary["combined"][row["combined_outcome"]] += 1
+    project_summaries = {}
+    for project, summary in sorted(project_counts.items()):
+        project_report = {
+            "sample_count": summary["sample_count"],
+            "resolved_count": summary["resolved_count"],
+            "deterministic": _metrics(summary["deterministic"]),
+        }
+        if semantic_verdicts is not None:
+            project_report["semantic"] = _metrics(summary["semantic"])
+            project_report["combined"] = _metrics(summary["combined"])
+        project_summaries[project] = project_report
     report = {
         "status": "complete_sample" if resolved == len(cases) else "incomplete",
         "dataset_sha256": dataset_sha,
@@ -755,6 +798,8 @@ def score(
         "resolved_projects": sorted({row["project"] for row in rows if "project" in row}),
         "sample_count": len(cases),
         "resolved_count": resolved,
+        "labeling": labeling,
+        "project_summaries": project_summaries,
         **metrics,
         "cases": rows,
         "limitation": LIMITATION,
@@ -898,6 +943,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
         print(f"Prospective sample: {report['resolved_count']}/{report['sample_count']} resolved")
+        labeling = report["labeling"]
+        agreement = (
+            "n/a"
+            if labeling["observed_agreement"] is None
+            else f"{labeling['observed_agreement']:.1%}"
+        )
+        print(
+            f"Double-labeled cases: {labeling['both_labeled_count']} | "
+            f"agreement {agreement} | "
+            f"unresolved disputes {labeling['unresolved_disagreement_count']}"
+        )
         label = "Rules: " if "semantic" in report else ""
         print(
             f"{label}TP {report['counts']['tp']} | FP {report['counts']['fp']} | FN {report['counts']['fn']} | TN {report['counts']['tn']}"

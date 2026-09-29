@@ -519,6 +519,14 @@ def test_semantic_advice_is_frozen_and_scored_separately(tmp_path, monkeypatch, 
     assert report["semantic"]["resolved_abstentions"] == 2
     assert report["combined"]["counts"] == {"tp": 2, "fp": 1, "fn": 1, "tn": 1}
     assert report["combined"]["recall"] == 2 / 3
+    assert (
+        report["project_summaries"]["example/project"]["semantic"]["counts"]
+        == report["semantic"]["counts"]
+    )
+    assert (
+        report["project_summaries"]["example/project"]["combined"]["counts"]
+        == report["combined"]["counts"]
+    )
     assert "not an independent model-only detector" in report["limitation"]
     second_blind = tmp_path / "dave-blind.json"
     prepare_review(dataset, predictions, second_blind, "dave", semantic)
@@ -650,6 +658,8 @@ def test_missing_and_disputed_labels_do_not_become_negative_cases(tmp_path):
     assert result["resolved_count"] == 0
     assert result["recall"] is None
     assert [row["status"] for row in result["cases"]] == ["disputed", "unlabeled"]
+    assert result["labeling"]["disagreed_count"] == 1
+    assert result["labeling"]["unresolved_disagreement_count"] == 1
 
     _reviews(adjudication, dataset, predictions, "erin", [_review("disputed", True)])
     result = score(dataset, predictions, first, second, adjudication)
@@ -657,6 +667,78 @@ def test_missing_and_disputed_labels_do_not_become_negative_cases(tmp_path):
     assert result["counts"]["tp"] == 1
     assert result["status"] == "incomplete"
     assert result["adjudications_sha256"] == hashlib.sha256(adjudication.read_bytes()).hexdigest()
+    assert result["labeling"]["adjudicated_count"] == 1
+    assert result["labeling"]["unresolved_disagreement_count"] == 0
+
+
+def test_score_reports_review_agreement_and_project_coverage(tmp_path: Path):
+    cases = [
+        _case("positive", "shared.py", "shared.py"),
+        _case("negative", "one.py", "two.py"),
+        _case("dispute", "shared.py", "shared.py"),
+        _case("awaiting", "one.py", "two.py"),
+    ]
+    for case in cases[:2]:
+        case["project"] = "example/alpha"
+    for case in cases[2:]:
+        case["project"] = "example/beta"
+    dataset, predictions = _files(tmp_path, cases)
+    first, second, adjudication = (
+        tmp_path / "carol.json",
+        tmp_path / "dave.json",
+        tmp_path / "erin.json",
+    )
+    _reviews(
+        first,
+        dataset,
+        predictions,
+        "carol",
+        [
+            _review("positive", True),
+            _review("negative", False),
+            _review("dispute", False),
+            _review("awaiting", True),
+        ],
+    )
+    _reviews(
+        second,
+        dataset,
+        predictions,
+        "dave",
+        [_review("positive", True), _review("negative", False), _review("dispute", True)],
+    )
+    _reviews(adjudication, dataset, predictions, "erin", [_review("dispute", False)])
+
+    report = score(dataset, predictions, first, second, adjudication)
+    assert report["status"] == "incomplete"
+    assert report["resolved_count"] == 3
+    assert report["labeling"] == {
+        "first_labeled_count": 4,
+        "second_labeled_count": 3,
+        "both_labeled_count": 3,
+        "agreed_count": 2,
+        "disagreed_count": 1,
+        "adjudicated_count": 1,
+        "unresolved_disagreement_count": 0,
+        "observed_agreement": 2 / 3,
+    }
+    assert report["project_summaries"]["example/alpha"]["sample_count"] == 2
+    assert report["project_summaries"]["example/alpha"]["resolved_count"] == 2
+    assert report["project_summaries"]["example/alpha"]["deterministic"]["counts"] == {
+        "tp": 1,
+        "fp": 0,
+        "fn": 0,
+        "tn": 1,
+    }
+    assert report["project_summaries"]["example/beta"]["sample_count"] == 2
+    assert report["project_summaries"]["example/beta"]["resolved_count"] == 1
+    assert report["project_summaries"]["example/beta"]["deterministic"]["counts"] == {
+        "tp": 0,
+        "fp": 1,
+        "fn": 0,
+        "tn": 0,
+    }
+    assert report["project_summaries"]["example/beta"]["deterministic"]["recall"] is None
 
 
 @pytest.mark.parametrize("changed_review", ["first", "second", "adjudication"])
@@ -674,11 +756,15 @@ def test_scoring_rejects_review_file_changed_after_labels_were_read(
     _reviews(adjudication, dataset, predictions, "erin", [_review("disputed", True)])
     changed_path = {"first": first, "second": second, "adjudication": adjudication}[changed_review]
     original_metrics = study._metrics
+    changed = False
 
     def metrics_after_review_change(counts):
-        changed_labels = json.loads(changed_path.read_text(encoding="utf-8"))
-        changed_labels["cases"][0]["conflict"] = not changed_labels["cases"][0]["conflict"]
-        changed_path.write_text(json.dumps(changed_labels), encoding="utf-8")
+        nonlocal changed
+        if not changed:
+            changed_labels = json.loads(changed_path.read_text(encoding="utf-8"))
+            changed_labels["cases"][0]["conflict"] = not changed_labels["cases"][0]["conflict"]
+            changed_path.write_text(json.dumps(changed_labels), encoding="utf-8")
+            changed = True
         return original_metrics(counts)
 
     monkeypatch.setattr(study, "_metrics", metrics_after_review_change)
@@ -718,7 +804,7 @@ def test_self_review_and_prediction_tampering_are_rejected(tmp_path):
         score(dataset, predictions, first, second)
 
 
-def test_cli_reports_incomplete_sample_without_claiming_target(tmp_path):
+def test_cli_reports_incomplete_sample_without_claiming_target(tmp_path, capsys):
     dataset, predictions = _files(tmp_path, [_case("pair", "src/one.py", "src/two.py")])
     first = tmp_path / "carol.json"
     second = tmp_path / "dave.json"
@@ -749,6 +835,25 @@ def test_cli_reports_incomplete_sample_without_claiming_target(tmp_path):
     assert report["status"] == "incomplete"
     assert report["recall"] is None
     assert report["precision"] is None
+    assert report["labeling"]["observed_agreement"] is None
+    assert report["project_summaries"]["example/project"]["resolved_count"] == 0
+    assert (
+        main(
+            [
+                "score",
+                "--dataset",
+                str(dataset),
+                "--predictions",
+                str(predictions),
+                "--review",
+                str(first),
+                "--review",
+                str(second),
+            ]
+        )
+        == 0
+    )
+    assert "agreement n/a | unresolved disputes 0" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("mutation", ["future_intent", "same_author", "post_work_status"])
