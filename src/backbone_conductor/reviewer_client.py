@@ -67,6 +67,68 @@ def _validated_audit_report(report: object, limit: int) -> dict:
     return report
 
 
+def _validated_snapshot_report(report: object) -> dict:
+    """Reject malformed snapshot reports without claiming independent verification."""
+    error = ValueError("Reviewer server returned an invalid snapshot report")
+    if not isinstance(report, dict):
+        raise error
+    required = {
+        "version",
+        "git_parent_count",
+        "view_count",
+        "missing_views",
+        "extra_views",
+        "changed_views",
+        "parent_version",
+        "expected_parent_version",
+        "merged_parent_version",
+        "expected_merged_parent_version",
+        "parent_links_ok",
+        "ok",
+    }
+    if not required <= report.keys():
+        raise error
+
+    def sha_or_none(value: object) -> bool:
+        return value is None or (
+            isinstance(value, str)
+            and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is not None
+        )
+
+    if not isinstance(report.get("version"), str) or not sha_or_none(report["version"]):
+        raise error
+    if any(
+        type(report.get(key)) is not int or report[key] < 0
+        for key in ("view_count", "git_parent_count")
+    ):
+        raise error
+    for key in ("missing_views", "extra_views", "changed_views"):
+        paths = report.get(key)
+        if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+            raise error
+    links = (
+        ("parent_version", "expected_parent_version"),
+        ("merged_parent_version", "expected_merged_parent_version"),
+    )
+    if any(not sha_or_none(report.get(key)) for pair in links for key in pair):
+        raise error
+    links_ok = report["git_parent_count"] <= 2 and all(
+        report[left] == report[right] for left, right in links
+    )
+    if (
+        type(report.get("parent_links_ok")) is not bool
+        or report["parent_links_ok"] != links_ok
+        or type(report.get("ok")) is not bool
+        or report["ok"]
+        != (
+            not any(report[key] for key in ("missing_views", "extra_views", "changed_views"))
+            and links_ok
+        )
+    ):
+        raise error
+    return report
+
+
 def _validated_full_patch(packet: object) -> dict:
     """Reject incomplete artifact and integrated-target patches from a remote packet."""
     error = ValueError("Reviewer server returned an invalid full review patch")
@@ -178,6 +240,8 @@ def run_reviewer_command(args) -> dict | list:
         if args.action == "audit-verify":
             report = request(client, "GET", "/audit/verify", params={"limit": args.limit})
             return _validated_audit_report(report, args.limit)
+        if args.action == "audit-snapshot":
+            return _validated_snapshot_report(request(client, "GET", "/audit/snapshot"))
         if args.action == "inspect":
             packet = request(
                 client,

@@ -22,7 +22,7 @@
 
 协调者核对推送来源、完整 SHA、制品范围和真实代码审查后，在目标分支执行 Git 合并。Carol 用 `reviewer inspect TASK_ID --full` 查固定制品补丁和合并后的目标差异，必要时另在完整代码 checkout 审阅；只有目标分支真实集成且审查充分，才用**这次** `inspect` 的 `version` 与 `git.target_sha` 运行 `reviewer approve`。如状态或目标 SHA 已变化，重新审查而非复用旧锚点。至少制造一次并发状态变化以观察过期版本拒绝；若有真实冲突，记录谁裁决、依据及结果，不为了演示而把人工造例当成自然产生的冲突。
 
-结束时由协调者核对任务状态、目标树、远端分支、`timeline --http-principal`、审计签名报告（若已启用签名），并在服务重启后复查快照。签名只能证明配置的 Git 密钥，不证明某个人亲自操作。按[前瞻评测](../evals/PROSPECTIVE_STUDY.md)另行冻结事前样本和预测，再由两位独立审阅者盲标；一般试用成功不能推出冲突检测率。
+结束时由协调者核对任务状态、目标树、远端分支、`timeline --http-principal`、`audit verify-snapshot` 及审计签名报告（若已启用签名），并在服务重启后复查快照。Carol 可独立调用 `reviewer audit-snapshot` 读取服务端报告；这仍依赖服务端，不能证明真人身份。签名只能证明配置的 Git 密钥，不证明某个人亲自操作。按[前瞻评测](../evals/PROSPECTIVE_STUDY.md)另行冻结事前样本和预测，再由两位独立审阅者盲标；一般试用成功不能推出冲突检测率。
 
 ## 私有验收记录
 

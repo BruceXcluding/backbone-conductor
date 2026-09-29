@@ -569,6 +569,63 @@ class GitStore:
             "commits": entries,
         }
 
+    def verify_current_snapshot(self) -> dict[str, Any]:
+        """Check committed views and version links for the current metadata snapshot."""
+        with self._lock:
+            head = self._head()
+            state = self._read()
+            expected = {
+                name: content.encode("utf-8") for name, content in self._render(state).items()
+            }
+            actual = {
+                item.relative_to(self.path).as_posix(): item.read_bytes()
+                for item in self.path.rglob("*")
+                if item.is_file()
+            }
+            missing = sorted(expected.keys() - actual.keys())
+            extra = sorted(actual.keys() - expected.keys())
+            changed = sorted(
+                name for name in expected.keys() & actual.keys() if expected[name] != actual[name]
+            )
+            version = state.version
+            if version is None:
+                raise StorageError("Current Backbone snapshot has no metadata commit")
+            lineage = self._git("rev-list", "--parents", "-n", "1", version).stdout.split()
+            if not lineage or lineage[0] != version:
+                raise StorageError("Could not read current Backbone commit parents")
+            parents = lineage[1:]
+
+            def metadata_version(parent: str) -> str | None:
+                return (
+                    self._git("log", "-1", "--format=%H", parent, "--", ".backbone").stdout.strip()
+                    or None
+                )
+
+            expected_parent = metadata_version(parents[0]) if parents else None
+            expected_merged_parent = metadata_version(parents[1]) if len(parents) == 2 else None
+            links_ok = (
+                len(parents) <= 2
+                and state.parent_version == expected_parent
+                and state.merged_parent_version == expected_merged_parent
+            )
+            if self._head() != head:
+                raise StorageError("Git HEAD changed during snapshot verification; retry")
+            self._ensure_clean()
+            return {
+                "version": version,
+                "git_parent_count": len(parents),
+                "view_count": len(expected),
+                "missing_views": missing,
+                "extra_views": extra,
+                "changed_views": changed,
+                "parent_version": state.parent_version,
+                "expected_parent_version": expected_parent,
+                "merged_parent_version": state.merged_parent_version,
+                "expected_merged_parent_version": expected_merged_parent,
+                "parent_links_ok": links_ok,
+                "ok": not (missing or extra or changed) and links_ok,
+            }
+
     def sync(self, remote: str = "origin", branch: str | None = None) -> dict[str, Any]:
         """Explicitly push the current branch; never pull or force-push."""
         with self._lock:

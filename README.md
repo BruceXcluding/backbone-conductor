@@ -48,6 +48,8 @@ backbone --repo /path/to/project serve \
 
 审计提交可使用仓库的 Git `commit.gpgsign=true` 设置签名；`backbone --repo /path/to/project audit verify --require-signatures` 检查最近的元数据提交并对未签名或验证失败返回非零状态。历史上的未签名提交不会被追溯签名；签名证明 Git 密钥，不证明 HTTP principal 的真实身份。配置步骤与范围限制见 [部署与恢复](docs/OPERATIONS.md#审计与恢复)。
 
+`backbone --repo /path/to/project audit verify-snapshot` 还可只读核对当前状态、生成视图及 Git 父版本链接；审查者用 `reviewer audit-snapshot` 读取协调端报告。不一致时命令返回非零状态；它不验证完整历史或操作者身份。
+
 可用 `backbone --repo /path/to/project log --type intent --http-principal alice --limit 20` 查看匹配的审计时间线；HTTP `/timeline` 接受同名查询参数。时间筛选使用带时区的 ISO 8601 `since` / `until`。事件类型由 Git 提交主题归类，便于浏览，不代替审计签名或状态核验。
 
 ## 完整工作流

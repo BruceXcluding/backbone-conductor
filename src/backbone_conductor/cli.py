@@ -447,7 +447,7 @@ def build_parser() -> argparse.ArgumentParser:
     log.add_argument("--type", dest="event_type", choices=AUDIT_EVENT_TYPES)
     log.add_argument("--since", help="Inclusive ISO 8601 author timestamp with timezone")
     log.add_argument("--until", help="Inclusive ISO 8601 author timestamp with timezone")
-    audit = commands.add_parser("audit", help="Inspect Git audit commit signatures")
+    audit = commands.add_parser("audit", help="Verify Git audit signatures and snapshot integrity")
     audit_actions = audit.add_subparsers(dest="action", required=True)
     verify = audit_actions.add_parser("verify", help="Verify recent Backbone commit signatures")
     verify.add_argument("--limit", type=int, default=50)
@@ -455,6 +455,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-signatures",
         action="store_true",
         help="Exit nonzero unless all inspected commits have valid signatures",
+    )
+    audit_actions.add_parser(
+        "verify-snapshot", help="Check current metadata views and Git parent version links"
     )
     commands.add_parser("schema", help="Print protocol JSON Schema")
     review = commands.add_parser("review", help="Request advisory semantic review through DSH")
@@ -575,6 +578,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-signatures",
         action="store_true",
         help="Exit nonzero unless every inspected commit has a valid signature",
+    )
+    reviewer_actions.add_parser(
+        "audit-snapshot", help="Read the coordinator's current metadata consistency report"
     )
     reviewer_inspect = reviewer_actions.add_parser(
         "inspect", help="Read submitted or approved task review"
@@ -980,7 +986,11 @@ def _run(args: argparse.Namespace) -> Any:
             until=args.until,
         )
     if args.command == "audit":
-        return conductor.verify_audit_signatures(args.limit)
+        return (
+            conductor.verify_audit_signatures(args.limit)
+            if args.action == "verify"
+            else conductor.verify_current_snapshot()
+        )
     raise ValueError(f"Unknown command: {args.command}")
 
 
@@ -1012,6 +1022,10 @@ def main(argv: list[str] | None = None) -> int:
             result["invalid"] > 0
             or (args.require_signatures and not result["all_inspected_signed_and_valid"])
         )
+    if (args.command == "audit" and args.action == "verify-snapshot") or (
+        args.command == "reviewer" and args.action == "audit-snapshot"
+    ):
+        return int(not result["ok"])
     return 0
 
 

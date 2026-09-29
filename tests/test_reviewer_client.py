@@ -14,6 +14,7 @@ from backbone_conductor.reviewer_client import (
     _private_token,
     _validated_audit_report,
     _validated_full_patch,
+    _validated_snapshot_report,
 )
 
 
@@ -79,6 +80,35 @@ def test_remote_audit_report_rejects_inconsistent_signature_counts() -> None:
     ):
         with pytest.raises(ValueError, match="invalid audit report"):
             _validated_audit_report(bad, 1)
+
+
+def test_remote_snapshot_report_rejects_inconsistent_result() -> None:
+    report = {
+        "version": "a" * 40,
+        "git_parent_count": 1,
+        "view_count": 2,
+        "missing_views": [],
+        "extra_views": [],
+        "changed_views": [],
+        "parent_version": "b" * 40,
+        "expected_parent_version": "b" * 40,
+        "merged_parent_version": None,
+        "expected_merged_parent_version": None,
+        "parent_links_ok": True,
+        "ok": True,
+    }
+    assert _validated_snapshot_report(report) == report
+    drifted = {**report, "changed_views": ["BACKBONE.md"], "ok": False}
+    assert _validated_snapshot_report(drifted) == drifted
+    for bad in (
+        {**report, "version": "not-a-sha"},
+        {**report, "view_count": -1},
+        {**report, "changed_views": ["BACKBONE.md"], "ok": True},
+        {**report, "expected_parent_version": "c" * 40},
+        {key: value for key, value in report.items() if key != "parent_version"},
+    ):
+        with pytest.raises(ValueError, match="invalid snapshot report"):
+            _validated_snapshot_report(bad)
 
 
 def test_remote_full_patch_rejects_truncation_or_hash_mismatch() -> None:

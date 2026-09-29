@@ -179,6 +179,49 @@ def test_audit_reports_unsigned_history_and_strict_cli_fails(repo: Path, capsys)
     assert json.loads(capsys.readouterr().out)["all_inspected_signed_and_valid"] is False
 
 
+def test_snapshot_verification_checks_views_and_git_lineage(repo: Path, capsys):
+    store = GitStore(repo)
+    first = store.init()
+    assert store.verify_current_snapshot()["ok"]
+    store.mutate(lambda state: state.sessions.update({"example": {"value": 1}}), "new state")
+    valid = store.verify_current_snapshot()
+    assert valid["ok"]
+    assert valid["parent_version"] == valid["expected_parent_version"] == first.version
+    (repo / "code.txt").write_text("ordinary source change\n")
+    git(repo, "add", "code.txt")
+    git(repo, "commit", "-m", "Change source without touching Backbone")
+    assert store.verify_current_snapshot()["ok"]
+    assert main(["--repo", str(repo), "audit", "verify-snapshot"]) == 0
+    assert json.loads(capsys.readouterr().out)["ok"]
+
+    view = repo / ".backbone/BACKBONE.md"
+    view.write_text(view.read_text() + "Unreviewed external edit\n")
+    git(repo, "add", ".backbone/BACKBONE.md")
+    git(repo, "commit", "-m", "External metadata edit")
+    invalid = store.verify_current_snapshot()
+    assert not invalid["ok"]
+    assert invalid["changed_views"] == ["BACKBONE.md"]
+    assert not invalid["parent_links_ok"]
+    assert main(["--repo", str(repo), "audit", "verify-snapshot"]) == 1
+    assert json.loads(capsys.readouterr().out)["changed_views"] == ["BACKBONE.md"]
+
+
+def test_snapshot_verification_detects_wrong_parent_with_matching_views(repo: Path):
+    store = GitStore(repo)
+    store.init()
+    store.mutate(lambda state: state.sessions.update({"example": {"value": 1}}), "new state")
+    state_path = repo / ".backbone/state.json"
+    state = json.loads(state_path.read_text())
+    state["parent_version"] = None
+    state_path.write_text(json.dumps(state, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+    git(repo, "add", ".backbone/state.json")
+    git(repo, "commit", "-m", "External lineage edit")
+    report = store.verify_current_snapshot()
+    assert report["changed_views"] == []
+    assert not report["parent_links_ok"]
+    assert not report["ok"]
+
+
 def test_log_filters_author_type_and_time_before_limit(repo: Path, monkeypatch, capsys):
     store = GitStore(repo)
     monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-27T09:00:00+00:00")
@@ -644,6 +687,7 @@ def test_reconcile_disjoint_metadata_keeps_both_parents_and_regenerates_conflict
     assert set(merged.intents) == {left["id"], right["id"]}
     assert merged.parent_version == inspection["local_version"]
     assert merged.merged_parent_version == inspection["remote_version"]
+    assert second.verify_current_snapshot()["ok"]
     assert result["version"] == result["commit"] == merged.version
     assert any(not conflict.resolved for conflict in merged.conflicts.values())
     assert git(second.root, "status", "--porcelain") == ""
