@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "evaluate_prospective.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import evaluate_prospective as study  # noqa: E402
 from evaluate_prospective import (  # noqa: E402
     capture,
     freeze,
@@ -149,6 +150,126 @@ def test_capture_separate_ledger_records_code_baseline(tmp_path: Path):
     assert result["base_sha"] == code_sha
     assert result["backbone_version"] != code_sha
     assert _git(repo, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("mutation", ["code_commit", "dirty_code", "ledger"])
+def test_capture_rechecks_snapshot_after_freezing_predictions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+):
+    separate_ledger = mutation == "ledger"
+    repo = _capture_repo(tmp_path, separate_ledger=separate_ledger)
+    dataset = tmp_path / "cases.json"
+    predictions = tmp_path / "predictions.json"
+    original_freeze = study.freeze
+
+    def freeze_then_change(dataset_path: Path, predictions_path: Path):
+        result = original_freeze(dataset_path, predictions_path)
+        if mutation == "code_commit":
+            (repo / "app.py").write_text("value = 2\n")
+            _git(repo, "add", "app.py")
+            _git(repo, "commit", "-m", "Concurrent code change")
+        elif mutation == "dirty_code":
+            (repo / "app.py").write_text("value = 2\n")
+        else:
+            Conductor(repo, ledger_branch="backbone").create_intent(
+                {
+                    "id": "intent-later",
+                    "author": "dave",
+                    "problem": "Concurrent plan",
+                    "proposed_outcome": "New work",
+                }
+            )
+        return result
+
+    monkeypatch.setattr(study, "freeze", freeze_then_change)
+    expected = {
+        "code_commit": "code HEAD changed",
+        "dirty_code": "code worktree changed",
+        "ledger": "Backbone state changed",
+    }[mutation]
+    with pytest.raises(ValueError, match=expected):
+        capture(
+            repo,
+            "example/project",
+            "All unassigned pairs",
+            dataset,
+            predictions,
+            ledger_branch="backbone" if separate_ledger else None,
+        )
+    assert not dataset.exists()
+    assert not predictions.exists()
+
+
+def test_capture_failure_preserves_prediction_file_created_by_another_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo = _capture_repo(tmp_path)
+    dataset = tmp_path / "cases.json"
+    predictions = tmp_path / "predictions.json"
+    original_freeze = study.freeze
+
+    def freeze_after_other_writer(dataset_path: Path, predictions_path: Path):
+        predictions_path.write_text("other writer\n")
+        return original_freeze(dataset_path, predictions_path)
+
+    monkeypatch.setattr(study, "freeze", freeze_after_other_writer)
+    with pytest.raises(FileExistsError):
+        capture(repo, "example/project", "All pairs", dataset, predictions)
+    assert not dataset.exists()
+    assert predictions.read_text() == "other writer\n"
+
+
+@pytest.mark.parametrize("changed_file", ["dataset", "predictions"])
+def test_capture_rejects_evidence_changed_after_freeze(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_file: str
+):
+    repo = _capture_repo(tmp_path)
+    dataset = tmp_path / "cases.json"
+    predictions = tmp_path / "predictions.json"
+    original_freeze = study.freeze
+
+    def freeze_then_change(dataset_path: Path, predictions_path: Path):
+        result = original_freeze(dataset_path, predictions_path)
+        path = dataset_path if changed_file == "dataset" else predictions_path
+        path.write_text(path.read_text() + " ")
+        return result
+
+    monkeypatch.setattr(study, "freeze", freeze_then_change)
+    expected = (
+        "dataset changed after deterministic predictions"
+        if changed_file == "dataset"
+        else "deterministic predictions changed during capture"
+    )
+    with pytest.raises(ValueError, match=expected):
+        capture(repo, "example/project", "All pairs", dataset, predictions)
+    assert not dataset.exists()
+    assert not predictions.exists()
+
+
+def test_freeze_rejects_dataset_mutation_during_rule_detection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    dataset = tmp_path / "cases.json"
+    predictions = tmp_path / "predictions.json"
+    dataset.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "sampling": "All prospective pairs",
+                "cases": [_case("pair-one", "a.py", "a.py")],
+            }
+        )
+    )
+    original_detect = study.detect_conflicts
+
+    def detect_after_dataset_change(state):
+        dataset.write_text(dataset.read_text() + " ")
+        return original_detect(state)
+
+    monkeypatch.setattr(study, "detect_conflicts", detect_after_dataset_change)
+    with pytest.raises(ValueError, match="dataset changed while deterministic predictions"):
+        freeze(dataset, predictions)
+    assert not predictions.exists()
 
 
 def _case(identifier: str, left_path: str, right_path: str) -> dict:

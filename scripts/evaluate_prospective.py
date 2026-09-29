@@ -131,6 +131,10 @@ def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _serialized(value: dict[str, Any]) -> bytes:
+    return (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
 def _write_exclusive(path: Path, value: dict[str, Any]) -> None:
     """Publish a complete private JSON file without replacing an existing artifact."""
     temporary: Path | None = None
@@ -140,8 +144,7 @@ def _write_exclusive(path: Path, value: dict[str, Any]) -> None:
         ) as stream:
             temporary = Path(stream.name)
             os.chmod(temporary, 0o600)
-            json.dump(value, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
+            stream.write(_serialized(value).decode("utf-8"))
             stream.flush()
             os.fsync(stream.fileno())
         os.link(temporary, path)
@@ -201,38 +204,57 @@ def capture(
         raise ValueError("no eligible unassigned intent pairs with distinct authors")
     if any(intent.created_at > captured_at for intent in eligible):
         raise ValueError("an intent timestamp is after capture time")
-    if (
-        conductor.code_store._git("rev-parse", "--verify", "HEAD^{commit}").stdout.strip()
-        != base_sha
-    ):
-        raise ValueError("code HEAD changed during capture")
-    if conductor.store.read().version != state.version:
-        raise ValueError("Backbone state changed during capture")
+
+    def require_unchanged_snapshot() -> None:
+        if (
+            conductor.code_store._git("rev-parse", "--verify", "HEAD^{commit}").stdout.strip()
+            != base_sha
+        ):
+            raise ValueError("code HEAD changed during capture")
+        if conductor.code_store._git("status", "--porcelain", "--untracked-files=all").stdout:
+            raise ValueError("code worktree changed during capture")
+        if conductor.store.read().version != state.version:
+            raise ValueError("Backbone state changed during capture")
+
+    require_unchanged_snapshot()
     data = {"schema_version": 1, "sampling": sampling, "cases": cases}
     _write_exclusive(dataset, data)
+    predictions_written = False
     try:
         frozen = freeze(dataset, predictions)
-    except Exception:
-        dataset.unlink()
+        predictions_written = True
+        if _digest(dataset) != frozen["dataset_sha256"]:
+            raise ValueError("dataset changed after deterministic predictions were frozen")
+        prediction_bytes = predictions.read_bytes()
+        if prediction_bytes != _serialized(frozen):
+            raise ValueError("deterministic predictions changed during capture")
+        require_unchanged_snapshot()
+        return {
+            "case_count": len(cases),
+            "base_sha": base_sha,
+            "backbone_version": state.version,
+            "dataset_sha256": frozen["dataset_sha256"],
+            "predictions_sha256": hashlib.sha256(prediction_bytes).hexdigest(),
+        }
+    except BaseException:
+        if predictions_written:
+            predictions.unlink(missing_ok=True)
+        dataset.unlink(missing_ok=True)
         raise
-    return {
-        "case_count": len(cases),
-        "base_sha": base_sha,
-        "backbone_version": state.version,
-        "dataset_sha256": frozen["dataset_sha256"],
-        "predictions_sha256": _digest(predictions),
-    }
 
 
 def freeze(dataset: Path, output: Path) -> dict[str, Any]:
+    dataset_sha = _digest(dataset)
     data, cases = _dataset(dataset)
+    if _digest(dataset) != dataset_sha:
+        raise ValueError("dataset changed while deterministic predictions were preparing")
     detector = hashlib.sha256()
     for name in ("conflicts.py", "models.py"):
         detector.update((ROOT / "src" / "backbone_conductor" / name).read_bytes())
     detector.update(Path(__file__).read_bytes())
     frozen = {
         "schema_version": 1,
-        "dataset_sha256": _digest(dataset),
+        "dataset_sha256": dataset_sha,
         "detector_sha256": detector.hexdigest(),
         "frozen_at": datetime.now(UTC).isoformat(),
         "sampling": data["sampling"],
@@ -252,6 +274,8 @@ def freeze(dataset: Path, output: Path) -> dict[str, Any]:
             if not item.resolved
         ]
         frozen["cases"].append({"id": case["id"], "findings": findings})
+    if _digest(dataset) != dataset_sha:
+        raise ValueError("dataset changed while deterministic predictions were freezing")
     _write_exclusive(output, frozen)
     return frozen
 
