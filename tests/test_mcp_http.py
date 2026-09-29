@@ -18,7 +18,11 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from backbone_conductor.api import create_app
-from backbone_conductor.auth import create_token_file, rotate_token_file
+from backbone_conductor.auth import (
+    create_token_file,
+    rotate_principal_token,
+    rotate_token_file,
+)
 from backbone_conductor.cli import main
 from backbone_conductor.dsh_agent import DSHRemoteMemberRunner
 from backbone_conductor.ledger import create_ledger
@@ -144,9 +148,19 @@ def test_http_mcp_requires_member_token_and_binds_each_request(remote_repo) -> N
 
         host = {"Host": "unlisted.example", "Authorization": f"Bearer {tokens['alice']}"}
         assert client.post("/mcp", headers=host, json={}).status_code == 421
+        one = rotate_principal_token(credentials, repo, "alice")
+        assert _request(client, "tools/list", tokens["alice"]).status_code == 401
+        assert _request(client, "tools/list", one["token"]).status_code == 200
+        assert _request(client, "tools/list", tokens["bob"]).status_code == 200
+        assert (
+            client.get(
+                "/whoami", headers={"Authorization": f"Bearer {tokens['owner']}"}
+            ).status_code
+            == 200
+        )
         rotated = rotate_token_file(credentials, repo, "owner", ["alice", "bob"])
         new_alice = next(item["token"] for item in rotated if item["name"] == "alice")
-        assert _request(client, "tools/list", tokens["alice"]).status_code == 401
+        assert _request(client, "tools/list", one["token"]).status_code == 401
         assert _request(client, "tools/list", new_alice).status_code == 200
         credentials.chmod(0o644)
         try:

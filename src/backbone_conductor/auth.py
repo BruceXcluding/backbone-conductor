@@ -13,8 +13,11 @@ import re
 import secrets
 import stat
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+
+from filelock import FileLock, Timeout
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,199}\Z")
@@ -144,6 +147,20 @@ def _write_digests(descriptor: int, digests: list[dict[str, str]]) -> None:
         os.fsync(stream.fileno())
 
 
+def _new_credential(principal: Principal) -> tuple[dict[str, str], dict[str, str]]:
+    issued = {
+        "name": principal.name,
+        "role": principal.role,
+        "token": secrets.token_urlsafe(48),
+    }
+    digest = {
+        "name": principal.name,
+        "role": principal.role,
+        "sha256": hashlib.sha256(issued["token"].encode("utf-8")).hexdigest(),
+    }
+    return issued, digest
+
+
 def create_token_file(
     path: str | Path,
     repo: str | Path,
@@ -167,6 +184,44 @@ def create_token_file(
     return issued
 
 
+def _rotate_file(
+    path: str | Path,
+    repo: str | Path,
+    issue: Callable[
+        [tuple[tuple[str, Principal], ...]],
+        tuple[list[dict[str, str]], list[dict[str, str]]],
+    ],
+) -> list[dict[str, str]]:
+    """Serialize cooperating writers and atomically publish one token generation."""
+    repository = Path(repo).expanduser().resolve()
+    location = Path(path).expanduser().absolute()
+    try:
+        with FileLock(str(location) + ".lock", timeout=10, mode=0o600, preserve_lock_file=True):
+            entries = TokenAuth(location, repository)._load()
+            previous = location.stat(follow_symlinks=False)
+            issued, digests = issue(entries)
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{location.name}.rotate-", dir=location.parent
+            )
+            try:
+                _write_digests(descriptor, digests)
+                TokenAuth(temporary, repository)
+                current = location.stat(follow_symlinks=False)
+                if (current.st_dev, current.st_ino, current.st_mtime_ns, current.st_size) != (
+                    previous.st_dev,
+                    previous.st_ino,
+                    previous.st_mtime_ns,
+                    previous.st_size,
+                ):
+                    raise ValueError("HTTP credential file changed during rotation; retry")
+                os.replace(temporary, location)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+            return issued
+    except Timeout as exc:
+        raise ValueError("Timed out waiting for HTTP credential rotation") from exc
+
+
 def rotate_token_file(
     path: str | Path,
     repo: str | Path,
@@ -174,27 +229,69 @@ def rotate_token_file(
     members: list[str],
     reviewers: list[str] | None = None,
 ) -> list[dict[str, str]]:
-    """Atomically replace a valid credential file, revoking its old tokens."""
-    repository = Path(repo).expanduser().resolve()
-    location = Path(path).expanduser().absolute()
-    TokenAuth(location, repository)
-    previous = location.stat(follow_symlinks=False)
-    issued, digests = _issue(admin, members, reviewers)
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=f".{location.name}.rotate-", dir=location.parent
-    )
-    try:
-        _write_digests(descriptor, digests)
-        TokenAuth(temporary, repository)
-        current = location.stat(follow_symlinks=False)
-        if (current.st_dev, current.st_ino, current.st_mtime_ns, current.st_size) != (
-            previous.st_dev,
-            previous.st_ino,
-            previous.st_mtime_ns,
-            previous.st_size,
+    """Replace all principals and tokens, revoking the old generation."""
+    return _rotate_file(path, repo, lambda _entries: _issue(admin, members, reviewers))
+
+
+def rotate_principal_token(path: str | Path, repo: str | Path, name: str) -> dict[str, str]:
+    """Rotate one existing principal while preserving every other credential."""
+
+    def issue(entries: tuple[tuple[str, Principal], ...]):
+        target = next((principal for _, principal in entries if principal.name == name), None)
+        if target is None:
+            raise ValueError("HTTP principal does not exist")
+        issued, replacement = _new_credential(target)
+        digests = [
+            {
+                "name": principal.name,
+                "role": principal.role,
+                "sha256": replacement["sha256"] if principal.name == name else digest,
+            }
+            for digest, principal in entries
+        ]
+        return [issued], digests
+
+    return _rotate_file(path, repo, issue)[0]
+
+
+def add_principal_token(path: str | Path, repo: str | Path, name: str, role: str) -> dict[str, str]:
+    """Issue one new principal without revoking existing credentials."""
+    if not _NAME.fullmatch(name):
+        raise ValueError("Invalid HTTP token principal name")
+    if role not in {"admin", "member", "reviewer"}:
+        raise ValueError("HTTP token role must be admin, member or reviewer")
+
+    def issue(entries: tuple[tuple[str, Principal], ...]):
+        if any(principal.name == name for _, principal in entries):
+            raise ValueError("HTTP principal already exists")
+        issued, replacement = _new_credential(Principal(name, role))
+        digests = [
+            {"name": principal.name, "role": principal.role, "sha256": digest}
+            for digest, principal in entries
+        ]
+        digests.append(replacement)
+        return [issued], digests
+
+    return _rotate_file(path, repo, issue)[0]
+
+
+def revoke_principal_token(path: str | Path, repo: str | Path, name: str) -> dict[str, str]:
+    """Remove one principal while keeping at least one administrator."""
+
+    def issue(entries: tuple[tuple[str, Principal], ...]):
+        target = next((principal for _, principal in entries if principal.name == name), None)
+        if target is None:
+            raise ValueError("HTTP principal does not exist")
+        if (
+            target.role == "admin"
+            and sum(principal.role == "admin" for _, principal in entries) == 1
         ):
-            raise ValueError("HTTP credential file changed during rotation; retry")
-        os.replace(temporary, location)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
-    return issued
+            raise ValueError("Cannot revoke the last HTTP administrator")
+        digests = [
+            {"name": principal.name, "role": principal.role, "sha256": digest}
+            for digest, principal in entries
+            if principal.name != name
+        ]
+        return [{"name": target.name, "role": target.role}], digests
+
+    return _rotate_file(path, repo, issue)[0]

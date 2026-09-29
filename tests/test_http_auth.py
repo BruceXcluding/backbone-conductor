@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import multiprocessing
 import os
 import subprocess
 from pathlib import Path
@@ -12,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backbone_conductor.api import create_app
-from backbone_conductor.auth import TokenAuth, create_token_file
+from backbone_conductor.auth import TokenAuth, create_token_file, rotate_principal_token
 from backbone_conductor.cli import main
 from backbone_conductor.service import Conductor
 
@@ -32,6 +33,14 @@ def credential(name: str, role: str, token: str) -> dict:
 
 def auth_header(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _rotate_worker(repo: Path, auth_file: Path, name: str, barrier, results) -> None:
+    try:
+        barrier.wait(timeout=15)
+        results.put(rotate_principal_token(auth_file, repo, name))
+    except Exception as exc:
+        results.put({"name": name, "error": f"{type(exc).__name__}: {exc}"})
 
 
 @pytest.fixture
@@ -804,6 +813,7 @@ def test_http_tokens_rotate_without_restart_and_fail_closed(
         auth_file.chmod(0o644)
         assert client.get("/state", headers=new_admin).status_code == 503
         assert client.get("/health").status_code == 503
+
         auth_file.chmod(0o600)
         assert client.get("/state", headers=new_admin).status_code == 200
         valid_content = auth_file.read_text()
@@ -842,3 +852,193 @@ def test_http_tokens_rotate_without_restart_and_fail_closed(
         auth_file.unlink()
         assert client.get("/state", headers=new_admin).status_code == 503
         assert client.get("/health").status_code == 503
+
+
+@pytest.mark.parametrize("target", ["alice", "carol", "owner"])
+def test_one_principal_rotates_without_invalidating_other_users(
+    auth_repo: tuple[Path, Path], capsys, target: str
+) -> None:
+    repo, auth_file = auth_repo
+    tokens = {
+        "owner": ADMIN_TOKEN,
+        "alice": ALICE_TOKEN,
+        "bob": BOB_TOKEN,
+        "carol": CAROL_TOKEN,
+    }
+    before = {entry["name"]: entry for entry in json.loads(auth_file.read_text())["tokens"]}
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        assert (
+            main(
+                [
+                    "--repo",
+                    str(repo),
+                    "auth",
+                    "rotate-one",
+                    "--file",
+                    str(auth_file),
+                    "--name",
+                    target,
+                ]
+            )
+            == 0
+        )
+        issued = json.loads(capsys.readouterr().out)["credentials"]
+        assert len(issued) == 1
+        assert issued[0]["name"] == target
+        assert issued[0]["role"] == before[target]["role"]
+        assert issued[0]["token"] != tokens[target]
+        after = {entry["name"]: entry for entry in json.loads(auth_file.read_text())["tokens"]}
+        assert list(after) == list(before)
+        assert after[target]["sha256"] != before[target]["sha256"]
+        assert all(after[name] == before[name] for name in before if name != target)
+        assert auth_file.stat().st_mode & 0o777 == 0o600
+        assert issued[0]["token"] not in auth_file.read_text()
+        assert client.get("/whoami", headers=auth_header(tokens[target])).status_code == 401
+        assert client.get("/whoami", headers=auth_header(issued[0]["token"])).json() == {
+            "name": target,
+            "role": before[target]["role"],
+        }
+        for name, token in tokens.items():
+            if name != target:
+                assert client.get("/whoami", headers=auth_header(token)).json()["name"] == name
+        unchanged = auth_file.read_bytes()
+        assert (
+            main(
+                [
+                    "--repo",
+                    str(repo),
+                    "auth",
+                    "rotate-one",
+                    "--file",
+                    str(auth_file),
+                    "--name",
+                    "missing-user",
+                ]
+            )
+            == 1
+        )
+        assert "does not exist" in json.loads(capsys.readouterr().err)["error"]
+        assert auth_file.read_bytes() == unchanged
+
+
+def test_add_and_revoke_principals_without_global_rotation(
+    auth_repo: tuple[Path, Path], capsys
+) -> None:
+    repo, auth_file = auth_repo
+    before = {entry["name"]: entry for entry in json.loads(auth_file.read_text())["tokens"]}
+    prefix = ["--repo", str(repo), "auth"]
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        assert (
+            main(
+                [
+                    *prefix,
+                    "add",
+                    "--file",
+                    str(auth_file),
+                    "--name",
+                    "dave",
+                    "--role",
+                    "member",
+                ]
+            )
+            == 0
+        )
+        dave = json.loads(capsys.readouterr().out)["credentials"][0]
+        assert dave["name"] == "dave" and dave["role"] == "member"
+        assert client.get("/whoami", headers=auth_header(dave["token"])).json()["name"] == "dave"
+        after = {entry["name"]: entry for entry in json.loads(auth_file.read_text())["tokens"]}
+        assert all(after[name] == entry for name, entry in before.items())
+        assert dave["token"] not in auth_file.read_text()
+        unchanged = auth_file.read_bytes()
+        assert (
+            main(
+                [
+                    *prefix,
+                    "add",
+                    "--file",
+                    str(auth_file),
+                    "--name",
+                    "dave",
+                    "--role",
+                    "reviewer",
+                ]
+            )
+            == 1
+        )
+        assert "already exists" in json.loads(capsys.readouterr().err)["error"]
+        assert auth_file.read_bytes() == unchanged
+
+        assert main([*prefix, "revoke", "--file", str(auth_file), "--name", "bob"]) == 0
+        assert json.loads(capsys.readouterr().out)["revoked"] == {
+            "name": "bob",
+            "role": "member",
+        }
+        assert client.get("/whoami", headers=auth_header(BOB_TOKEN)).status_code == 401
+        for token in (ADMIN_TOKEN, ALICE_TOKEN, CAROL_TOKEN, dave["token"]):
+            assert client.get("/whoami", headers=auth_header(token)).status_code == 200
+
+        unchanged = auth_file.read_bytes()
+        assert main([*prefix, "revoke", "--file", str(auth_file), "--name", "owner"]) == 1
+        assert "last HTTP administrator" in json.loads(capsys.readouterr().err)["error"]
+        assert auth_file.read_bytes() == unchanged
+        assert (
+            main(
+                [
+                    *prefix,
+                    "add",
+                    "--file",
+                    str(auth_file),
+                    "--name",
+                    "backup",
+                    "--role",
+                    "admin",
+                ]
+            )
+            == 0
+        )
+        backup = json.loads(capsys.readouterr().out)["credentials"][0]
+        assert main([*prefix, "revoke", "--file", str(auth_file), "--name", "owner"]) == 0
+        capsys.readouterr()
+        assert client.get("/whoami", headers=auth_header(ADMIN_TOKEN)).status_code == 401
+        assert client.get("/whoami", headers=auth_header(backup["token"])).json() == {
+            "name": "backup",
+            "role": "admin",
+        }
+        assert auth_file.stat().st_mode & 0o777 == 0o600
+
+
+def test_concurrent_principal_rotations_preserve_both_updates(
+    auth_repo: tuple[Path, Path],
+) -> None:
+    repo, auth_file = auth_repo
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    results = context.Queue()
+    processes = [
+        context.Process(target=_rotate_worker, args=(repo, auth_file, name, barrier, results))
+        for name in ("alice", "bob")
+    ]
+    try:
+        for process in processes:
+            process.start()
+        reports = [results.get(timeout=30) for _ in processes]
+        for process in processes:
+            process.join(timeout=5)
+        assert all(process.exitcode == 0 for process in processes), reports
+        assert not any("error" in report for report in reports), reports
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=5)
+        results.close()
+        results.join_thread()
+    by_name = {report["name"]: report for report in reports}
+    alice, bob = by_name["alice"], by_name["bob"]
+    auth = TokenAuth(auth_file, repo)
+    assert auth.authenticate(f"Bearer {alice['token']}").name == "alice"
+    assert auth.authenticate(f"Bearer {bob['token']}").name == "bob"
+    assert auth.authenticate(f"Bearer {ALICE_TOKEN}") is None
+    assert auth.authenticate(f"Bearer {BOB_TOKEN}") is None
+    assert auth.authenticate(f"Bearer {ADMIN_TOKEN}").name == "owner"
+    assert auth.authenticate(f"Bearer {CAROL_TOKEN}").name == "carol"

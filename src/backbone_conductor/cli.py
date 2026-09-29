@@ -262,6 +262,20 @@ def build_parser() -> argparse.ArgumentParser:
     rotate_auth.add_argument(
         "--reviewer", action="append", default=[], help="Reviewer principal name"
     )
+    rotate_one = auth_commands.add_parser(
+        "rotate-one", help="Replace one principal's token without changing other tokens"
+    )
+    rotate_one.add_argument("--file", required=True, help="Existing private token file")
+    rotate_one.add_argument("--name", required=True, help="Existing principal to rotate")
+    add_principal = auth_commands.add_parser(
+        "add", help="Issue a new principal without changing existing tokens"
+    )
+    add_principal.add_argument("--file", required=True, help="Existing private token file")
+    add_principal.add_argument("--name", required=True, help="New principal name")
+    add_principal.add_argument("--role", required=True, choices=["admin", "member", "reviewer"])
+    revoke_principal = auth_commands.add_parser("revoke", help="Remove one existing principal")
+    revoke_principal.add_argument("--file", required=True, help="Existing private token file")
+    revoke_principal.add_argument("--name", required=True, help="Principal to revoke")
     mcp = commands.add_parser("mcp", help="Run the MCP server over stdio")
     mcp.add_argument("--member", help="Bind member operations and omit administrator tools")
     return parser
@@ -329,20 +343,37 @@ def _run(args: argparse.Namespace) -> Any:
         )
         return None
     if args.command == "auth":
-        from .auth import create_token_file, rotate_token_file
+        from .auth import (
+            add_principal_token,
+            create_token_file,
+            revoke_principal_token,
+            rotate_principal_token,
+            rotate_token_file,
+        )
 
         conductor = Conductor(args.repo, ledger_branch=args.ledger_branch)
+        if args.action == "revoke":
+            return {
+                "file": args.file,
+                "revoked": revoke_principal_token(args.file, conductor.code_store.root, args.name),
+            }
+        if args.action == "rotate-one":
+            credentials = [rotate_principal_token(args.file, conductor.code_store.root, args.name)]
+        elif args.action == "add":
+            credentials = [
+                add_principal_token(args.file, conductor.code_store.root, args.name, args.role)
+            ]
+        elif args.action == "create":
+            credentials = create_token_file(
+                args.file, conductor.code_store.root, args.admin, args.member, args.reviewer
+            )
+        else:
+            credentials = rotate_token_file(
+                args.file, conductor.code_store.root, args.admin, args.member, args.reviewer
+            )
         return {
             "file": args.file,
-            "credentials": (
-                create_token_file(
-                    args.file, conductor.code_store.root, args.admin, args.member, args.reviewer
-                )
-                if args.action == "create"
-                else rotate_token_file(
-                    args.file, conductor.code_store.root, args.admin, args.member, args.reviewer
-                )
-            ),
+            "credentials": credentials,
             "detail": "Save these plaintext tokens now; only SHA-256 digests are stored in the file.",
         }
     if args.command == "mcp":

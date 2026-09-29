@@ -1,4 +1,4 @@
-# v0.38 实现说明
+# v0.39 实现说明
 
 | 范围 | 已实现行为 |
 | --- | --- |
@@ -9,7 +9,7 @@
 | 制品 | 固定提交 SHA、真实 Git 路径、目标分支绑定、修改范围检查 |
 | 冲突 | 四类确定性规则、稳定证据 ID、分级、仲裁包、人工裁决 |
 | 存储 | Git 快照、生成视图、跨进程锁、异常回滚、并发版本检查；跨克隆快进、分叉差异报告、审查后独立元数据合并；独立元数据分支与现有内联快照迁移；可选签名的元数据提交与只读签名验证 |
-| 接入 | argparse CLI、FastAPI/OpenAPI、官方 MCP SDK stdio；显式启用的成员专用 Streamable HTTP MCP；可选 HTTP bearer 认证、直接 HTTPS、令牌不停机轮换与管理员/成员/审查者权限；无需本地仓库的远程审查 CLI |
+| 接入 | argparse CLI、FastAPI/OpenAPI、官方 MCP SDK stdio；显式启用的成员专用 Streamable HTTP MCP；可选 HTTP bearer 认证、直接 HTTPS、单人/全员令牌轮换与 principal 增删、管理员/成员/审查者权限；无需本地仓库的远程审查 CLI |
 | 运行时 | 可选真实 DSH SDK 审查适配及成员代理入口；审查记录耗时、会话 ID 和完成状态，成员代理通过独立工作区与绑定成员的 MCP 客户端访问 Backbone |
 | 验证 | 单元测试、真实 Git 流程、MCP stdio 通信、合成评测、CI |
 
@@ -50,6 +50,7 @@ Git 是唯一权威存储；进程重启直接恢复快照，当前不需要 SQL
 - [ ] 真实多人审查体验验证；已提供审查者 HTTP、管理员 MCP 与本地 CLI 的固定提交只读审查包，但尚无不同自然人的使用反馈。
 - [x] HTTP 静态高熵令牌认证、管理员/成员接口授权、显式 author/member 绑定与非 loopback 启动保护。
 - [x] HTTP 令牌文件原子轮换与逐请求重新校验，无效凭据时拒绝请求。
+- [x] 可原子添加、撤销或单独轮换一个 HTTP principal，保持其他令牌和角色不变；跨进程文件锁保护并发写入，禁止撤销最后一个管理员。
 - [x] 已认证 HTTP 元数据写入记录请求 principal/角色，并在 `backbone log` 中展示。
 - [x] Git 审计时间线可按精确 Git author、HTTP principal、提交主题事件类型和带时区时间筛选；筛选后应用数量上限。
 - [x] `commit.gpgsign=true` 时元数据 `commit-tree` 显式签名；CLI/HTTP/MCP 可验证最近审计提交并区分有效、未签名和无效签名。

@@ -13,7 +13,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from backbone_conductor.auth import create_token_file, rotate_token_file
+from backbone_conductor.auth import (
+    add_principal_token,
+    create_token_file,
+    revoke_principal_token,
+    rotate_principal_token,
+    rotate_token_file,
+)
 from backbone_conductor.service import Conductor
 
 
@@ -338,6 +344,44 @@ def test_authenticated_live_server_coordinates_two_member_processes(tmp_path: Pa
         review_commit = _git(repo, "log", "-1", "--format=%B")
         assert "Backbone-HTTP-Principal: carol" in review_commit
         assert "Backbone-HTTP-Role: reviewer" in review_commit
+        one = rotate_principal_token(credentials, repo, "alice")
+        dave = add_principal_token(credentials, repo, "dave", "member")
+        with httpx.Client(base_url=url, timeout=15, trust_env=False) as client:
+            assert (
+                client.get(
+                    "/whoami", headers={"Authorization": f"Bearer {tokens['alice']}"}
+                ).status_code
+                == 401
+            )
+            assert client.get(
+                "/whoami", headers={"Authorization": f"Bearer {one['token']}"}
+            ).json() == {"name": "alice", "role": "member"}
+            for name in ("owner", "bob", "carol"):
+                assert (
+                    client.get(
+                        "/whoami", headers={"Authorization": f"Bearer {tokens[name]}"}
+                    ).status_code
+                    == 200
+                )
+            assert client.get(
+                "/whoami", headers={"Authorization": f"Bearer {dave['token']}"}
+            ).json() == {"name": "dave", "role": "member"}
+            assert revoke_principal_token(credentials, repo, "dave") == {
+                "name": "dave",
+                "role": "member",
+            }
+            assert (
+                client.get(
+                    "/whoami", headers={"Authorization": f"Bearer {dave['token']}"}
+                ).status_code
+                == 401
+            )
+            assert (
+                client.get(
+                    "/whoami", headers={"Authorization": f"Bearer {tokens['carol']}"}
+                ).status_code
+                == 200
+            )
         rotated = rotate_token_file(credentials, repo, "owner", ["alice", "bob"], ["carol"])
         new_owner_token = next(item["token"] for item in rotated if item["name"] == "owner")
         with httpx.Client(base_url=url, timeout=15, trust_env=False) as client:
