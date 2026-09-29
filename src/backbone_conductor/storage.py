@@ -237,6 +237,32 @@ class GitStore:
         except Timeout as exc:
             raise StorageError("Timed out waiting for the Backbone repository lock") from exc
 
+    def read_version(self, version: str) -> BackboneState:
+        """Read an exact reachable metadata commit without using mutable working-tree views."""
+        if not isinstance(version, str) or not re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})", version
+        ):
+            raise StorageError("A full Backbone metadata commit SHA is required")
+        try:
+            with self._lock:
+                current = self._read()
+                if (
+                    current.version is None
+                    or self._git(
+                        "merge-base", "--is-ancestor", version, current.version, check=False
+                    ).returncode
+                    or self._git(
+                        "log", "-1", "--format=%H", version, "--", ".backbone"
+                    ).stdout.strip()
+                    != version
+                ):
+                    raise StorageError("Backbone metadata version is not in current audit history")
+                state = self._state_at(version)
+                state.version = version
+                return state
+        except Timeout as exc:
+            raise StorageError("Timed out waiting for the Backbone repository lock") from exc
+
     def init(self) -> BackboneState:
         """Create and commit the initial state, or return the existing state."""
         try:

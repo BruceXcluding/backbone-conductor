@@ -229,6 +229,69 @@ def test_review_packet_is_pinned_to_submitted_diff_and_read_only(audit_project):
     assert changed["diff"]["patch"] == packet["diff"]["patch"]
 
 
+def test_completed_task_reopens_approved_snapshot_after_target_moves(audit_project):
+    service, repo = audit_project
+    _intent, task, artifact = prepare_artifact(service, repo)
+    assert service.submit_artifact("alice", artifact)["accepted"]
+    git(repo, "merge", "--no-ff", "--no-edit", "feature/database")
+    reviewed = service.inspect_task(task["id"], full_patch=True)
+    approved = service.merge_task(
+        task["id"],
+        "reviewer",
+        "Checked the final target tree",
+        expected_version=reviewed["version"],
+        expected_target_sha=reviewed["git"]["target_sha"],
+    )
+    anchor = approved["task"]["approval"]
+    assert anchor == {
+        "decision_id": approved["review_decision"]["id"],
+        "reviewed_version": reviewed["version"],
+        "target_sha": reviewed["git"]["target_sha"],
+    }
+    recorded = service.inspect_task(task["id"], full_patch=True)
+    assert recorded["inspection_kind"] == "approval"
+    assert recorded["current_task_status"] == "merged"
+    assert recorded["task"] == reviewed["task"]
+    assert recorded["intent"] == reviewed["intent"]
+    assert recorded["version"] == reviewed["version"]
+    assert recorded["current_version"] != reviewed["version"]
+    assert recorded["git"]["target_sha"] == reviewed["git"]["target_sha"]
+    assert recorded["target_diff"] == reviewed["target_diff"]
+    assert recorded["approval"]["decision"]["id"] == anchor["decision_id"]
+
+    (repo / "database.py").write_text("DATABASE = {'later': True}\n")
+    git(repo, "add", "database.py")
+    git(repo, "commit", "-m", "Change database after approval")
+    state_before = service.state()
+    moved = service.inspect_task(task["id"])
+    assert moved["git"]["target_sha"] == anchor["target_sha"]
+    assert moved["git"]["current_target_sha"] == git(repo, "rev-parse", "main")
+    assert moved["git"]["current_target_sha"] != anchor["target_sha"]
+    assert moved["target_diff"]["sha256"] == reviewed["target_diff"]["sha256"]
+    assert service.state() == state_before
+
+
+def test_legacy_merged_task_without_anchor_does_not_claim_historical_review(audit_project):
+    service, repo = audit_project
+    _intent, task, artifact = prepare_artifact(service, repo)
+    assert service.submit_artifact("alice", artifact)["accepted"]
+    git(repo, "merge", "--no-edit", "feature/database")
+    reviewed = service.inspect_task(task["id"])
+    service.merge_task(
+        task["id"],
+        "reviewer",
+        expected_version=reviewed["version"],
+        expected_target_sha=reviewed["git"]["target_sha"],
+    )
+
+    def remove_anchor(state):
+        state.tasks[task["id"]].approval = None
+
+    service.store.mutate(remove_anchor, "test: emulate pre-anchor merged task")
+    with pytest.raises(ValueError, match="predates structured approval"):
+        service.inspect_task(task["id"])
+
+
 @pytest.mark.parametrize("line_count,too_large", [(12_000, False), (60_000, True)])
 def test_review_packet_bounds_remote_patch_size(audit_project, line_count, too_large):
     service, repo = audit_project

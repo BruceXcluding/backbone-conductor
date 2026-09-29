@@ -414,6 +414,36 @@ def test_two_remote_member_clones_submit_concurrently_and_merge_separately(tmp_p
                     inspection["git"]["target_sha"],
                 )
                 assert approved["task"]["status"] == "merged"
+            for name in names:
+                archived = reviewer_command("inspect", task_ids[name], "--full")
+                assert archived["inspection_kind"] == "approval"
+                assert archived["current_task_status"] == "merged"
+                assert archived["version"] == archived["approval"]["reviewed_version"]
+                assert archived["git"]["target_sha"] == archived["approval"]["target_sha"]
+                assert f"+def {name}():" in archived["target_diff"]["patch"]
+                if name == "alice":
+                    assert archived["git"]["current_target_sha"] != archived["git"]["target_sha"]
+                    assert (
+                        main(
+                            [
+                                "reviewer",
+                                "--url",
+                                url,
+                                "--token-file",
+                                str(reviewer_token),
+                                "inspect",
+                                task_ids[name],
+                                "--full",
+                                "--format",
+                                "text",
+                            ]
+                        )
+                        == 0
+                    )
+                    rendered = capsys.readouterr().out
+                    assert "Inspection: approval" in rendered
+                    assert "Task: " + task_ids[name] + " (now merged)" in rendered
+                    assert "Approval decision:" in rendered
             state = client.get("/state", headers=owner).json()
             assert {state["tasks"][task_ids[name]]["status"] for name in names} == {"merged"}
             assert {state["intents"][f"intent-{name}"]["status"] for name in names} == {"completed"}

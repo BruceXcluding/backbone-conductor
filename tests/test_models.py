@@ -13,6 +13,7 @@ from backbone_conductor.models import (
     DecisionStatus,
     Intent,
     IntentStatus,
+    ReviewAnchor,
     Task,
     TaskStatus,
     normalize_path,
@@ -80,6 +81,18 @@ def test_json_roundtrip_preserves_nested_models_and_datetimes():
     assert restored == state
     assert isinstance(restored.tasks[original_task.id].artifact, Artifact)
     assert restored.intents["intent-1"].created_at.utcoffset().total_seconds() == 0
+
+
+def test_approval_anchor_requires_completed_task_with_artifact():
+    anchor = ReviewAnchor(
+        decision_id="decision-review", reviewed_version="a" * 40, target_sha="b" * 40
+    )
+    merged = task(status=TaskStatus.MERGED, artifact=artifact(), approval=anchor)
+    assert Task.model_validate_json(merged.model_dump_json()).approval == anchor
+    with pytest.raises(ValidationError, match="approval anchor requires"):
+        task(status=TaskStatus.SUBMITTED, artifact=artifact(), approval=anchor)
+    with pytest.raises(ValidationError, match="approval anchor requires"):
+        task(status=TaskStatus.MERGED, approval=anchor)
 
 
 @pytest.mark.parametrize("factory", [intent, decision, task, artifact])

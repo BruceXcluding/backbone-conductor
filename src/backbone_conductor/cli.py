@@ -88,6 +88,28 @@ def _format_inspection(packet: object) -> str:
         or type(git["integrated_into_target"]) is not bool
         or type(git.get("branch_unchanged")) is not bool
         or not isinstance(packet.get("version"), str)
+        or not isinstance(packet.get("current_version"), str)
+        or not isinstance(packet.get("current_task_status"), str)
+        or packet.get("inspection_kind") not in {"current", "approval"}
+        or not isinstance(git.get("current_target_sha"), (str, type(None)))
+    ):
+        raise ValueError("Task inspection response is invalid")
+    approval = packet.get("approval")
+    if packet["inspection_kind"] == "approval":
+        if (
+            not isinstance(approval, dict)
+            or not isinstance(approval.get("decision"), dict)
+            or approval.get("reviewed_version") != packet["version"]
+            or approval.get("target_sha") != git["target_sha"]
+            or packet["current_task_status"] != "merged"
+            or task.get("status") != "submitted"
+        ):
+            raise ValueError("Task approval inspection response is invalid")
+    elif (
+        approval is not None
+        or packet["current_version"] != packet["version"]
+        or packet["current_task_status"] != task.get("status")
+        or git["current_target_sha"] != git["target_sha"]
     ):
         raise ValueError("Task inspection response is invalid")
     artifact = task.get("artifact")
@@ -105,13 +127,17 @@ def _format_inspection(packet: object) -> str:
         raise ValueError("Task inspection response is invalid")
 
     lines = [
-        f"Task: {field(task, 'id')} ({field(task, 'status')})",
-        f"Ledger version: {_visible(packet['version'])}",
+        f"Task: {field(task, 'id')} (now {field(packet, 'current_task_status')})",
+        f"Inspection: {field(packet, 'inspection_kind')}",
+        f"Reviewed ledger version: {_visible(packet['version'])}",
+        f"Current ledger version: {_visible(packet['current_version'])}",
         f"Base commit: {_visible(git['base_sha'])}",
         f"Artifact commit: {_visible(git['artifact_sha'])}",
-        f"Target commit: {_visible(git['target_sha'])}",
-        f"Artifact branch unchanged: {git['branch_unchanged']}",
-        f"Integrated into target: {git['integrated_into_target']}",
+        f"Reviewed target commit: {_visible(git['target_sha'])}",
+        "Current target branch commit: "
+        + (_visible(git["current_target_sha"]) if git["current_target_sha"] else "(missing)"),
+        f"Artifact branch unchanged now: {git['branch_unchanged']}",
+        f"Integrated into reviewed target: {git['integrated_into_target']}",
         line_items("Net changed target paths", items(git, "net_changed_paths")),
         line_items("Divergent target paths", items(git, "divergent_paths")),
         "The default JSON packet contains all fields and structured evidence.",
@@ -134,8 +160,17 @@ def _format_inspection(packet: object) -> str:
         line_items("Artifact paths", items(artifact, "changed_paths")),
         line_items("New accepted decisions since fork", items(delta, "new_decisions")),
         line_items("Withdrawn decisions since fork", items(delta, "withdrawn_decisions")),
-        f"Accepted decisions ({len(decisions)}):",
+        f"Accepted decisions at inspection ({len(decisions)}):",
     ]
+    if approval is not None:
+        decision = approval["decision"]
+        lines.extend(
+            [
+                f"Approval decision: {field(decision, 'id')} "
+                f"(now {field(decision, 'status')}) by {field(decision, 'author')}",
+                prose("Approval rationale", decision, "rationale"),
+            ]
+        )
     for decision in decisions:
         lines.extend(
             [
@@ -144,7 +179,7 @@ def _format_inspection(packet: object) -> str:
                 prose("Rationale", decision, "rationale", indent="  "),
             ]
         )
-    lines.append(f"Blocking conflicts ({len(blockers)}):")
+    lines.append(f"Blocking conflicts at inspection ({len(blockers)}):")
     for conflict in blockers:
         lines.extend(
             [
@@ -332,7 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
     start = tasks.add_parser("start")
     start.add_argument("task_id")
     start.add_argument("--member", required=True)
-    inspect = tasks.add_parser("inspect", help="Inspect the submitted code review packet")
+    inspect = tasks.add_parser("inspect", help="Inspect submitted or approved code review")
     inspect.add_argument("task_id")
     inspect.add_argument(
         "--full", action="store_true", help="Include the complete bounded Git patch"
@@ -499,7 +534,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Exit nonzero unless every inspected commit has a valid signature",
     )
-    reviewer_inspect = reviewer_actions.add_parser("inspect", help="Read a submitted task packet")
+    reviewer_inspect = reviewer_actions.add_parser(
+        "inspect", help="Read submitted or approved task review"
+    )
     reviewer_inspect.add_argument("task_id")
     reviewer_inspect.add_argument(
         "--full", action="store_true", help="Fetch and verify the complete bounded Git patch"

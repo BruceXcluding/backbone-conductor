@@ -103,6 +103,11 @@ def test_separate_ledger_uses_source_branch_for_artifacts_and_merge(source_repo:
         expected_target_sha=packet["git"]["target_sha"],
     )
     assert merged["task"]["status"] == "merged"
+    archived = conductor.inspect_task(task["id"], full_patch=True)
+    assert archived["inspection_kind"] == "approval"
+    assert archived["version"] == packet["version"]
+    assert archived["git"]["target_sha"] == packet["git"]["target_sha"]
+    assert archived["approval"]["decision"]["id"] == merged["review_decision"]["id"]
     assert conductor.state()["intents"][intent["id"]]["status"] == "completed"
     assert not (source_repo / ".backbone").exists()
     assert git(source_repo, "status", "--porcelain") == ""

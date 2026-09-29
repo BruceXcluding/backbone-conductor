@@ -89,6 +89,23 @@ def test_read_requires_init_and_repo_must_exist(tmp_path: Path, repo: Path):
         GitStore(tmp_path)
 
 
+def test_read_version_requires_reachable_metadata_commit(repo: Path):
+    store = GitStore(repo)
+    initial = store.init()
+    store.mutate(lambda state: state.sessions.update({"example": {"value": 1}}), "new state")
+    assert store.read_version(initial.version).version == initial.version
+    assert store.read_version(initial.version).sessions == {}
+    assert store.read().sessions == {"example": {"value": 1}}
+
+    (repo / "code.txt").write_text("code\n")
+    git(repo, "add", "code.txt")
+    git(repo, "commit", "-m", "Code only")
+    with pytest.raises(StorageError, match="metadata version"):
+        store.read_version(git(repo, "rev-parse", "HEAD"))
+    with pytest.raises(StorageError, match="full Backbone metadata commit SHA"):
+        store.read_version("HEAD")
+
+
 def test_git_output_digest_streams_preview_and_stops_at_hard_limit(repo: Path):
     data = b"large-diff-line\n" * 150_000
     (repo / "large.txt").write_bytes(data)

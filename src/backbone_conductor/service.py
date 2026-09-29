@@ -19,6 +19,7 @@ from .models import (
     Intent,
     IntentReview,
     IntentStatus,
+    ReviewAnchor,
     Severity,
     Task,
     TaskStatus,
@@ -814,8 +815,53 @@ class Conductor:
 
     def inspect_task(self, task_id: str, *, full_patch: bool = False) -> dict:
         """Build a read-only packet pinned to the artifact's checked Git commits."""
-        state = self.store.read()
-        task = state.tasks[task_id]
+        current_state = self.store.read()
+        current_task = current_state.tasks[task_id]
+        approval = None
+        if current_task.status == TaskStatus.MERGED:
+            anchor = current_task.approval
+            if anchor is None:
+                raise ValueError(
+                    "Merged task predates structured approval; inspect Git audit history"
+                )
+            try:
+                state = self.store.read_version(anchor.reviewed_version)
+            except StorageError as exc:
+                raise ValueError("Could not read the approved Backbone version") from exc
+            task = state.tasks.get(task_id)
+            if (
+                task is None
+                or task.status != TaskStatus.SUBMITTED
+                or task.artifact != current_task.artifact
+                or task.base_ref != current_task.base_ref
+            ):
+                raise ValueError("Approval anchor does not match the submitted task")
+            decision = current_state.decisions.get(anchor.decision_id)
+            if (
+                decision is None
+                or decision.decision_type != "human_review"
+                or task.intent_id not in decision.related_intents
+            ):
+                raise ValueError("Approval review decision is missing or inconsistent")
+            target_sha = self._commit(anchor.target_sha)
+            if target_sha != anchor.target_sha:
+                raise ValueError("Approval target commit does not match its anchor")
+            try:
+                current_target_sha = self._commit(task.base_ref)
+            except ValueError:
+                current_target_sha = None
+            approval = {
+                "decision": _dump(decision),
+                "reviewed_version": anchor.reviewed_version,
+                "target_sha": anchor.target_sha,
+            }
+        else:
+            state = current_state
+            task = current_task
+            target_sha = (
+                self._commit(task.base_ref) if task.status == TaskStatus.SUBMITTED else None
+            )
+            current_target_sha = target_sha
         artifact = task.artifact
         if (
             task.status != TaskStatus.SUBMITTED
@@ -849,7 +895,6 @@ class Conductor:
             branch_sha = self._commit(artifact.branch)
         except ValueError:
             branch_sha = None
-        target_sha = self._commit(task.base_ref)
         integrated = (
             self._git("merge-base", "--is-ancestor", artifact.commit_sha, target_sha).returncode
             == 0
@@ -895,6 +940,10 @@ class Conductor:
         blockers = self._blockers(state, task.intent_id, task_id)
         return {
             "version": state.version,
+            "current_version": current_state.version,
+            "inspection_kind": "approval" if approval else "current",
+            "current_task_status": current_task.status.value,
+            "approval": approval,
             "task": _dump(task),
             "intent": _dump(state.intents[task.intent_id]),
             "decision_ids_at_fork": task.decisions_at_fork,
@@ -910,6 +959,7 @@ class Conductor:
                 "artifact_sha": artifact.commit_sha,
                 "branch_sha": branch_sha,
                 "target_sha": target_sha,
+                "current_target_sha": current_target_sha,
                 "branch_unchanged": branch_sha == artifact.commit_sha,
                 "integrated_into_target": integrated,
                 "net_changed_paths": net_paths,
@@ -1045,7 +1095,13 @@ class Conductor:
                 status=DecisionStatus.ACCEPTED,
             )
             state.decisions[review.id] = review
-            state.tasks[task_id] = transition_task(task, TaskStatus.MERGED)
+            merged_task = transition_task(task, TaskStatus.MERGED)
+            merged_task.approval = ReviewAnchor(
+                decision_id=review.id,
+                reviewed_version=expected_version,
+                target_sha=target_sha,
+            )
+            state.tasks[task_id] = merged_task
             state.intents[task.intent_id] = transition_intent(
                 state.intents[task.intent_id], IntentStatus.COMPLETED
             )

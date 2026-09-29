@@ -169,6 +169,12 @@ class Artifact(ProtocolModel):
     created_at: AwareDatetime = Field(default_factory=utc_now)
 
 
+class ReviewAnchor(ProtocolModel):
+    decision_id: Identifier
+    reviewed_version: Text
+    target_sha: Text
+
+
 class Task(ProtocolModel):
     id: Identifier = Field(default_factory=lambda: new_id("task"))
     member_id: Text
@@ -182,6 +188,7 @@ class Task(ProtocolModel):
     decisions_at_fork: list[Identifier] = Field(default_factory=list)
     backbone_version: str | None = None
     artifact: Artifact | None = None
+    approval: ReviewAnchor | None = None
     cancelled_by: Text | None = None
     cancel_reason: Text | None = None
     created_at: AwareDatetime = Field(default_factory=utc_now)
@@ -192,6 +199,10 @@ class Task(ProtocolModel):
             self.artifact.member_id != self.member_id or self.artifact.intent_id != self.intent_id
         ):
             raise ValueError("artifact must belong to the task's member and intent")
+        if self.approval is not None and (
+            self.status != TaskStatus.MERGED or self.artifact is None
+        ):
+            raise ValueError("approval anchor requires a merged task with an artifact")
         return self
 
 

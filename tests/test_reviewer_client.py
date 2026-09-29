@@ -135,6 +135,10 @@ def test_remote_full_patch_rejects_truncation_or_hash_mismatch() -> None:
 def _inspection_packet(patch: str) -> dict:
     return {
         "version": "v1",
+        "current_version": "v1",
+        "inspection_kind": "current",
+        "current_task_status": "submitted",
+        "approval": None,
         "task": {
             "id": "task-1",
             "status": "submitted",
@@ -163,6 +167,7 @@ def _inspection_packet(patch: str) -> dict:
             "base_sha": "a" * 40,
             "artifact_sha": "b" * 40,
             "target_sha": "c" * 40,
+            "current_target_sha": "c" * 40,
             "branch_unchanged": True,
             "integrated_into_target": False,
             "net_changed_paths": [],
@@ -206,7 +211,7 @@ def test_text_inspection_shows_context_patch_and_truncation() -> None:
     assert "Task constraints: Keep the API stable" in rendered
     assert "New accepted decisions since fork: decision-2" in rendered
     assert "decision-2 [api_design]" in rendered
-    assert "Blocking conflicts (1):" in rendered
+    assert "Blocking conflicts at inspection (1):" in rendered
     assert 'Evidence: {"reason": "API mismatch"}' in rendered
     assert "+one\n+two" in rendered
     assert f"Full patch SHA-256: {digest}" in rendered
@@ -239,6 +244,31 @@ def test_text_inspection_shows_context_patch_and_truncation() -> None:
         )
     with pytest.raises(ValueError, match="response is invalid"):
         _format_inspection({**packet, "intent": None})
+
+    approved = {
+        **integrated,
+        "current_version": "v2",
+        "inspection_kind": "approval",
+        "current_task_status": "merged",
+        "git": {**integrated["git"], "current_target_sha": "d" * 40},
+        "approval": {
+            "reviewed_version": "v1",
+            "target_sha": "c" * 40,
+            "decision": {
+                "id": "review-1",
+                "status": "accepted",
+                "author": "reviewer",
+                "rationale": "Checked the final tree",
+            },
+        },
+    }
+    rendered = _format_inspection(approved)
+    assert "Task: task-1 (now merged)" in rendered
+    assert "Reviewed target commit: " + "c" * 40 in rendered
+    assert "Current target branch commit: " + "d" * 40 in rendered
+    assert "Approval decision: review-1 (now accepted) by reviewer" in rendered
+    with pytest.raises(ValueError, match="approval inspection"):
+        _format_inspection({**approved, "approval": {**approved["approval"], "target_sha": "x"}})
 
 
 def test_text_inspection_escapes_terminal_controls_in_patch() -> None:
