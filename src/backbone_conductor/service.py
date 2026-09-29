@@ -985,12 +985,43 @@ class Conductor:
             return current.checks["semantic_review"]
 
         try:
-            return self.store.mutate(
+            result = self.store.mutate(
                 change, f"backbone: task {task_id} reviewed with {provider}/{model}"
             )
         except Exception as exc:
             record_failure("commit", exc)
             raise
+        if log is not None:
+            try:
+                log.record(
+                    task_id=task_id,
+                    model=model,
+                    provider=provider,
+                    observed_version=snapshot.version or "",
+                    artifact_sha=artifact.commit_sha or "",
+                    phase="commit",
+                    elapsed_ms=round((monotonic_ns() - started_ns) / 1_000_000, 3),
+                    status="committed",
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "Semantic review was committed, but attempt logging failed; inspect the ledger before retrying"
+                ) from exc
+        return result
+
+    def review_stats(self, attempt_log: str | Path) -> dict:
+        from .review_attempts import ReviewAttemptLog
+
+        return ReviewAttemptLog(
+            attempt_log,
+            (
+                self.code_store.root,
+                self.code_store.git_dir,
+                self.store.root,
+                self.store.git_dir,
+            ),
+            create=False,
+        ).summary()
 
     def sync(self, remote: str = "origin", branch: str | None = None) -> dict:
         return self.store.sync(remote, branch)

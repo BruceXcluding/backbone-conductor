@@ -189,8 +189,10 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--model", required=True)
     review.add_argument("--provider", default="deepseek-official")
     review.add_argument(
-        "--attempt-log", help="Private JSONL log outside the repository for failed DSH reviews"
+        "--attempt-log", help="Private JSONL outcome log outside the repository for DSH reviews"
     )
+    review_stats = commands.add_parser("review-stats", help="Summarize private DSH review attempts")
+    review_stats.add_argument("--attempt-log", required=True, help="Private review JSONL log")
     dsh = commands.add_parser("dsh", help="Run a member-scoped DSH agent with Backbone MCP")
     dsh.add_argument("--member", required=True)
     dsh.add_argument("--workspace", required=True, help="Separate coding workspace or worktree")
@@ -506,6 +508,8 @@ def _run(args: argparse.Namespace) -> Any:
         return conductor.review_task(
             args.task_id, args.dsh_home, args.model, args.provider, attempt_log=args.attempt_log
         )
+    if args.command == "review-stats":
+        return conductor.review_stats(args.attempt_log)
     if args.command == "log":
         if not 1 <= args.limit <= 1000:
             raise ValueError("limit must be between 1 and 1000")

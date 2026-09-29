@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -56,3 +57,32 @@ def test_review_cli_accepts_private_attempt_log_option() -> None:
         ]
     )
     assert args.attempt_log == "/private/review-attempts.jsonl"
+
+
+def test_review_stats_cli_requires_private_log() -> None:
+    args = build_parser().parse_args(
+        ["review-stats", "--attempt-log", "/private/review-attempts.jsonl"]
+    )
+    assert args.command == "review-stats"
+    assert args.attempt_log == "/private/review-attempts.jsonl"
+
+
+def test_review_stats_does_not_create_missing_log(tmp_path: Path) -> None:
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    missing = private / "attempts.jsonl"
+    with pytest.raises(FileNotFoundError):
+        ReviewAttemptLog(missing, (), create=False).summary()
+    assert not missing.exists()
+
+
+def test_legacy_failure_log_does_not_claim_complete_commit_rate(tmp_path: Path) -> None:
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    path = private / "attempts.jsonl"
+    path.write_text(json.dumps({"status": "failed", "phase": "runtime", "elapsed_ms": 25}))
+    path.chmod(0o600)
+    summary = ReviewAttemptLog(path, (), create=False).summary()
+    assert summary["failed"] == 1
+    assert summary["legacy_failure_records"] == 1
+    assert summary["recorded_commit_rate"] is None

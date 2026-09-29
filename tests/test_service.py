@@ -304,6 +304,84 @@ def test_stale_semantic_review_logs_commit_phase_without_approval(project, monke
     assert "semantic_review" not in service.state()["tasks"][task["id"]]["artifact"]["checks"]
 
 
+def test_private_review_stats_include_committed_and_failed_attempts(project, monkeypatch, tmp_path):
+    from backbone_conductor.runtime import DSHReviewer
+
+    service, repo = project
+    intent, task = assigned(service)
+    feature(repo)
+    submission(service, intent)
+    private_dir = tmp_path.parent / f"{tmp_path.name}-review-stats"
+    private_dir.mkdir(mode=0o700)
+    attempt_log = private_dir / "attempts.jsonl"
+
+    def failed(*_args):
+        raise TimeoutError("provider-detail-must-stay-private")
+
+    monkeypatch.setattr(DSHReviewer, "review", failed)
+    with pytest.raises(TimeoutError):
+        service.review_task(
+            task["id"], str(repo / "dsh-home"), "test-model", attempt_log=attempt_log
+        )
+
+    monkeypatch.setattr(
+        DSHReviewer,
+        "review",
+        lambda *_args: {"verdict": "aligned", "rationale": "Meets task", "concerns": []},
+    )
+    service.review_task(task["id"], str(repo / "dsh-home"), "test-model", attempt_log=attempt_log)
+    events = [json.loads(line) for line in attempt_log.read_text().splitlines()]
+    assert [event["status"] for event in events] == ["failed", "committed"]
+    assert "provider-detail-must-stay-private" not in attempt_log.read_text()
+    assert "error_type" not in events[1]
+    assert service.review_stats(attempt_log) == {
+        "recorded_attempts": 2,
+        "committed": 1,
+        "failed": 1,
+        "legacy_failure_records": 0,
+        "failure_by_phase": {"runtime": 1},
+        "recorded_commit_rate": 0.5,
+        "median_elapsed_ms": pytest.approx(
+            round(sum(event["elapsed_ms"] for event in events) / 2, 3), abs=0.001
+        ),
+        "token_usage": None,
+        "cost": None,
+    }
+
+
+def test_review_reports_when_telemetry_fails_after_git_commit(project, monkeypatch, tmp_path):
+    from backbone_conductor.review_attempts import ReviewAttemptLog
+    from backbone_conductor.runtime import DSHReviewer
+
+    service, repo = project
+    intent, task = assigned(service)
+    feature(repo)
+    submission(service, intent)
+    private_dir = tmp_path.parent / f"{tmp_path.name}-review-log-failure"
+    private_dir.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        DSHReviewer,
+        "review",
+        lambda *_args: {"verdict": "aligned", "rationale": "Meets task", "concerns": []},
+    )
+
+    def failed_record(self, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ReviewAttemptLog, "record", failed_record)
+    with pytest.raises(RuntimeError, match="was committed.*inspect the ledger"):
+        service.review_task(
+            task["id"],
+            str(repo / "dsh-home"),
+            "test-model",
+            attempt_log=private_dir / "attempts.jsonl",
+        )
+    assert (
+        service.state()["tasks"][task["id"]]["artifact"]["checks"]["semantic_review"]["verdict"]
+        == "aligned"
+    )
+
+
 def test_intent_revision_requires_current_version_and_reapproval(project):
     service, _ = project
     parent = service.create_intent(
