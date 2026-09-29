@@ -6,7 +6,9 @@ import json
 import os
 import subprocess
 import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -549,6 +551,128 @@ def test_installed_sdk_starts_member_mcp_without_model_call(tmp_path: Path) -> N
         harness.close()
 
 
+def test_installed_sdk_member_tools_and_in_process_history_with_local_mock_provider(
+    tmp_path: Path, monkeypatch
+) -> None:
+    if os.environ.get("BACKBONE_REQUIRE_DSH_MCP") != "1":
+        pytest.skip("set BACKBONE_REQUIRE_DSH_MCP=1 for the installed SDK mock-provider check")
+    pytest.importorskip("deepseek_harness")
+
+    requests: list[dict] = []
+
+    class Provider(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            if self.path != "/v1/chat/completions":
+                self.send_error(404)
+                return
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append(body)
+            request_number = len(requests)
+            chunks = [
+                {
+                    "id": f"mock-{request_number}",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "mock-model",
+                    "choices": [
+                        {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+                    ],
+                },
+            ]
+            if request_number == 1:
+                delta = {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "mock-call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__backbone__get_my_task",
+                                "arguments": "{}",
+                            },
+                        }
+                    ]
+                }
+                finish_reason = "tool_calls"
+            else:
+                delta = {"content": f"Mock turn {request_number - 1}"}
+                finish_reason = "stop"
+            chunks.extend(
+                [
+                    {
+                        "id": f"mock-{request_number}",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": "mock-model",
+                        "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                    },
+                    {
+                        "id": f"mock-{request_number}",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": "mock-model",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+                    },
+                ]
+            )
+            payload = (
+                "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            pass
+
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Provider)
+    except OSError:
+        if os.environ.get("BACKBONE_REQUIRE_LIVE_HTTP") == "1":
+            raise
+        pytest.skip("This sandbox does not permit loopback listening sockets")
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setenv("DEEPSEEK_BASE_URL", f"http://127.0.0.1:{server.server_port}/v1")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "local-mock-key")
+        repo = initialized_repo(tmp_path)
+        workspace = tmp_path / "coding-worktree"
+        workspace.mkdir()
+        home = tmp_path / "dsh-home"
+        runner = DSHMemberRunner(repo, workspace, home, "alice", "mock-model")
+        session_id = f"{runner.session_prefix}durable-test"
+        turns = runner.run_turns(
+            ["Remember marker alpha", "Recall marker beta"], session_id=session_id
+        )
+        assert [turn["final_response"] for turn in turns["turns"]] == [
+            "Mock turn 1",
+            "Mock turn 2",
+        ]
+        assert len(requests) == 3
+        assert "get_my_task" in json.dumps(requests[0].get("tools", []))
+        tool_messages = [
+            message for message in requests[1]["messages"] if message.get("role") == "tool"
+        ]
+        assert "member_id" in json.dumps(tool_messages)
+        assert "alice" in json.dumps(tool_messages)
+        history = json.dumps(requests[2].get("messages"), ensure_ascii=False)
+        assert "Remember marker alpha" in history
+        assert "Mock turn 1" in history
+        assert "Recall marker beta" in history
+
+        resumed = DSHMemberRunner(repo, workspace, home, "alice", "mock-model")
+        with pytest.raises(ValueError, match="cannot resume a persisted session"):
+            resumed.run("Third turn after runtime restart", session_id=session_id)
+        assert len(requests) == 3
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_coordinator_runner_preflight_and_limited_patch(tmp_path: Path) -> None:
     repo = initialized_repo(tmp_path)
     runner = DSHCoordinatorRunner(repo, tmp_path / "private-dsh-home", "placeholder")
@@ -586,17 +710,18 @@ def test_coordinator_runner_rejects_elevated_scope_and_public_home(tmp_path: Pat
 def test_coordinator_runner_closes_sdk_and_removes_patch(tmp_path: Path, monkeypatch) -> None:
     repo = initialized_repo(tmp_path)
     runner = DSHCoordinatorRunner(repo, tmp_path / "private-dsh-home", "chosen-model")
-    observed = SimpleNamespace(closed=False)
+    observed = SimpleNamespace(closed=False, prompts=[], constructed=0)
 
     class Harness:
         def __init__(self, **options):
+            observed.constructed += 1
             observed.options = options
             observed.patch_path = Path(options["patches"][0])
             observed.patch = json.loads(observed.patch_path.read_text())
             observed.patch_mode = observed.patch_path.stat().st_mode & 0o777
 
         def run(self, prompt, *, session_id):
-            observed.prompt = prompt
+            observed.prompts.append(prompt)
             return SimpleNamespace(
                 session_id=session_id,
                 finish_reason="completed",
@@ -609,10 +734,14 @@ def test_coordinator_runner_closes_sdk_and_removes_patch(tmp_path: Path, monkeyp
     module = ModuleType("deepseek_harness")
     module.DeepSeekHarness = Harness
     monkeypatch.setitem(sys.modules, "deepseek_harness", module)
-    result = runner.run("Check current coordination state")
+    result = runner.run_turns(["Check current coordination state", "Propose a draft"])
     assert result["session_id"].startswith(runner.session_prefix)
-    assert result["final_response"] == "Draft intent proposed"
-    assert result["elapsed_ms"] >= 0
+    assert len(result["turns"]) == 2
+    assert {turn["session_id"] for turn in result["turns"]} == {result["session_id"]}
+    assert all(turn["final_response"] == "Draft intent proposed" for turn in result["turns"])
+    assert all(turn["elapsed_ms"] >= 0 for turn in result["turns"])
+    assert observed.prompts == ["Check current coordination state", "Propose a draft"]
+    assert observed.constructed == 1
     assert observed.closed
     assert observed.patch_mode == 0o600
     assert not observed.patch_path.exists()

@@ -22,6 +22,17 @@ def _json_file(filename: str) -> dict[str, Any]:
     return value
 
 
+def _prompts_file(filename: str) -> list[str]:
+    value = json.loads(Path(filename).read_text(encoding="utf-8"))
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+    ):
+        raise ValueError("DSH prompts file must be a nonempty JSON array of nonempty strings")
+    return value
+
+
 def _validate_tls_key(filename: str, repo: str) -> None:
     """Keep the server's private key out of the ledger and other users' reach."""
     key = Path(filename).expanduser().absolute()
@@ -201,23 +212,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dsh.add_argument("--model", required=True)
     dsh.add_argument("--provider", default="deepseek-official")
-    dsh.add_argument("--session-id", help="Continue an existing DSH session in this home")
+    dsh.add_argument("--session-id", help="Session ID (cross-process resume is unavailable)")
     dsh.add_argument("--mcp-url", help="Authenticated remote coordinator /mcp URL")
     dsh.add_argument("--mcp-token-file", help="Private file containing this member's bearer token")
     dsh.add_argument("--mcp-ca-file", help="CA certificate for a remote HTTPS coordinator")
     dsh_prompt = dsh.add_mutually_exclusive_group(required=True)
     dsh_prompt.add_argument("--prompt")
     dsh_prompt.add_argument("--prompt-file", help="UTF-8 prompt file")
+    dsh_prompt.add_argument(
+        "--prompts-file", help="JSON array of prompts run in one persistent SDK process"
+    )
     coordinator = commands.add_parser(
         "conductor", help="Run a limited DSH coordination agent with Backbone MCP"
     )
     coordinator.add_argument("--dsh-home", required=True, help="Private DSH home outside the repo")
     coordinator.add_argument("--model", required=True)
     coordinator.add_argument("--provider", default="deepseek-official")
-    coordinator.add_argument("--session-id", help="Continue this repository's coordinator session")
+    coordinator.add_argument(
+        "--session-id", help="Session ID (cross-process resume is unavailable)"
+    )
     coordinator_prompt = coordinator.add_mutually_exclusive_group(required=True)
     coordinator_prompt.add_argument("--prompt")
     coordinator_prompt.add_argument("--prompt-file", help="UTF-8 prompt file")
+    coordinator_prompt.add_argument(
+        "--prompts-file", help="JSON array of prompts run in one persistent SDK process"
+    )
 
     reviewer = commands.add_parser(
         "reviewer", help="Review through an authenticated HTTP server without a local Git clone"
@@ -403,24 +422,35 @@ def _run(args: argparse.Namespace) -> Any:
     if args.command == "conductor":
         from .dsh_agent import DSHCoordinatorRunner
 
+        prompts = _prompts_file(args.prompts_file) if args.prompts_file else None
+        runner = DSHCoordinatorRunner(
+            args.repo, args.dsh_home, args.model, args.provider, ledger_branch=args.ledger_branch
+        )
+        if prompts is not None:
+            return runner.run_turns(prompts, session_id=args.session_id)
         prompt = (
             Path(args.prompt_file).read_text(encoding="utf-8") if args.prompt_file else args.prompt
         )
-        return DSHCoordinatorRunner(
-            args.repo, args.dsh_home, args.model, args.provider, ledger_branch=args.ledger_branch
-        ).run(prompt, session_id=args.session_id)
+        return runner.run(prompt, session_id=args.session_id)
     if args.command == "dsh":
         from .dsh_agent import DSHMemberRunner, DSHRemoteMemberRunner
 
+        prompts = _prompts_file(args.prompts_file) if args.prompts_file else None
         prompt = (
-            Path(args.prompt_file).read_text(encoding="utf-8") if args.prompt_file else args.prompt
+            (
+                Path(args.prompt_file).read_text(encoding="utf-8")
+                if args.prompt_file
+                else args.prompt
+            )
+            if prompts is None
+            else None
         )
         if args.mcp_url:
             if not args.mcp_token_file:
                 raise ValueError("Remote DSH requires --mcp-token-file")
             if args.ledger_branch:
                 raise ValueError("Remote DSH does not use --ledger-branch")
-            return DSHRemoteMemberRunner(
+            runner = DSHRemoteMemberRunner(
                 args.workspace,
                 args.dsh_home,
                 args.member,
@@ -429,10 +459,15 @@ def _run(args: argparse.Namespace) -> Any:
                 args.mcp_token_file,
                 args.provider,
                 ca_file=args.mcp_ca_file,
-            ).run(prompt, session_id=args.session_id)
+            )
+            return (
+                runner.run_turns(prompts, session_id=args.session_id)
+                if prompts is not None
+                else runner.run(prompt, session_id=args.session_id)
+            )
         if args.mcp_token_file or args.mcp_ca_file:
             raise ValueError("--mcp-token-file and --mcp-ca-file require --mcp-url")
-        return DSHMemberRunner(
+        runner = DSHMemberRunner(
             args.repo,
             args.workspace,
             args.dsh_home,
@@ -440,7 +475,12 @@ def _run(args: argparse.Namespace) -> Any:
             args.model,
             args.provider,
             ledger_branch=args.ledger_branch,
-        ).run(prompt, session_id=args.session_id)
+        )
+        return (
+            runner.run_turns(prompts, session_id=args.session_id)
+            if prompts is not None
+            else runner.run(prompt, session_id=args.session_id)
+        )
     if args.command == "reviewer":
         from .reviewer_client import run_reviewer_command
 

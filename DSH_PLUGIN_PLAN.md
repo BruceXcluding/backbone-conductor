@@ -33,7 +33,7 @@ uv run backbone --repo /absolute/project conductor \
   --prompt "读取当前状态，提出待人审查的计划并分派已接受工作"
 ```
 
-可用 `--ledger-branch backbone` 指定独立元数据分支，用 `--session-id` 继续同一仓库的协调会话。DSH home 必须在仓库外，由当前用户持有且仅当前用户可访问（0700）；会话日志在该 home 中。调用模型时，协调状态和由 `inspect_task` 读取的代码审查包可能发送给所配置的 provider。MCP 子进程仍以运行者的 OS 权限访问本地仓库，DSH 工具策略不是 OS 隔离；专用 home 若装有额外插件，还需单独审查其能力。请以专用运行账户和合适的 Git 文件权限运行。正式 SDK 的配置和启动、MCP 工具发现均经过无模型测试；没有进行付费模型回合，因此尚未验证实际模型的协调质量。
+可用 `--ledger-branch backbone` 指定独立元数据分支，可用 `--session-id` 指定该仓库命名空间内的会话 ID，并用 `--prompts-file` 提供 JSON 字符串数组，在单次运行中连续执行多回合；锁定 SDK 在进程结束后不能恢复已持久化的同 ID 会话。DSH home 必须在仓库外，由当前用户持有且仅当前用户可访问（0700）；会话日志在该 home 中。调用模型时，协调状态和由 `inspect_task` 读取的代码审查包可能发送给所配置的 provider。MCP 子进程仍以运行者的 OS 权限访问本地仓库，DSH 工具策略不是 OS 隔离；专用 home 若装有额外插件，还需单独审查其能力。请以专用运行账户和合适的 Git 文件权限运行。正式 SDK 的配置和启动、MCP 工具发现均经过无模型测试；没有进行付费模型回合，因此尚未验证实际模型的协调质量。
 
 ## 成员代理接入
 
@@ -47,7 +47,9 @@ uv run backbone --repo /absolute/project dsh --member alice \
   --prompt-file /absolute/task-prompt.txt
 ```
 
-本地成员入口会创建或核对 DSH home：拒绝符号链接，要求它位于协调仓库和代码工作区之外、由当前用户持有且权限为 0700。此入口会实际向配置的 provider 发起模型请求；必须由操作者自行配置凭据。返回的会话 ID 带仓库与成员命名空间，可用 `--session-id` 继续同一成员会话；其他命名空间的 ID 会被拒绝。DSH 最小 profile 的 shell 与 MCP 子进程仍以调用者的 OS 身份运行；`workspace-write` 限制模型工具的写入范围，但不构成完整的读取或网络隔离。MCP `--member` 是本地工具约束，不是不同自然人之间的认证。会话日志保存在指定的 DSH home；不要把凭据或敏感日志放入 Git。模型建议、工具调用和代码修改都不能替代人工复核及真实 Git 合并。
+多回合时，`--prompts-file` 指向形如 `["读取我的任务", "检查刚才提出的方案"]` 的 JSON 文件，替代 `--prompt` 或 `--prompt-file`。返回值列出每一回合的完成状态、最终文本和耗时；同一会话中的后一回合可以看到前一回合的模型消息与 MCP 工具结果。协调代理也支持同一选项。
+
+本地成员入口会创建或核对 DSH home：拒绝符号链接，要求它位于协调仓库和代码工作区之外、由当前用户持有且权限为 0700。此入口会实际向配置的 provider 发起模型请求；必须由操作者自行配置凭据。返回的会话 ID 带仓库与成员命名空间，可用 `--session-id` 指定该成员命名空间内的会话 ID；其他命名空间的 ID 会被拒绝。`--prompts-file` 接受 JSON 字符串数组，让本地或远程成员在同一 SDK 进程中连续执行多个回合并继承上下文。锁定 SDK 0.1.5rc1 在进程重启后对已持久化的同 ID 会话返回 `already exists`；Backbone 会明确提示此限制，保留旧日志，不会悄悄创建一个伪续接会话。DSH 最小 profile 的 shell 与 MCP 子进程仍以调用者的 OS 身份运行；`workspace-write` 限制模型工具的写入范围，但不构成完整的读取或网络隔离。MCP `--member` 是本地工具约束，不是不同自然人之间的认证。会话日志保存在指定的 DSH home；不要把凭据或敏感日志放入 Git。模型建议、工具调用和代码修改都不能替代人工复核及真实 Git 合并。
 
 远程成员入口改用已启用的 `/mcp` HTTPS 服务，无需本地协调仓库。`--mcp-url` 和 `--mcp-token-file` 必须同时指定；URL 只能是 HTTPS `/mcp`，回环测试地址可用 HTTP。令牌文件须由当前用户持有、权限为 0600、硬链接数为 1，且位于工作树和专用 DSH home 外；DSH home 须为当前用户持有的 0700 目录。可用 `--mcp-ca-file` 信任自签证书。正式 DSH MCP 客户端插件采用 `streamable-http` transport 与 Authorization header；调用模型前，独立的 Python MCP 会话以同一令牌验证实际成员身份与精确工具范围。一次性补丁为 0600，含本回合明文 bearer header，用完删除；指定的 DSH home、进程权限和运行日志仍须按敏感数据管理。会话 ID 按远程 URL 与成员命名空间绑定，令牌轮换后需更新私有文件并重启回合。
 
@@ -59,6 +61,6 @@ uv run backbone dsh --member alice \
   --model YOUR_MODEL --prompt-file /absolute/task-prompt.txt
 ```
 
-SDK 接口、结构化输出、错误清理和成功审查指标经过无模型测试；审查专用补丁经有效配置输出和真实 SDK 无模型启动验证。本地 stdio 成员与受限协调 MCP 均通过 SDK 无模型启动及工具发现验证；远程 HTTP/HTTPS 通过独立 Python MCP 握手、成员工具发现和 SDK 无模型启动验证，尚未从 DSH 自身确认远程工具调用。真实模型调用、token 用量与费用尚未验证。当前 SDK `RunResult` 未提供稳定的用量/费用字段，因此不推算费用。更完整的原生 DSH 插件组合、工作内存和多 Agent 调度插件仍待实现。
+SDK 接口、结构化输出、错误清理和成功审查指标经过无模型测试；审查专用补丁经有效配置输出和真实 SDK 无模型启动验证。本地 stdio 成员与受限协调 MCP 均通过 SDK 无模型启动及工具发现验证；远程 HTTP/HTTPS 通过独立 Python MCP 握手、成员工具发现和 SDK 无模型启动验证，尚未从 DSH 自身确认远程工具调用。本地模拟模型端点已通过锁定 SDK 实际调用成员 `get_my_task` MCP 工具，下一回合的模型请求包含工具结果与先前对话；这不验证真实模型质量。真实付费模型调用、token 用量与费用尚未验证。当前 SDK `RunResult` 未提供稳定的用量/费用字段，因此不推算费用。更完整的原生 DSH 插件组合、工作内存和多 Agent 调度插件仍待实现。
 
-依据：[DSH 官方 Python SDK](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md)、[SDK 入门](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/python-sdk.md)、[DSH MCP 客户端](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)。MCP 服务端使用 [官方 MCP Python SDK v1](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x)，固定 `<2` 避免主版本 API 变化。
+依据：[DSH 官方 Python SDK](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md)、[SDK 入门](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/python-sdk.md)、[DSH MCP 客户端](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)及[跨进程会话恢复问题](https://github.com/deepseek-ai/deepseek-harness/discussions/6295)。MCP 服务端使用 [官方 MCP Python SDK v1](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x)，固定 `<2` 避免主版本 API 变化。

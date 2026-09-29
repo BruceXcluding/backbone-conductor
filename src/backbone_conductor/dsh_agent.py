@@ -50,6 +50,10 @@ _COORDINATOR_SYSTEM_PROMPT = (
 )
 
 
+class _TurnResultError(ValueError):
+    """A safe, locally constructed failure description for an SDK turn."""
+
+
 async def _check_member_session(session: ClientSession, member: str) -> None:
     await session.initialize()
     names = {tool.name for tool in (await session.list_tools()).tools}
@@ -110,7 +114,7 @@ def _read_member_token(path: Path, workspace: Path, home: Path) -> str:
 
 
 class DSHMemberRunner:
-    """Run one DSH turn from a separate workspace with member-scoped MCP tools.
+    """Run DSH turns from a separate workspace with member-scoped MCP tools.
 
     The workspace-write policy applies to DSH's tool sandbox. It does not turn
     the MCP child process into an OS-isolated service or authenticate a person.
@@ -209,6 +213,14 @@ class DSHMemberRunner:
     def run(self, prompt: str, *, session_id: str | None = None) -> dict:
         if not prompt.strip():
             raise ValueError("DSH prompt must not be empty")
+        return self.run_turns([prompt], session_id=session_id)["turns"][0]
+
+    def run_turns(self, prompts: list[str], *, session_id: str | None = None) -> dict:
+        """Run successive prompts in one SDK process so the session keeps its history."""
+        if not prompts or any(
+            not isinstance(prompt, str) or not prompt.strip() for prompt in prompts
+        ):
+            raise ValueError("DSH turns require at least one nonempty prompt")
         if session_id is not None and not session_id.strip():
             raise ValueError("DSH session ID must not be blank")
         if session_id is not None and not session_id.startswith(self.session_prefix):
@@ -227,7 +239,7 @@ class DSHMemberRunner:
             descriptor = os.open(patch, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump(patch_config, stream)
-            started_ns = monotonic_ns()
+            turns: list[dict] = []
             try:
                 harness = DeepSeekHarness(
                     dsh_home=str(self.home),
@@ -240,24 +252,40 @@ class DSHMemberRunner:
                     request_timeout_seconds=120,
                 )
                 try:
-                    result = harness.run(prompt, session_id=selected_session)
+                    for prompt in prompts:
+                        started_ns = monotonic_ns()
+                        result = harness.run(prompt, session_id=selected_session)
+                        if result.session_id != selected_session:
+                            raise _TurnResultError("DSH returned a different member session ID")
+                        if result.finish_reason != "completed":
+                            raise _TurnResultError(
+                                f"DSH member turn did not complete: {result.finish_reason}"
+                            )
+                        turns.append(
+                            {
+                                "member": self.member,
+                                "session_id": result.session_id,
+                                "finish_reason": result.finish_reason,
+                                "final_response": result.final_response,
+                                "elapsed_ms": round((monotonic_ns() - started_ns) / 1_000_000, 3),
+                            }
+                        )
                 finally:
                     harness.close()
             except Exception as exc:
+                if type(exc).__name__ == "JsonRpcError" and "already exists" in str(exc):
+                    raise ValueError(
+                        "The pinned DSH SDK cannot resume a persisted session after runtime "
+                        "restart. The prior session log remains intact; start a new session ID "
+                        "or submit multiple prompts in one run."
+                    ) from exc
+                if isinstance(exc, _TurnResultError):
+                    raise ValueError(str(exc)) from exc
                 raise ValueError(
-                    f"DSH member run failed ({type(exc).__name__}); inspect the dedicated DSH home"
+                    f"DSH member run failed ({type(exc).__name__}); inspect the dedicated DSH home "
+                    "and Backbone ledger before retrying"
                 ) from exc
-        if result.session_id != selected_session:
-            raise ValueError("DSH returned a different member session ID")
-        if result.finish_reason != "completed":
-            raise ValueError(f"DSH member turn did not complete: {result.finish_reason}")
-        return {
-            "member": self.member,
-            "session_id": result.session_id,
-            "finish_reason": result.finish_reason,
-            "final_response": result.final_response,
-            "elapsed_ms": round((monotonic_ns() - started_ns) / 1_000_000, 3),
-        }
+        return {"member": self.member, "session_id": selected_session, "turns": turns}
 
     def _harness_env(self) -> dict[str, str]:
         return {}
@@ -467,6 +495,14 @@ class DSHCoordinatorRunner:
     def run(self, prompt: str, *, session_id: str | None = None) -> dict:
         if not prompt.strip():
             raise ValueError("DSH prompt must not be empty")
+        return self.run_turns([prompt], session_id=session_id)["turns"][0]
+
+    def run_turns(self, prompts: list[str], *, session_id: str | None = None) -> dict:
+        """Keep the limited coordinator's context across turns in one SDK process."""
+        if not prompts or any(
+            not isinstance(prompt, str) or not prompt.strip() for prompt in prompts
+        ):
+            raise ValueError("DSH turns require at least one nonempty prompt")
         if session_id is not None and not session_id.startswith(self.session_prefix):
             raise ValueError("DSH session ID belongs to a different coordinator repository")
         selected_session = session_id or f"{self.session_prefix}{uuid.uuid4().hex}"
@@ -483,7 +519,7 @@ class DSHCoordinatorRunner:
             descriptor = os.open(patch, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
                 json.dump(patch_config, stream)
-            started_ns = monotonic_ns()
+            turns: list[dict] = []
             try:
                 harness = DeepSeekHarness(
                     dsh_home=str(self.home),
@@ -496,20 +532,38 @@ class DSHCoordinatorRunner:
                     request_timeout_seconds=120,
                 )
                 try:
-                    result = harness.run(prompt, session_id=selected_session)
+                    for prompt in prompts:
+                        started_ns = monotonic_ns()
+                        result = harness.run(prompt, session_id=selected_session)
+                        if result.session_id != selected_session:
+                            raise _TurnResultError(
+                                "DSH returned a different coordinator session ID"
+                            )
+                        if result.finish_reason != "completed":
+                            raise _TurnResultError(
+                                f"DSH coordinator turn did not complete: {result.finish_reason}"
+                            )
+                        turns.append(
+                            {
+                                "session_id": result.session_id,
+                                "finish_reason": result.finish_reason,
+                                "final_response": result.final_response,
+                                "elapsed_ms": round((monotonic_ns() - started_ns) / 1_000_000, 3),
+                            }
+                        )
                 finally:
                     harness.close()
             except Exception as exc:
+                if type(exc).__name__ == "JsonRpcError" and "already exists" in str(exc):
+                    raise ValueError(
+                        "The pinned DSH SDK cannot resume a persisted coordinator session "
+                        "after runtime restart. The prior session log remains intact; start a "
+                        "new session ID."
+                    ) from exc
+                if isinstance(exc, _TurnResultError):
+                    raise ValueError(str(exc)) from exc
                 raise ValueError(
-                    f"DSH coordinator run failed ({type(exc).__name__}); inspect the dedicated DSH home"
+                    f"DSH coordinator run failed ({type(exc).__name__}); inspect the dedicated "
+                    "DSH home and Backbone ledger before retrying"
                 ) from exc
-        if result.session_id != selected_session:
-            raise ValueError("DSH returned a different coordinator session ID")
-        if result.finish_reason != "completed":
-            raise ValueError(f"DSH coordinator turn did not complete: {result.finish_reason}")
-        return {
-            "session_id": result.session_id,
-            "finish_reason": result.finish_reason,
-            "final_response": result.final_response,
-            "elapsed_ms": round((monotonic_ns() - started_ns) / 1_000_000, 3),
-        }
+        return {"session_id": selected_session, "turns": turns}

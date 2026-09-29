@@ -198,6 +198,51 @@ def test_cli_runs_member_scoped_dsh_entry_with_prompt_file(
     assert json.loads(capsys.readouterr().out)["session_id"] == "session-1"
 
 
+def test_cli_runs_member_prompts_in_one_session(
+    interface_repo: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from backbone_conductor.dsh_agent import DSHMemberRunner
+
+    Conductor(interface_repo).initialize()
+    workspace = tmp_path / "coding-worktree"
+    workspace.mkdir()
+    prompts_file = tmp_path / "turns.json"
+    prompts_file.write_text(json.dumps(["Read the task", "Recheck the decisions"]))
+    observed = {}
+
+    def run_turns(self, prompts, *, session_id=None):
+        observed.update(member=self.member, prompts=prompts, session_id=session_id)
+        return {"member": self.member, "session_id": "session-1", "turns": []}
+
+    monkeypatch.setattr(DSHMemberRunner, "run_turns", run_turns)
+    args = [
+        "--repo",
+        str(interface_repo),
+        "dsh",
+        "--member",
+        "alice",
+        "--workspace",
+        str(workspace),
+        "--dsh-home",
+        str(tmp_path / "dsh-home"),
+        "--model",
+        "test-model",
+        "--prompts-file",
+        str(prompts_file),
+    ]
+    assert main(args) == 0
+    assert observed == {
+        "member": "alice",
+        "prompts": ["Read the task", "Recheck the decisions"],
+        "session_id": None,
+    }
+    assert json.loads(capsys.readouterr().out)["turns"] == []
+
+    prompts_file.write_text(json.dumps(["Read the task", " "]))
+    assert main(args) == 1
+    assert "nonempty JSON array" in json.loads(capsys.readouterr().err)["error"]
+
+
 def test_cli_runs_limited_coordinator_entry(
     interface_repo: Path, tmp_path: Path, monkeypatch, capsys
 ):
@@ -233,6 +278,45 @@ def test_cli_runs_limited_coordinator_entry(
         "session_id": None,
     }
     assert json.loads(capsys.readouterr().out)["final_response"] == "Draft prepared"
+
+
+def test_cli_runs_coordinator_prompts_in_one_session(
+    interface_repo: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from backbone_conductor.dsh_agent import DSHCoordinatorRunner
+
+    Conductor(interface_repo).initialize()
+    prompts_file = tmp_path / "coordinator-turns.json"
+    prompts_file.write_text(json.dumps(["Read status", "Propose a draft"]))
+    observed = {}
+
+    def run_turns(self, prompts, *, session_id=None):
+        observed.update(repo=self.repo, prompts=prompts, session_id=session_id)
+        return {"session_id": "session-1", "turns": []}
+
+    monkeypatch.setattr(DSHCoordinatorRunner, "run_turns", run_turns)
+    assert (
+        main(
+            [
+                "--repo",
+                str(interface_repo),
+                "conductor",
+                "--dsh-home",
+                str(tmp_path / "private-dsh-home"),
+                "--model",
+                "test-model",
+                "--prompts-file",
+                str(prompts_file),
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "repo": interface_repo,
+        "prompts": ["Read status", "Propose a draft"],
+        "session_id": None,
+    }
+    assert json.loads(capsys.readouterr().out)["turns"] == []
 
 
 def test_cli_routes_remote_dsh_without_a_local_ledger(tmp_path: Path, monkeypatch, capsys) -> None:
