@@ -252,10 +252,12 @@ uv run pytest tests/test_live_http.py -q
 uv run python scripts/evaluate.py
 uv run python scripts/benchmark.py
 uv run python scripts/benchmark_mcp.py --clients 10
+# 用五个独立临时仓库合并观察 50 次调用的尾延迟：
+uv run python scripts/benchmark_mcp.py --clients 10 --runs 5
 uv build
 ```
 
-CI 对 Python 3.12、3.13 运行检查、测试、合成评测、十个独立 MCP stdio 会话的并发完整性验证和示例；其中真实 HTTP 双客户端进程测试必须运行，不能因缺少 loopback socket 权限而跳过。本地受限沙箱若禁止监听 socket，该测试会明确跳过，可在允许本地网络的环境单独运行。MCP 基准记录单次延迟，不设性能门槛；合成用例通过率不代表真实项目冲突召回率。
+CI 对 Python 3.12、3.13 运行检查、测试、合成评测、十个独立 MCP stdio 会话的并发完整性验证和示例；其中真实 HTTP 双客户端进程测试必须运行，不能因缺少 loopback socket 权限而跳过。本地受限沙箱若禁止监听 socket，该测试会明确跳过，可在允许本地网络的环境单独运行。MCP 基准可重复运行并按所有成功调用计算最近秩 p95，但不设性能门槛；合成用例通过率不代表真实项目冲突召回率。
 
 若 macOS 的 editable `.pth` 被标记 hidden 导致模块不存在，可用 `uv sync --locked --group dev --no-editable`，随后执行 `uv run --no-sync ...`；源码修改后需重装。开发测试也可显式设置 `PYTHONPATH=src`。
 

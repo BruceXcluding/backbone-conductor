@@ -2,6 +2,7 @@
 """Exercise concurrent, separate MCP stdio sessions against one Git ledger.
 
 Run from the checkout: PYTHONPATH=src python scripts/benchmark_mcp.py
+Use --runs for repeated independent repositories and a larger latency sample.
 This checks integrity, not a latency service-level agreement.
 """
 
@@ -169,6 +170,7 @@ def benchmark(clients: int = 10) -> dict:
                 and not errors
             ),
             "latency_seconds": metrics,
+            "latency_samples_seconds": [round(value, 6) for value in latencies],
             "total_elapsed_seconds": round(elapsed, 6),
             "errors": errors,
             "measurement_notes": [
@@ -183,10 +185,47 @@ def benchmark(clients: int = 10) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--clients", type=int, default=10)
+    parser.add_argument("--runs", type=int, default=1)
     args = parser.parse_args()
     if not 1 <= args.clients <= 20:
         parser.error("--clients must be between 1 and 20")
-    report = benchmark(args.clients)
+    if not 1 <= args.runs <= 20:
+        parser.error("--runs must be between 1 and 20")
+    reports = [benchmark(args.clients) for _ in range(args.runs)]
+    if args.runs == 1:
+        report = reports[0]
+    else:
+        samples = sorted(latency for item in reports for latency in item["latency_samples_seconds"])
+        report = {
+            "python": platform.python_version(),
+            "platform": platform.platform(),
+            "clients_per_run": args.clients,
+            "runs": args.runs,
+            "successful_calls": sum(item["successful_calls"] for item in reports),
+            "latency_samples": len(samples),
+            "integrity_ok": all(item["integrity_ok"] for item in reports),
+            "latency_seconds": {
+                "median": round(statistics.median(samples), 6),
+                "p95": round(samples[math.ceil(len(samples) * 0.95) - 1], 6),
+                "max": round(max(samples), 6),
+            }
+            if samples
+            else None,
+            "per_run": [
+                {
+                    "integrity_ok": item["integrity_ok"],
+                    "latency_seconds": item["latency_seconds"],
+                    "total_elapsed_seconds": item["total_elapsed_seconds"],
+                    "errors": item["errors"],
+                }
+                for item in reports
+            ],
+            "measurement_notes": [
+                "Each run uses a new Git repository and independent MCP stdio sessions.",
+                "Latency includes MCP transport, lock waiting and Git persistence, but not client startup.",
+                "p95 uses nearest rank across all successful calls in these runs; this is not a production SLA.",
+            ],
+        }
     print(json.dumps(report, indent=2))
     return 0 if report["integrity_ok"] else 1
 
