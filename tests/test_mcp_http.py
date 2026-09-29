@@ -385,7 +385,9 @@ def test_live_streamable_http_mcp_client_and_rotation(remote_repo) -> None:
             server.communicate(timeout=5)
 
 
-def test_remote_dsh_member_preflight_and_sdk_start(remote_repo, tmp_path: Path) -> None:
+def test_remote_dsh_member_preflight_sdk_and_mock_tool_call(
+    remote_repo, tmp_path: Path, monkeypatch, mock_dsh_tool_provider
+) -> None:
     repo, credentials, tokens = remote_repo
     with socket.socket() as listener:
         try:
@@ -466,6 +468,38 @@ def test_remote_dsh_member_preflight_and_sdk_start(remote_repo, tmp_path: Path) 
                 assert harness.client._proc.poll() is None
             finally:
                 harness.close()
+
+            with mock_dsh_tool_provider(
+                "mcp__backbone__create_intent",
+                {
+                    "intent_data": {
+                        "id": "intent-dsh-remote",
+                        "problem": "Exercise the remote DSH tool path",
+                        "proposed_outcome": "Audit the member-bound write",
+                    }
+                },
+                "Remote intent recorded",
+            ) as (provider_url, requests):
+                monkeypatch.setenv("DEEPSEEK_BASE_URL", provider_url)
+                monkeypatch.setenv("DEEPSEEK_API_KEY", "remote-local-mock-key")
+                result = runner.run("Create the assigned remote intent")
+            assert result["final_response"] == "Remote intent recorded"
+            assert len(requests) == 2
+            assert "mcp__backbone__create_intent" in json.dumps(requests[0].get("tools", []))
+            tool_messages = [
+                message for message in requests[1]["messages"] if message.get("role") == "tool"
+            ]
+            assert "intent-dsh-remote" in json.dumps(tool_messages)
+            assert tokens["alice"] not in json.dumps(requests)
+            assert Conductor(repo).state()["intents"]["intent-dsh-remote"]["author"] == "alice"
+            commit = subprocess.run(
+                ["git", "-C", str(repo), "log", "-1", "--format=%B"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            assert "Backbone-HTTP-Principal: alice" in commit
+            assert "Backbone-HTTP-Role: member" in commit
     finally:
         server.terminate()
         try:

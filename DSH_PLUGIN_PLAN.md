@@ -61,6 +61,6 @@ uv run backbone dsh --member alice \
   --model YOUR_MODEL --prompt-file /absolute/task-prompt.txt
 ```
 
-SDK 接口、结构化输出、错误清理和成功审查指标经过无模型测试；审查专用补丁经有效配置输出和真实 SDK 无模型启动验证。本地 stdio 成员与受限协调 MCP 均通过 SDK 无模型启动及工具发现验证；远程 HTTP/HTTPS 通过独立 Python MCP 握手、成员工具发现和 SDK 无模型启动验证，尚未从 DSH 自身确认远程工具调用。本地模拟模型端点已通过锁定 SDK 实际调用成员 `get_my_task` MCP 工具，下一回合的模型请求包含工具结果与先前对话；这不验证真实模型质量。真实付费模型调用、token 用量与费用尚未验证。当前 SDK `RunResult` 未提供稳定的用量/费用字段，因此不推算费用。更完整的原生 DSH 插件组合、工作内存和多 Agent 调度插件仍待实现。
+SDK 接口、结构化输出、错误清理和成功审查指标经过无模型测试；审查专用补丁经有效配置输出和真实 SDK 无模型启动验证。本地 stdio 成员与受限协调 MCP 均通过 SDK 无模型启动及工具发现验证；远程 HTTP 与受信任的本机 HTTPS 还通过锁定 SDK 加模拟模型端点实际调用 `create_intent`，验证成员绑定和 Git 审计归属；模拟请求中不含成员 bearer 令牌。本地模拟模型端点已通过锁定 SDK 实际调用成员 `get_my_task` MCP 工具，下一回合的模型请求包含工具结果与先前对话；这不验证真实模型质量。真实付费模型调用、token 用量与费用尚未验证。当前 SDK `RunResult` 未提供稳定的用量/费用字段，因此不推算费用。更完整的原生 DSH 插件组合、工作内存和多 Agent 调度插件仍待实现。
 
 依据：[DSH 官方 Python SDK](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md)、[SDK 入门](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/python-sdk.md)、[DSH MCP 客户端](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md)及[跨进程会话恢复问题](https://github.com/deepseek-ai/deepseek-harness/discussions/6295)。MCP 服务端使用 [官方 MCP Python SDK v1](https://github.com/modelcontextprotocol/python-sdk/tree/v1.x)，固定 `<2` 避免主版本 API 变化。

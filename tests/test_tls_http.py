@@ -33,7 +33,9 @@ def git(repo: Path, *args: str) -> str:
     ).stdout.strip()
 
 
-def test_direct_https_requires_trusted_certificate_and_bearer_token(tmp_path: Path, capsys) -> None:
+def test_direct_https_requires_trusted_certificate_and_bearer_token(
+    tmp_path: Path, capsys, monkeypatch, mock_dsh_tool_provider
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-b", "main")
@@ -213,6 +215,29 @@ def test_direct_https_requires_trusted_certificate_and_bearer_token(tmp_path: Pa
                 assert harness.client._proc.poll() is None
             finally:
                 harness.close()
+            with mock_dsh_tool_provider(
+                "mcp__backbone__create_intent",
+                {
+                    "intent_data": {
+                        "id": "tls-dsh-intent",
+                        "problem": "Verify trusted HTTPS from DSH",
+                        "proposed_outcome": "Record a member-authenticated intent",
+                    }
+                },
+                "Trusted intent recorded",
+            ) as (provider_url, requests):
+                monkeypatch.setenv("DEEPSEEK_BASE_URL", provider_url)
+                monkeypatch.setenv("DEEPSEEK_API_KEY", "https-local-mock-key")
+                result = runner.run("Create an intent over trusted HTTPS")
+            assert result["final_response"] == "Trusted intent recorded"
+            assert len(requests) == 2
+            tool_messages = [
+                message for message in requests[1]["messages"] if message.get("role") == "tool"
+            ]
+            assert "tls-dsh-intent" in json.dumps(tool_messages)
+            assert member_token not in json.dumps(requests)
+            assert Conductor(repo).state()["intents"]["tls-dsh-intent"]["author"] == "alice"
+            assert "Backbone-HTTP-Principal: alice" in git(repo, "log", "-1", "--format=%B")
         with httpx.Client(trust_env=False, timeout=2) as untrusted:
             with pytest.raises(httpx.RequestError):
                 untrusted.get(f"{url}/health")
