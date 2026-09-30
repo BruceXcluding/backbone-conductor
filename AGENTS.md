@@ -1,6 +1,6 @@
 # Project context
 
-Backbone Conductor is Bruce's independent personal project. It is unrelated to air; do not import requirements or architecture from other projects' memory. Repository implementation, tests and approved project documents are authoritative.
+Backbone Conductor is maintained in this repository. Do not import requirements or architecture from unrelated projects' memory. Repository implementation, tests and approved project documents are authoritative.
 
 ## Development
 
@@ -13,4 +13,4 @@ Backbone Conductor is Bruce's independent personal project. It is unrelated to a
 - Validate with `uv run ruff check .`, `uv run ruff format --check .`, `uv run pytest --cov=backbone_conductor --cov-fail-under=85`, `uv run python scripts/evaluate.py` and `uv run python examples/demo.py`.
 - If this environment hides editable .pth files, source tests can run with `PYTHONPATH=src .venv/bin/pytest`; verify the built wheel separately.
 
-See docs/IMPLEMENTATION.md for delivery boundaries and remaining milestones.
+See docs/IMPLEMENTATION.md for the current architecture and validation boundaries.

@@ -27,6 +27,7 @@ backbone = "backbone_conductor.cli:main"
 
 [project.urls]
 Repository = "https://github.com/BruceXcluding/backbone-conductor"
+Documentation = "https://github.com/BruceXcluding/backbone-conductor/tree/main/docs"
 Issues = "https://github.com/BruceXcluding/backbone-conductor/issues"
 
 [dependency-groups]

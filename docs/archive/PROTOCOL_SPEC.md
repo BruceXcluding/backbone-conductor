@@ -1,16 +1,9 @@
 # Backbone Protocol 规范
 
-> **实现状态**：本文保留原始对象设计。v0.1 可执行协议以 `src/backbone_conductor/models.py` 和 `backbone schema` 输出为准；新增 Task、Artifact、操作/路径声明、Git 提交锚点和检查结果。MCP 参数见 [MCP_API.md](MCP_API.md)。
-> v0.2 新增 Task `cancelled` 终态，以及取消后 Intent `in_progress → accepted`、分派前修订后重置为 draft、任务上下文 rebase。实际状态机仍以代码和 Schema 为准。
-> v0.16 新增带 `supersedes` 与 `change_reason` 的原子替代意图操作：已接受且无活跃任务的旧意图进入 `superseded`，新草稿须重新接受；有任务历史时不能原地修订。实际模型和状态机仍以代码和 Schema 为准。
+> **历史设计提案**：当前对象、状态机与接口以 `src/backbone_conductor/models.py`、`backbone schema`、[实现说明](../IMPLEMENTATION.md)和 [MCP API](../../MCP_API.md) 为准。
 
-> v0.48 决策撤销使用带操作者、理由和观察版本的 `backbone revert DECISION_ID`，写入新的 Git 审计提交。这里的“撤销”不调用原生 `git revert` 回退快照，也不回滚已合并代码；旧式无理由状态切换被拒绝。
-> v0.59 为已完成任务新增可选 `Task.approval`，保存审批决策 ID、审阅账本版本和获批目标提交 SHA；旧快照可以没有该字段。已完成任务的只读复核从这些锚点恢复审批时上下文，当前分支状态另行显示。
-> v0.17 新增 `Intent.reviews`：审查者对草稿接受或拒绝时，记录身份、理由、审阅前的 Backbone 版本与时间；修订后回到 draft，必须再次审查。管理员旧式直接状态切换仍可用，不能把它视为已有人类审查记录。
-> v0.5 在状态快照中增加可选 `merged_parent_version`，记录结构化元数据合并的另一侧审计版本；Git 双父提交仍是完整历史的权威证据。普通变更清空此字段。
-
-> **版本**：v1.0
-> **状态**：草案——待团队评审
+> **提案版本**：v1.0（非软件发布版本）
+> **状态**：归档
 > **关联文档**：[ARCHITECTURE.md](./ARCHITECTURE.md) · [PLAN.md](./PLAN.md)
 
 ---
