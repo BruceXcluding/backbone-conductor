@@ -10,6 +10,7 @@ Backbone Conductor is a Git-backed coordination service for coding agents. The c
 | Conductor | Enforce state transitions, conflict policy, artifact checks, and review requirements. |
 | GitStore | Persist snapshots and generated views in Git; serialize writers, check observed versions, and create isolated audit commits. |
 | CLI, HTTP, and MCP | Expose the same coordination operations to maintainers, reviewers, members, and agent clients according to their roles. |
+| Decision map | Render a read-only browser projection of decision supersession, status, and evidence from the Git ledger; browser layout does not mutate shared state. |
 | Optional DSH adapter | Request structured semantic advice without changing deterministic conflict state or granting approval authority. |
 
 The ledger can reside on the code branch or on a separate `backbone` metadata branch. Both modes use Git as the authoritative store. Cross-clone updates require explicit synchronization; divergent metadata requires review and reconciliation. No operation automatically merges members' code into the target branch.

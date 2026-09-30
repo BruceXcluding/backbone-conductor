@@ -54,6 +54,9 @@ def check_release(root: Path, tag: str = "", dist: Path | None = None) -> str:
         license_path = f"{PACKAGE}-{version}.dist-info/licenses/LICENSE"
         if not {metadata_path, license_path, f"{PACKAGE}/__init__.py"} <= names:
             raise ValueError("wheel is missing metadata, license, or package")
+        web_files = {f"{PACKAGE}/web/decision_map.{ext}" for ext in ("html", "css", "js")}
+        if not web_files <= names:
+            raise ValueError("wheel is missing decision map assets")
         metadata = Parser().parsestr(archive.read(metadata_path).decode())
         if (
             metadata.get("Name") != name
@@ -77,6 +80,11 @@ def check_release(root: Path, tag: str = "", dist: Path | None = None) -> str:
         }
         if not required <= names:
             raise ValueError("sdist is missing the license, README, project metadata, or package")
+        web_files = {
+            f"{prefix}src/{PACKAGE}/web/decision_map.{ext}" for ext in ("html", "css", "js")
+        }
+        if not web_files <= names:
+            raise ValueError("sdist is missing decision map assets")
         for path in ("LICENSE", "pyproject.toml", f"src/{PACKAGE}/__init__.py"):
             member = archive.extractfile(f"{prefix}{path}")
             if member is None or member.read() != (root / path).read_bytes():

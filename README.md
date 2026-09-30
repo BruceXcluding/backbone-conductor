@@ -39,6 +39,8 @@ uv run backbone --repo /absolute/path/to/your-repo serve
 
 The default HTTP service listens on `127.0.0.1:8000`; its interactive API is at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). For a local agent, start the member-bound stdio server with `uv run backbone --repo /absolute/path/to/your-repo mcp --member alice`. See the [MCP interface](MCP_API.md) for tool scopes and the [deployment guide](docs/OPERATIONS.md) for authenticated remote access.
 
+Open [the decision map](http://127.0.0.1:8000/decision-map) to explore decisions as a lineage graph. Edges show which decision supersedes another; search and status filters narrow the view, and you can drag nodes and zoom the canvas. Selecting a node shows its rationale and linked evidence. The map is read-only: Git ledger data remains authoritative, while personal node positions stay in that browser. When HTTP authentication is enabled, enter an administrator or reviewer token in the page to load decisions.
+
 ## Workflow
 
 1. Create an intention before implementation and have a reviewer accept it.

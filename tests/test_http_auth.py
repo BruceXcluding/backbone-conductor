@@ -70,6 +70,58 @@ def auth_repo(tmp_path: Path) -> tuple[Path, Path]:
     return repo, auth_file
 
 
+def test_decision_map_is_read_only_and_keeps_ledger_data_role_protected(
+    auth_repo: tuple[Path, Path],
+) -> None:
+    repo, auth_file = auth_repo
+    service = Conductor(repo)
+    first = service.log_decision(
+        {
+            "author": "owner",
+            "decision_type": "architecture",
+            "summary": "Keep the current API",
+            "rationale": "Existing clients rely on it",
+        }
+    )
+    service.transition_decision(first["id"], "accepted")
+    second = service.log_decision(
+        {
+            "author": "owner",
+            "decision_type": "architecture",
+            "summary": "Introduce a versioned API",
+            "rationale": "Allows a migration period",
+            "supersedes": first["id"],
+        }
+    )
+    service.transition_decision(second["id"], "accepted")
+    head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+    with TestClient(create_app(repo, auth_file=auth_file)) as client:
+        shell = client.get("/decision-map")
+        assert shell.status_code == 200
+        assert "决策脉络图" in shell.text
+        assert "Keep the current API" not in shell.text
+        assert "default-src 'none'" in shell.headers["Content-Security-Policy"]
+        assert client.get("/decision-map.css").status_code == 200
+        assert client.get("/decision-map.js").status_code == 200
+        assert client.get("/decision-map/data").status_code == 401
+        assert client.get("/decision-map/data", headers=auth_header(ALICE_TOKEN)).status_code == 403
+        for credential_token in (CAROL_TOKEN, ADMIN_TOKEN):
+            response = client.get("/decision-map/data", headers=auth_header(credential_token))
+            assert response.status_code == 200
+            assert response.headers["Cache-Control"] == "no-store"
+            assert response.json() == {
+                "version": head,
+                "decisions": list(service.state()["decisions"].values()),
+            }
+            by_id = {decision["id"]: decision for decision in response.json()["decisions"]}
+            assert by_id[second["id"]]["supersedes"] == first["id"]
+    assert (
+        subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        == head
+    )
+
+
 def test_submitted_patch_is_visible_to_reviewer_but_not_member(
     auth_repo: tuple[Path, Path], capsys
 ) -> None:

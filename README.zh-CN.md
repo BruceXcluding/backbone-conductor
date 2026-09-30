@@ -39,6 +39,8 @@ uv run backbone --repo /absolute/path/to/your-repo serve
 
 HTTP 服务默认只监听 `127.0.0.1:8000`，交互式 API 位于 [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)。本地 Agent 可运行 `uv run backbone --repo /absolute/path/to/your-repo mcp --member alice`，启动绑定成员身份的 stdio MCP 服务。工具范围见 [MCP API](MCP_API.md)，认证后的远程访问见[部署指南](docs/OPERATIONS.md)。
 
+打开[决策脉络图](http://127.0.0.1:8000/decision-map)，可按替代关系浏览决策、搜索与筛选状态、拖动节点并缩放画布；选择节点可查看理由及关联证据。图谱是只读视图，Git 账本仍是唯一事实来源，个人节点位置只保存在当前浏览器。启用 HTTP 认证后，在页面输入管理员或审查者令牌即可读取决策。
+
 ## 工作流程
 
 1. 实施前创建意图，由审查者接受。

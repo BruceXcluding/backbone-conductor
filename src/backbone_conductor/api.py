@@ -9,13 +9,23 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .audit import bind_http_actor, reset_http_actor
 from .auth import Principal, TokenAuth
 from .service import Conductor
+
+_DECISION_MAP_FILES = {
+    "/decision-map": "decision_map.html",
+    "/decision-map.css": "decision_map.css",
+    "/decision-map.js": "decision_map.js",
+}
+_DECISION_MAP_CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+    "base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'none'"
+)
 
 
 def _member_route(method: str, path: str) -> bool:
@@ -44,6 +54,7 @@ def _reviewer_route(method: str, path: str) -> bool:
             "/whoami",
             "/intents",
             "/decisions",
+            "/decision-map/data",
             "/tasks",
             "/conflicts",
             "/timeline",
@@ -208,6 +219,10 @@ def create_app(
         if mcp_http and request.url.path == "/mcp":
             # The mounted MCP app authenticates every request, including initialize.
             return await call_next(request)
+        if request.method == "GET" and request.url.path in _DECISION_MAP_FILES:
+            # The shell contains no ledger data. Browser clients provide a bearer
+            # token in memory when fetching the role-protected projection below.
+            return await call_next(request)
         if auth is None:
             request.state.principal = Principal("local", "admin")
         elif request.url.path == "/health":
@@ -294,6 +309,39 @@ def create_app(
             except ValueError:
                 return JSONResponse(status_code=503, content={"status": "unavailable"})
         return {"status": "ok"}
+
+    def map_file(path: str) -> FileResponse:
+        return FileResponse(
+            Path(__file__).with_name("web") / _DECISION_MAP_FILES[path],
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": _DECISION_MAP_CSP,
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.get("/decision-map", include_in_schema=False)
+    def decision_map() -> FileResponse:
+        return map_file("/decision-map")
+
+    @app.get("/decision-map.css", include_in_schema=False)
+    def decision_map_css() -> FileResponse:
+        return map_file("/decision-map.css")
+
+    @app.get("/decision-map.js", include_in_schema=False)
+    def decision_map_js() -> FileResponse:
+        return map_file("/decision-map.js")
+
+    @app.get("/decision-map/data")
+    def decision_map_data() -> JSONResponse:
+        snapshot = conductor.state()
+        return JSONResponse(
+            content={
+                "version": snapshot["version"],
+                "decisions": list(snapshot["decisions"].values()),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     @app.post("/initialize")
     def initialize() -> dict:
