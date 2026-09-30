@@ -1,6 +1,6 @@
 # Backbone Conductor
 
-[简体中文](README.zh-CN.md)
+[简体中文](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/README.zh-CN.md)
 
 Backbone Conductor coordinates coding agents around shared intentions, decisions, and Git evidence. It records attributed proposals and reviews, detects conflicts in declared symbols and paths, and keeps an auditable history alongside the code.
 
@@ -17,7 +17,14 @@ Conflict rules are deterministic and based on declared structure and Git paths; 
 
 ## Try it locally
 
-Requirements: Python 3.12+, Git, and [uv](https://docs.astral.sh/uv/). The package is currently installed from this repository.
+Requirements: Python 3.12+ and Git. Install the public preview from PyPI:
+
+```sh
+python -m pip install backbone-conductor==0.75.0
+backbone --help
+```
+
+For development or to run the repository examples, also install [uv](https://docs.astral.sh/uv/) and use this checkout:
 
 ```sh
 git clone https://github.com/BruceXcluding/backbone-conductor.git
@@ -37,7 +44,7 @@ uv run backbone --repo /absolute/path/to/your-repo status
 uv run backbone --repo /absolute/path/to/your-repo serve
 ```
 
-The default HTTP service listens on `127.0.0.1:8000`; its interactive API is at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). For a local agent, start the member-bound stdio server with `uv run backbone --repo /absolute/path/to/your-repo mcp --member alice`. See the [MCP interface](MCP_API.md) for tool scopes and the [deployment guide](docs/OPERATIONS.md) for authenticated remote access.
+The default HTTP service listens on `127.0.0.1:8000`; its interactive API is at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). For a local agent, start the member-bound stdio server with `uv run backbone --repo /absolute/path/to/your-repo mcp --member alice`. See the [MCP interface](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/MCP_API.md) for tool scopes and the [deployment guide](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/docs/OPERATIONS.md) for authenticated remote access.
 
 Open [the decision map](http://127.0.0.1:8000/decision-map) to explore decisions as a lineage graph. Edges show which decision supersedes another; search and status filters narrow the view, and you can drag nodes and zoom the canvas. Selecting a node shows its rationale and linked evidence. The map is read-only: Git ledger data remains authoritative, while personal node positions stay in that browser. When HTTP authentication is enabled, enter an administrator or reviewer token in the page to load decisions.
 
@@ -49,25 +56,26 @@ Open [the decision map](http://127.0.0.1:8000/decision-map) to explore decisions
 4. Review the pinned artifact, merge the code in Git, and inspect the resulting target branch.
 5. Record approval using the ledger version and target commit from that inspection. Backbone rejects stale observations or code that was never integrated.
 
-The [operations guide](docs/OPERATIONS.md) documents the CLI and remote member/reviewer flows. [Conflict rules](CONFLICT_RULES.md) explain what is checked automatically; [implementation details](docs/IMPLEMENTATION.md) describe storage, identity, and review boundaries.
+The [operations guide](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/docs/OPERATIONS.md) documents the CLI and remote member/reviewer flows. [Conflict rules](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/CONFLICT_RULES.md) explain what is checked automatically; [implementation details](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/docs/IMPLEMENTATION.md) describe storage, identity, and review boundaries.
 
 ## Documentation
 
 | Topic | Guide |
 | --- | --- |
-| Architecture and capability boundaries | [Implementation](docs/IMPLEMENTATION.md) |
-| Deployment, credentials, synchronization, and recovery | [Operations](docs/OPERATIONS.md) |
-| Member and coordinator MCP tools | [MCP API](MCP_API.md) |
-| Deterministic conflict checks | [Conflict rules](CONFLICT_RULES.md) |
-| Optional DeepSeek Harness integration | [DSH integration](DSH_PLUGIN_PLAN.md) |
-| Validation methods and evidence | [Validation](docs/VALIDATION.md) |
-| Real-user pilot procedure | [Pilot](docs/PILOT.md) |
-| Release procedure | [Releasing](docs/RELEASING.md) |
+| Architecture and capability boundaries | [Implementation](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/docs/IMPLEMENTATION.md) |
+| Deployment, credentials, synchronization, and recovery | [Operations](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/docs/OPERATIONS.md) |
+| Member and coordinator MCP tools | [MCP API](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/MCP_API.md) |
+| Deterministic conflict checks | [Conflict rules](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/CONFLICT_RULES.md) |
+| Optional DeepSeek Harness integration | [DSH integration](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/DSH_PLUGIN_PLAN.md) |
+| Validation methods and evidence | [Validation](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/docs/VALIDATION.md) |
+| Real-user pilot procedure | [Pilot](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/docs/PILOT.md) |
+| Release procedure | [Releasing](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/docs/RELEASING.md) |
+| Version history | [Changelog](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/CHANGELOG.md) |
 
-Additional research and historical design records are indexed in [docs/README.md](docs/README.md). The implementation and generated schemas are authoritative where older design notes differ.
+Additional research and historical design records are indexed in the [documentation index](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/docs/README.md). The implementation and generated schemas are authoritative where older design notes differ.
 
 ## Contributing
 
-Bug reports and proposals are welcome through [GitHub Issues](https://github.com/BruceXcluding/backbone-conductor/issues). See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and pull request guidance.
+Bug reports and proposals are welcome through [GitHub Issues](https://github.com/BruceXcluding/backbone-conductor/issues). See [CONTRIBUTING.md](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/CONTRIBUTING.md) for setup, checks, and pull request guidance.
 
-Licensed under [MIT](LICENSE).
+Licensed under [MIT](https://github.com/BruceXcluding/backbone-conductor/blob/v0.75.0/LICENSE).

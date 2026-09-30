@@ -17,7 +17,14 @@ Backbone Conductor 让多个编程 Agent 共享意图、决策与 Git 证据。�
 
 ## 本地试用
 
-需要 Python 3.12+、Git 和 [uv](https://docs.astral.sh/uv/)。目前从仓库源码安装。
+需要 Python 3.12+ 和 Git。可从 PyPI 安装公开预览版：
+
+```sh
+python -m pip install backbone-conductor==0.75.0
+backbone --help
+```
+
+开发或运行仓库示例还需安装 [uv](https://docs.astral.sh/uv/)，并使用源码仓库：
 
 ```sh
 git clone https://github.com/BruceXcluding/backbone-conductor.git
@@ -63,6 +70,7 @@ HTTP 服务默认只监听 `127.0.0.1:8000`，交互式 API 位于 [http://127.0
 | 验证方法与现有证据 | [验证指南](docs/VALIDATION.md) |
 | 真人试用流程 | [试用验收](docs/PILOT.md) |
 | 发布流程 | [发布说明](docs/RELEASING.md) |
+| 版本记录 | [更新日志](CHANGELOG.md) |
 
 [文档索引](docs/README.md)另列研究资料和历史设计记录。若旧设计文档与当前行为不一致，以实现代码和生成的 Schema 为准。
 
